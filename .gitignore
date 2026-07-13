@@ -1,0 +1,13 @@
+.DS_Store
+*.log
+
+# track-console
+track-console/node_modules/
+track-console/dist/
+track-console/tsconfig.tsbuildinfo
+
+# track-server
+track-server/track-server
+
+# fast_track is a separate git repo
+fast_track/
