@@ -16,7 +16,7 @@ dependencies:
   archive: ^4.0.0
   objectbox: ^5.2.0
   objectbox_flutter_libs: ^5.2.0
-  flat_buffers: ^23.5.26
+  flat_buffers: ^25.9.23
   path_provider: ^2.1.0
   path: ^1.9.0
   uuid: ^4.5.1
