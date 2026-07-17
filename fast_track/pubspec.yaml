@@ -1,7 +1,9 @@
 name: fast_track
-description: A lightweight Flutter analytics SDK with session management, batching, retry, deduplication, and rate limiting.
+description: Lightweight Flutter analytics SDK with session management, batching, retry, and ObjectBox persistence.
 version: 0.1.0
-publish_to: "none"
+homepage: https://github.com/18637780521yx/track
+repository: https://github.com/18637780521yx/track
+issue_tracker: https://github.com/18637780521yx/track/issues
 
 environment:
   sdk: ">=3.0.0 <4.0.0"
@@ -9,12 +11,12 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  fast_tools:
-    path:  /Users/fc/fast_utils
+  fast_tools: ^0.1.0
   dio: ^5.7.0
   archive: ^4.0.0
   objectbox: ^5.2.0
   objectbox_flutter_libs: ^5.2.0
+  flat_buffers: ^23.5.26
   path_provider: ^2.1.0
   path: ^1.9.0
   uuid: ^4.5.1
@@ -28,4 +30,3 @@ dev_dependencies:
 
 flutter:
   uses-material-design: false
-

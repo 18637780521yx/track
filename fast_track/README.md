@@ -21,11 +21,7 @@
 
 ```yaml
 dependencies:
-  fast_track:
-    path: ../fast_track
-  fast_tools:
-    path: ../fast_utils  # 或你的 fast_tools 路径
-  dio: ^5.0.0
+  fast_track: ^0.1.0
 ```
 
 ## 快速使用
