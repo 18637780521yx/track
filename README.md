@@ -2,9 +2,11 @@
 
 Flutter SDK + Go 服务端 + 自研分析平台（仿神策 MVP）。
 
+同一仓库（monorepo）管理：
+
 ```
 track/
-├── fast_track/       # Flutter 埋点 SDK（已有）
+├── fast_track/       # Flutter 埋点 SDK
 ├── track-server/     # Go 服务端：接收上报 + 分析查询 API
 └── track-console/    # React 分析后台：概览 / 事件 / 漏斗 / 留存
 ```
