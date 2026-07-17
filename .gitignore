@@ -9,5 +9,17 @@ track-console/tsconfig.tsbuildinfo
 # track-server
 track-server/track-server
 
-# fast_track is a separate git repo
-fast_track/
+# fast_track (Flutter)
+fast_track/.dart_tool/
+fast_track/.packages
+fast_track/.pub-cache/
+fast_track/.pub/
+fast_track/build/
+fast_track/**/Generated.xcconfig
+fast_track/**/flutter_export_environment.sh
+fast_track/**/Pods/
+fast_track/**/.symlinks/
+fast_track/example/ios/Flutter/flutter_export_environment.sh
+fast_track/example/ios/Podfile.lock
+fast_track/*.iml
+fast_track/.idea/

@@ -1,0 +1,19 @@
+name: fast_track_example
+description: 用于验证 fast_track 埋点：先启动 tool/serve_track.dart，再运行本应用。
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  fast_track:
+    path: ../
+  fast_tools:
+    path: ../../fast_utils
+  dio: ^5.7.0
+
+flutter:
+  uses-material-design: true
