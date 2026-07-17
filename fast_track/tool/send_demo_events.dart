@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:fast_track/fast_track.dart';
+import 'package:flutter_fast_track/flutter_fast_track.dart';
 import 'package:fast_tools/fast_tools.dart';
 import 'package:flutter/widgets.dart';
 

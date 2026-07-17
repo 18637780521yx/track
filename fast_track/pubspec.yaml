@@ -1,4 +1,4 @@
-name: fast_track
+name: flutter_fast_track
 description: Lightweight Flutter analytics SDK with session management, batching, retry, and ObjectBox persistence.
 version: 0.1.0
 homepage: https://github.com/18637780521yx/track

@@ -1,4 +1,4 @@
-# fast_track
+# flutter_fast_track
 
 轻量级 Flutter 埋点 SDK，支持：
 
@@ -21,13 +21,13 @@
 
 ```yaml
 dependencies:
-  fast_track: ^0.1.0
+  flutter_fast_track: ^0.1.0
 ```
 
 ## 快速使用
 
 ```dart
-import 'package:fast_track/fast_track.dart';
+import 'package:flutter_fast_track/flutter_fast_track.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();

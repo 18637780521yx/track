@@ -9,7 +9,7 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  fast_track:
+  flutter_fast_track:
     path: ../
   fast_tools: ^0.1.0
   dio: ^5.7.0

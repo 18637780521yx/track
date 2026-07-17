@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:fast_tools/fast_tools.dart';
-import 'package:fast_track/fast_track.dart';
-import 'package:fast_track/src/event/objectbox_storage.dart';
+import 'package:flutter_fast_track/flutter_fast_track.dart';
+import 'package:flutter_fast_track/src/event/objectbox_storage.dart';
 import 'package:uuid/uuid.dart';
 
 import 'utils/auto_properties.dart';

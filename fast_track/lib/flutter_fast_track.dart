@@ -1,4 +1,4 @@
-library fast_track;
+library flutter_fast_track;
 
 export 'src/fast_tracker.dart';
 export 'src/tracker_config.dart';

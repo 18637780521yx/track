@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:fast_track/src/event/objectbox_storage.dart';
+import 'package:flutter_fast_track/src/event/objectbox_storage.dart';
 
 void main() {
   group('ObjectBox 初始化失败场景测试', () {
