@@ -1,0 +1,30 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: track
+      POSTGRES_PASSWORD: track
+      POSTGRES_DB: track
+    ports:
+      - "5432:5432"
+    volumes:
+      - track_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U track -d track"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      ADDR: ":8080"
+      DATABASE_URL: postgres://track:track@postgres:5432/track?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  track_pg_data:

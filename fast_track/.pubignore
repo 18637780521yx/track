@@ -1,0 +1,8 @@
+# Keep package archive small and convention-compliant
+docs/
+build/
+.dart_tool/
+pubspec_overrides.yaml
+devtools_options.yaml
+example/ios/Pods/
+example/build/

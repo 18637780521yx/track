@@ -1,0 +1,40 @@
+.DS_Store
+*.log
+
+# track-console
+track-console/node_modules/
+track-console/dist/
+track-console/tsconfig.tsbuildinfo
+
+# track-server
+track-server/track-server
+
+# track-server-py
+track-server-py/.venv/
+track-server-py/__pycache__/
+track-server-py/**/__pycache__/
+track-server-py/.pytest_cache/
+track-server-py/.mypy_cache/
+
+# fast_track_android
+fast_track_android/.gradle/
+fast_track_android/local.properties
+fast_track_android/**/build/
+fast_track_android/.idea/
+fast_track_android/*.iml
+
+# fast_track (Flutter)
+fast_track/.dart_tool/
+fast_track/.packages
+fast_track/.pub-cache/
+fast_track/.pub/
+fast_track/build/
+fast_track/**/build/
+fast_track/**/Generated.xcconfig
+fast_track/**/flutter_export_environment.sh
+fast_track/**/Pods/
+fast_track/**/.symlinks/
+fast_track/example/ios/Flutter/flutter_export_environment.sh
+fast_track/example/ios/Podfile.lock
+fast_track/*.iml
+fast_track/.idea/

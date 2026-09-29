@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <EditText
+            android:id="@+id/urlInput"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:hint="Track URL"
+            android:inputType="textUri"
+            android:text="http://10.0.2.2:8080/track" />
+
+        <Button
+            android:id="@+id/btnInit"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Init" />
+
+        <Button
+            android:id="@+id/btnTrack"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Track page_view" />
+
+        <Button
+            android:id="@+id/btnIdentify"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Identify demo_user" />
+
+        <Button
+            android:id="@+id/btnFlush"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Flush" />
+
+        <Button
+            android:id="@+id/btnCaptureError"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Capture non-fatal error" />
+
+        <Button
+            android:id="@+id/btnCrash"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Trigger Java crash" />
+
+        <Button
+            android:id="@+id/btnAnr"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Block main (soft ANR)" />
+
+        <TextView
+            android:id="@+id/status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="Ready" />
+    </LinearLayout>
+</ScrollView>
