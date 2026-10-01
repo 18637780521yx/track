@@ -1,4 +1,4 @@
-import { Card, Input, Spin, Table, Tag, message } from 'antd';
+import { Button, Card, Input, Popconfirm, Spin, Table, Tag, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api, UserRecord } from '../api/client';
@@ -11,8 +11,9 @@ export function UsersPage() {
   const [page, setPage] = useState(1);
   const [keyword, setKeyword] = useState('');
   const [search, setSearch] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = () => {
     setLoading(true);
     api
       .listUsers(search, 20, (page - 1) * 20)
@@ -22,7 +23,31 @@ export function UsersPage() {
       })
       .catch((e) => message.error(e.message))
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
   }, [page, search]);
+
+  const onDelete = async (userId: string) => {
+    setDeletingId(userId);
+    try {
+      const res = await api.deleteUser(userId);
+      const d = res.deleted ?? {};
+      message.success(
+        `已删除（events ${d.events ?? 0} / logs ${d.app_logs ?? 0}）`,
+      );
+      if (users.length <= 1 && page > 1) {
+        setPage(page - 1);
+      } else {
+        load();
+      }
+    } catch (e) {
+      message.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   return (
     <Spin spinning={loading}>
@@ -45,10 +70,6 @@ export function UsersPage() {
         <Table
           rowKey="user_id"
           dataSource={users}
-          onRow={(record) => ({
-            onClick: () => navigate(`/users/${encodeURIComponent(record.user_id)}`),
-            style: { cursor: 'pointer' },
-          })}
           pagination={{
             current: page,
             pageSize: 20,
@@ -62,7 +83,9 @@ export function UsersPage() {
               dataIndex: 'user_id',
               width: 180,
               ellipsis: true,
-              render: (v: string) => <a>{v}</a>,
+              render: (v: string) => (
+                <a onClick={() => navigate(`/users/${encodeURIComponent(v)}`)}>{v}</a>
+              ),
             },
             {
               title: '类型',
@@ -94,6 +117,32 @@ export function UsersPage() {
               dataIndex: 'total_revenue',
               width: 100,
               render: (v: number) => (v > 0 ? `¥${v.toFixed(2)}` : '-'),
+            },
+            {
+              title: '操作',
+              width: 90,
+              fixed: 'right',
+              render: (_, r) => (
+                <div onClick={(e) => e.stopPropagation()}>
+                  <Popconfirm
+                    title="删除该用户？"
+                    description="将一并清除其事件、日志等数据，不可恢复。"
+                    okText="删除"
+                    cancelText="取消"
+                    okButtonProps={{ danger: true }}
+                    onConfirm={() => onDelete(r.user_id)}
+                  >
+                    <Button
+                      type="link"
+                      danger
+                      size="small"
+                      loading={deletingId === r.user_id}
+                    >
+                      删除
+                    </Button>
+                  </Popconfirm>
+                </div>
+              ),
             },
           ]}
         />

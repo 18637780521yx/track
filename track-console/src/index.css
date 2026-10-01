@@ -59,6 +59,49 @@ body {
   font-size: 13px;
 }
 
+.terminal-log {
+  background: #0d1117;
+  color: #e6edf3;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  border-radius: 8px;
+  padding: 12px 14px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.terminal-log-line {
+  display: grid;
+  grid-template-columns: 168px 18px minmax(80px, 160px) 1fr;
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.terminal-log-time {
+  color: #8b949e;
+  white-space: nowrap;
+}
+
+.terminal-log-level {
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.terminal-log-tag {
+  color: #79c0ff;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.terminal-log-msg {
+  color: #e6edf3;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
 .json-panel {
   display: flex;
   flex-direction: column;

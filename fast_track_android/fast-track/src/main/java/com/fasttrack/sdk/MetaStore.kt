@@ -34,6 +34,26 @@ internal class MetaStore(context: Context) {
         get() = prefs.getLong(KEY_EXIT_INFO_TS, 0L)
         set(value) = prefs.edit().putLong(KEY_EXIT_INFO_TS, value).apply()
 
+    var lastAppVersion: String?
+        get() = prefs.getString(KEY_LAST_APP_VERSION, null)
+        set(value) {
+            if (value.isNullOrEmpty()) {
+                prefs.edit().remove(KEY_LAST_APP_VERSION).apply()
+            } else {
+                prefs.edit().putString(KEY_LAST_APP_VERSION, value).apply()
+            }
+        }
+
+    var lastAppBuild: String?
+        get() = prefs.getString(KEY_LAST_APP_BUILD, null)
+        set(value) {
+            if (value.isNullOrEmpty()) {
+                prefs.edit().remove(KEY_LAST_APP_BUILD).apply()
+            } else {
+                prefs.edit().putString(KEY_LAST_APP_BUILD, value).apply()
+            }
+        }
+
     fun loadSession(): SessionInfo? {
         val id = prefs.getString(KEY_SESSION_ID, null) ?: return null
         val started = prefs.getLong(KEY_SESSION_STARTED, 0L)
@@ -69,6 +89,8 @@ internal class MetaStore(context: Context) {
         private const val KEY_SESSION_LAST = "session_last"
         private const val KEY_COMMON = "common_properties"
         private const val KEY_EXIT_INFO_TS = "last_exit_info_ts"
+        private const val KEY_LAST_APP_VERSION = "last_app_version"
+        private const val KEY_LAST_APP_BUILD = "last_app_build"
 
         fun jsonToMap(obj: JSONObject): Map<String, Any?> {
             val out = mutableMapOf<String, Any?>()

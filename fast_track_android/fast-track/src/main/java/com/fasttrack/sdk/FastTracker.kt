@@ -1,8 +1,11 @@
 package com.fasttrack.sdk
 
+import android.app.Activity
+import android.app.Application
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Bundle
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
@@ -27,10 +30,14 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 object FastTracker {
     private const val TAG = "FastTracker"
+
+    /** 线上默认上报地址（wanren） */
+    const val DEFAULT_TRACK_URL = "http://101.126.68.169:5000/track"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val flushMutex = Mutex()
@@ -53,11 +60,18 @@ object FastTracker {
     private var optedOut: Boolean = false
     private var lastRetryExhaustedAtMs: Long = 0L
     private var flushJobStarted = false
+    private var activityCallbacksInstalled = false
+    private var networkMonitor: NetworkMonitor? = null
+
+    /** Activity 简单类名 → page（覆盖自动命名） */
+    private val pageAliases = ConcurrentHashMap<String, String>()
+    private var lastAutoPage: String? = null
+    private var lastAutoPageAtMs: Long = 0L
 
     @JvmStatic
     @JvmOverloads
     fun init(
-        url: String,
+        url: String = DEFAULT_TRACK_URL,
         headers: Map<String, String> = emptyMap(),
         config: TrackerConfig = TrackerConfig(),
         initialCommonProperties: Map<String, Any?> = emptyMap(),
@@ -74,12 +88,13 @@ object FastTracker {
     /**
      * 显式传入 Context（测试 / 特殊宿主）。正常应用用 [init] 无参版本即可，
      * Context 由 [FastTrackContextProvider] 自动钩取。
+     * [url] 默认 [DEFAULT_TRACK_URL]。
      */
     @JvmStatic
     @JvmOverloads
     fun init(
         context: Context,
-        url: String,
+        url: String = DEFAULT_TRACK_URL,
         headers: Map<String, String> = emptyMap(),
         config: TrackerConfig = TrackerConfig(),
         initialCommonProperties: Map<String, Any?> = emptyMap(),
@@ -115,6 +130,7 @@ object FastTracker {
         startFlushLoop()
         installLifecycle(context.applicationContext)
         installStability(context.applicationContext)
+        installNetworkMonitor(context.applicationContext)
         replayPendingStability()
 
         val buffered = preInitBuffer.toList()
@@ -126,6 +142,7 @@ object FastTracker {
             store.firstOpenDone = true
         }
         track("app_start")
+        maybeTrackAppUpgrade(context.applicationContext, store)
         log("init done url=$url")
     }
 
@@ -176,8 +193,19 @@ object FastTracker {
     @JvmStatic
     fun identify(userId: String) {
         if (userId.isBlank()) return
+        val prevDistinct = distinctId
+        if (prevDistinct == userId) return
         distinctId = userId
         meta?.distinctId = userId
+        // 关联匿名 → 登录：后续事件仍带 anonymous_id；并打 identify 事件供服务端合并画像
+        val props = linkedMapOf<String, Any?>(
+            "\$user_id" to userId,
+            "anonymous_id" to (if (::anonymousId.isInitialized) anonymousId else null),
+        )
+        if (!prevDistinct.isNullOrBlank()) {
+            props["\$previous_distinct_id"] = prevDistinct
+        }
+        track("identify", props)
     }
 
     @JvmStatic
@@ -216,6 +244,40 @@ object FastTracker {
     fun onForeground() {
         ensureSession(forceNew = true)
         track("app_foreground")
+    }
+
+    /**
+     * 将 Activity 简单类名映射为业务 page 名。
+     * 例：`setPageAlias("MainActivity", "player")`
+     */
+    @JvmStatic
+    fun setPageAlias(activitySimpleName: String, page: String) {
+        if (activitySimpleName.isBlank() || page.isBlank()) return
+        pageAliases[activitySimpleName] = page
+    }
+
+    @JvmStatic
+    fun setPageAliases(aliases: Map<String, String>) {
+        aliases.forEach { (k, v) -> setPageAlias(k, v) }
+    }
+
+    /**
+     * 手动 page_view（同一 Activity 内的逻辑页，如对话框 / 配对码页）。
+     * 与自动埋点共用去重窗口。
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun trackPage(page: String, properties: Map<String, Any?> = emptyMap()) {
+        if (page.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (page == lastAutoPage && now - lastAutoPageAtMs < 2_000L) return
+        lastAutoPage = page
+        lastAutoPageAtMs = now
+        val props = LinkedHashMap<String, Any?>()
+        props["page"] = page
+        props["auto"] = false
+        props.putAll(properties)
+        track("page_view", props)
     }
 
     private fun installStability(context: Context) {
@@ -275,7 +337,7 @@ object FastTracker {
         ensureSession(forceNew = false)
         val mergedCommon = LinkedHashMap<String, Any?>()
         mergedCommon.putAll(commonProperties)
-        mergedCommon.putAll(AutoProperties.dynamicProperties())
+        mergedCommon.putAll(AutoProperties.dynamicProperties(appContext))
         val entity = TrackEventEntity(
             eventId = UUID.randomUUID().toString(),
             name = name,
@@ -294,7 +356,45 @@ object FastTracker {
         }
     }
 
-    private fun installLifecycle(@Suppress("UNUSED_PARAMETER") context: Context) {
+    private fun installNetworkMonitor(context: Context) {
+        if (!config.autoTrackNetworkChange) return
+        if (networkMonitor != null) return
+        networkMonitor = NetworkMonitor(context) { from, to ->
+            track(
+                "network_change",
+                mapOf(
+                    "from" to from,
+                    "to" to to,
+                ),
+            )
+        }.also { it.start() }
+    }
+
+    private fun maybeTrackAppUpgrade(context: Context, store: MetaStore) {
+        if (!config.autoTrackAppUpgrade) return
+        val version = commonProperties["app_version"]?.toString().orEmpty()
+        val build = commonProperties["app_build"]?.toString().orEmpty()
+        if (version.isEmpty() && build.isEmpty()) return
+        val prevVersion = store.lastAppVersion
+        val prevBuild = store.lastAppBuild
+        if (prevVersion != null || prevBuild != null) {
+            if (prevVersion != version || prevBuild != build) {
+                track(
+                    "app_upgrade",
+                    mapOf(
+                        "from_version" to (prevVersion ?: ""),
+                        "to_version" to version,
+                        "from_build" to (prevBuild ?: ""),
+                        "to_build" to build,
+                    ),
+                )
+            }
+        }
+        store.lastAppVersion = version
+        store.lastAppBuild = build
+    }
+
+    private fun installLifecycle(context: Context) {
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
                 override fun onStart(owner: LifecycleOwner) {
@@ -307,6 +407,56 @@ object FastTracker {
                 }
             })
         }
+        if (config.autoTrackPageView) {
+            installActivityPageTracking(context)
+        }
+    }
+
+    private fun installActivityPageTracking(context: Context) {
+        if (activityCallbacksInstalled) return
+        val app = context.applicationContext as? Application ?: return
+        activityCallbacksInstalled = true
+        app.registerActivityLifecycleCallbacks(object : Application.ActivityLifecycleCallbacks {
+            override fun onActivityResumed(activity: Activity) {
+                maybeAutoTrackPage(activity)
+            }
+
+            override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+            override fun onActivityStarted(activity: Activity) {}
+            override fun onActivityPaused(activity: Activity) {}
+            override fun onActivityStopped(activity: Activity) {}
+            override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+            override fun onActivityDestroyed(activity: Activity) {}
+        })
+    }
+
+    private fun maybeAutoTrackPage(activity: Activity) {
+        val simple = activity.javaClass.simpleName
+        if (simple in config.autoTrackPageIgnore) return
+        val page = pageAliases[simple] ?: defaultPageName(simple)
+        if (page.isBlank()) return
+        val now = System.currentTimeMillis()
+        if (page == lastAutoPage && now - lastAutoPageAtMs < 2_000L) return
+        lastAutoPage = page
+        lastAutoPageAtMs = now
+        track(
+            "page_view",
+            mapOf(
+                "page" to page,
+                "auto" to true,
+                "activity" to simple,
+            ),
+        )
+    }
+
+    /** MainActivity → main；ScreenCapturePermissionActivity → screen_capture_permission */
+    private fun defaultPageName(simpleName: String): String {
+        val base = simpleName.removeSuffix("Activity")
+        if (base.isEmpty()) return simpleName.lowercase()
+        return base
+            .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+            .replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2")
+            .lowercase()
     }
 
     private fun startFlushLoop() {

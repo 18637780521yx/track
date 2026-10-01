@@ -140,9 +140,19 @@ class FastTracker {
       fastLog('identify called with empty userId, ignored');
       return;
     }
+    final prev = _distinctId;
+    if (prev == userId) return;
     _distinctId = userId;
     Storage.setDistinctId(userId);
     fastLog('identify: $userId', debug: true);
+    final props = <String, dynamic>{
+      r'$user_id': userId,
+      'anonymous_id': _anonymousId,
+    };
+    if (prev != null && prev.isNotEmpty) {
+      props[r'$previous_distinct_id'] = prev;
+    }
+    track('identify', props);
   }
 
   void resetIdentity() {

@@ -19,7 +19,7 @@ internal object AutoProperties {
         return mapOf(
             "environment" to env,
             "build_mode" to if (isDebuggable(context)) "debug" else "release",
-            "sdk_version" to "0.2.0",
+            "sdk_version" to "1.0.0",
             "device_os" to "android",
             "device_os_version" to Build.VERSION.RELEASE,
             "device_model" to Build.MODEL,
@@ -40,11 +40,12 @@ internal object AutoProperties {
         )
     }
 
-    fun dynamicProperties(): Map<String, Any?> {
+    fun dynamicProperties(context: Context? = null): Map<String, Any?> {
         val offsetHours = TimeZone.getDefault().rawOffset / 3_600_000.0
+        val network = context?.let { NetworkMonitor.resolveType(it) } ?: "unknown"
         return mapOf(
             "timezone_offset_hours" to offsetHours,
-            "network_type" to "unknown",
+            "network_type" to network,
         )
     }
 

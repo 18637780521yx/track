@@ -59,6 +59,11 @@ async def sync_derived_tables(conn: asyncpg.Connection, e: TrackEvent) -> None:
     ts = e.timestamp or datetime.now(timezone.utc)
     day = ts.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
+    # 匿名 → 登录关联：同一 anonymous_id 下出现 distinct_id（含 identify 事件）时合并画像
+    if e.distinct_id and e.anonymous_id and e.anonymous_id not in ("", "unknown"):
+        if e.distinct_id != e.anonymous_id:
+            await merge_anonymous_into_distinct(conn, e.distinct_id, e.anonymous_id, ts)
+
     is_new = await upsert_user(conn, e, user_id, ts)
     await touch_daily_stats(conn, day, user_id)
 
@@ -78,6 +83,154 @@ async def sync_derived_tables(conn: asyncpg.Connection, e: TrackEvent) -> None:
     _ = is_new
 
 
+async def merge_anonymous_into_distinct(
+    conn: asyncpg.Connection, distinct_id: str, anonymous_id: str, ts: datetime
+) -> None:
+    """把以 anonymous_id 为 user_id 的画像/日活合并到 distinct_id，避免登录前后拆成两人。"""
+    if not distinct_id or not anonymous_id or distinct_id == anonymous_id:
+        return
+
+    anon = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", anonymous_id)
+    canon = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", distinct_id)
+
+    if anon is None and canon is None:
+        return
+
+    if canon is None and anon is not None:
+        # 先插入 canonical，再迁附属表、删匿名行（避免直接改 PK 触发 subscriptions FK）
+        await conn.execute(
+            """
+            INSERT INTO users (
+                user_id, distinct_id, anonymous_id,
+                first_seen_at, last_seen_at, first_open_at, signup_at,
+                is_paid, total_revenue, channel, properties
+            ) VALUES ($1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            """,
+            distinct_id,
+            anonymous_id,
+            anon["first_seen_at"],
+            anon["last_seen_at"],
+            anon["first_open_at"],
+            anon["signup_at"],
+            bool(anon["is_paid"]),
+            anon["total_revenue"],
+            anon["channel"],
+            anon["properties"],
+        )
+        await _remap_user_children(conn, from_id=anonymous_id, to_id=distinct_id)
+        await conn.execute("DELETE FROM users WHERE user_id = $1", anonymous_id)
+        return
+
+    if anon is not None and canon is not None and anon["user_id"] != canon["user_id"]:
+        await conn.execute(
+            """
+            UPDATE users SET
+                distinct_id = COALESCE(users.distinct_id, $2),
+                anonymous_id = CASE
+                    WHEN users.anonymous_id IN ('', 'unknown') THEN $3
+                    ELSE users.anonymous_id
+                END,
+                first_seen_at = LEAST(users.first_seen_at, $4::timestamptz),
+                last_seen_at = GREATEST(users.last_seen_at, $5::timestamptz),
+                first_open_at = CASE
+                    WHEN users.first_open_at IS NULL THEN $6::timestamptz
+                    WHEN $6::timestamptz IS NULL THEN users.first_open_at
+                    ELSE LEAST(users.first_open_at, $6::timestamptz)
+                END,
+                signup_at = CASE
+                    WHEN users.signup_at IS NULL THEN $7::timestamptz
+                    WHEN $7::timestamptz IS NULL THEN users.signup_at
+                    ELSE LEAST(users.signup_at, $7::timestamptz)
+                END,
+                is_paid = users.is_paid OR $8::boolean,
+                total_revenue = users.total_revenue + $9::numeric,
+                channel = COALESCE(users.channel, $10),
+                updated_at = NOW()
+            WHERE user_id = $1
+            """,
+            distinct_id,
+            distinct_id,
+            anonymous_id,
+            anon["first_seen_at"],
+            anon["last_seen_at"],
+            anon["first_open_at"],
+            anon["signup_at"],
+            bool(anon["is_paid"]),
+            float(anon["total_revenue"] or 0),
+            anon["channel"],
+        )
+        await _remap_user_children(conn, from_id=anonymous_id, to_id=distinct_id)
+        await conn.execute("DELETE FROM users WHERE user_id = $1", anonymous_id)
+        return
+
+    # 仅写回 anonymous_id 到已登录用户
+    await conn.execute(
+        """
+        UPDATE users SET
+            anonymous_id = CASE
+                WHEN anonymous_id IN ('', 'unknown') THEN $2
+                ELSE anonymous_id
+            END,
+            distinct_id = COALESCE(distinct_id, $1),
+            last_seen_at = GREATEST(last_seen_at, $3),
+            updated_at = NOW()
+        WHERE user_id = $1
+        """,
+        distinct_id,
+        anonymous_id,
+        ts,
+    )
+
+
+async def _remap_user_children(conn: asyncpg.Connection, from_id: str, to_id: str) -> None:
+    for table in ("daily_active_users", "daily_install_users", "daily_paying_users"):
+        await conn.execute(
+            f"""
+            INSERT INTO {table} (date, user_id)
+            SELECT date, $1 FROM {table} WHERE user_id = $2
+            ON CONFLICT DO NOTHING
+            """,
+            to_id,
+            from_id,
+        )
+        await conn.execute(f"DELETE FROM {table} WHERE user_id = $1", from_id)
+
+    await conn.execute(
+        "UPDATE subscriptions SET user_id = $1 WHERE user_id = $2",
+        to_id,
+        from_id,
+    )
+    # stability 表可能尚未迁移；忽略缺失
+    try:
+        await conn.execute(
+            """
+            INSERT INTO stability_issue_users (fingerprint, user_id, first_seen_at)
+            SELECT fingerprint, $1, first_seen_at FROM stability_issue_users WHERE user_id = $2
+            ON CONFLICT DO NOTHING
+            """,
+            to_id,
+            from_id,
+        )
+        await conn.execute(
+            "DELETE FROM stability_issue_users WHERE user_id = $1", from_id
+        )
+        await conn.execute(
+            "UPDATE stability_events SET user_id = $1 WHERE user_id = $2",
+            to_id,
+            from_id,
+        )
+    except asyncpg.UndefinedTableError:
+        pass
+    try:
+        await conn.execute(
+            "UPDATE app_logs SET user_id = $1 WHERE user_id = $2",
+            to_id,
+            from_id,
+        )
+    except asyncpg.UndefinedTableError:
+        pass
+
+
 async def upsert_user(
     conn: asyncpg.Connection, e: TrackEvent, user_id: str, ts: datetime
 ) -> bool:
@@ -90,6 +243,12 @@ async def upsert_user(
         ) VALUES ($1, $2, $3, $4, $4, NULLIF($5, ''))
         ON CONFLICT (user_id) DO UPDATE SET
             distinct_id = COALESCE(EXCLUDED.distinct_id, users.distinct_id),
+            anonymous_id = CASE
+                WHEN EXCLUDED.anonymous_id IS NOT NULL
+                     AND EXCLUDED.anonymous_id NOT IN ('', 'unknown')
+                THEN EXCLUDED.anonymous_id
+                ELSE users.anonymous_id
+            END,
             last_seen_at = GREATEST(users.last_seen_at, EXCLUDED.last_seen_at),
             channel = COALESCE(users.channel, EXCLUDED.channel),
             updated_at = NOW()
@@ -311,6 +470,7 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
     if not events:
         return 0, 0
 
+    from app.services.applog import ingest_app_log, is_app_log_event
     from app.services.stability import ingest_stability, is_stability_event
 
     stored = 0
@@ -330,6 +490,18 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
             if is_stability_event(e.name):
                 try:
                     ok = await ingest_stability(conn, e)
+                except Exception:
+                    dropped += 1
+                    continue
+                if ok:
+                    stored += 1
+                else:
+                    dropped += 1
+                continue
+
+            if is_app_log_event(e.name):
+                try:
+                    ok = await ingest_app_log(conn, e)
                 except Exception:
                     dropped += 1
                     continue

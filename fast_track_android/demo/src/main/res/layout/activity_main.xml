@@ -15,7 +15,7 @@
             android:layout_height="wrap_content"
             android:hint="Track URL"
             android:inputType="textUri"
-            android:text="http://10.0.2.2:8080/track" />
+            android:text="http://101.126.68.169:5000/track" />
 
         <Button
             android:id="@+id/btnInit"

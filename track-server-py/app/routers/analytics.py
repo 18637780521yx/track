@@ -134,16 +134,59 @@ async def list_users(q: str = "", limit: int = 50, offset: int = 0):
 async def list_user_events(
     user_id: str,
     request: Request,
-    limit: int = 500,
+    limit: int = 50,
     offset: int = 0,
+    order: str = "desc",
+    name: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
-        result = await analytics.list_user_events(get_pool(), user_id, frm, to, limit, offset)
+        result = await analytics.list_user_events(
+            get_pool(), user_id, frm, to, limit, offset, order=order, event_name=name
+        )
         if result is None:
             return JSONResponse({"error": "user not found"}, status_code=404)
         items, total = result
         return {"items": items, "total": total}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/users/{user_id}/logs")
+async def list_user_logs(
+    user_id: str,
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    order: str = "desc",
+    level: str = "",
+):
+    """终端日志（app_log），与业务 events 分表；仅保留最近 2 小时。"""
+    from app.services import applog
+
+    frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
+    try:
+        result = await applog.list_user_logs(
+            get_pool(), user_id, frm, to, limit, offset, order=order, level=level
+        )
+        if result is None:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+        items, total = result
+        return {"items": items, "total": total, "ttl_hours": 2}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.delete("/users/{user_id}/logs")
+async def delete_user_logs(user_id: str):
+    """清空该用户终端日志。"""
+    from app.services import applog
+
+    try:
+        deleted = await applog.delete_user_logs(get_pool(), user_id)
+        if deleted is None:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+        return {"ok": True, "deleted": deleted}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -155,5 +198,17 @@ async def get_user(user_id: str):
         if user is None:
             return JSONResponse({"error": "user not found"}, status_code=404)
         return user
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str):
+    """删除用户及关联 events / app_logs / 衍生表。"""
+    try:
+        result = await analytics.delete_user(get_pool(), user_id)
+        if result is None:
+            return JSONResponse({"error": "user not found"}, status_code=404)
+        return {"ok": True, "deleted": result}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)

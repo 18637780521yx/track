@@ -165,14 +165,52 @@ export const api = {
   getUser(userId: string) {
     return request<UserRecord>(`/api/v1/users/${encodeURIComponent(userId)}`);
   },
-  listUserEvents(userId: string, range: DateRange, limit = 500, offset = 0) {
+  deleteUser(userId: string) {
+    return request<{ ok: boolean; deleted: Record<string, number> }>(
+      `/api/v1/users/${encodeURIComponent(userId)}`,
+      { method: 'DELETE' },
+    );
+  },
+  listUserEvents(
+    userId: string,
+    range: DateRange,
+    limit = 50,
+    offset = 0,
+    opts?: { order?: 'asc' | 'desc'; name?: string },
+  ) {
     const q = new URLSearchParams({
       ...rangeParams(range),
       limit: String(limit),
       offset: String(offset),
+      order: opts?.order ?? 'desc',
     });
+    if (opts?.name) q.set('name', opts.name);
     return request<{ items: EventRecord[]; total: number }>(
       `/api/v1/users/${encodeURIComponent(userId)}/events?${q}`,
+    );
+  },
+  listUserLogs(
+    userId: string,
+    range: DateRange,
+    limit = 50,
+    offset = 0,
+    opts?: { order?: 'asc' | 'desc'; level?: string },
+  ) {
+    const q = new URLSearchParams({
+      ...rangeParams(range),
+      limit: String(limit),
+      offset: String(offset),
+      order: opts?.order ?? 'desc',
+    });
+    if (opts?.level) q.set('level', opts.level);
+    return request<{ items: EventRecord[]; total: number; ttl_hours?: number }>(
+      `/api/v1/users/${encodeURIComponent(userId)}/logs?${q}`,
+    );
+  },
+  deleteUserLogs(userId: string) {
+    return request<{ ok: boolean; deleted: number }>(
+      `/api/v1/users/${encodeURIComponent(userId)}/logs`,
+      { method: 'DELETE' },
     );
   },
   stabilityOverview(range: DateRange) {

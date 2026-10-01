@@ -124,7 +124,8 @@ track-server-py/
 | GET | `/retention` | 留存 |
 | GET | `/users` | 用户列表 |
 | GET | `/users/{id}` | 用户详情 |
-| GET | `/users/{id}/events` | 用户事件流 |
+| GET | `/users/{id}/events` | 用户事件流（不含 app_log） |
+| GET | `/users/{id}/logs` | 用户终端日志（`app_logs` 表） |
 
 ### 稳定性（`/api/v1/stability`）
 
@@ -327,6 +328,22 @@ SDK 上报事件名：
 - `stability_issues` — 按 `fingerprint` 聚合
 - `stability_issue_users` — 影响用户去重
 
+### App 日志隔离
+
+`app_log` **不进** `events`，写入 `app_logs`，且**不计入** `daily_stats.total_events` / overview 热门事件。
+
+客户端仍走 `POST /track`（可与埋点同批）；服务端按事件名旁路。迁移 `005_app_logs.sql` 会把历史 `events` 里的 `app_log` 迁出并删除。
+
+**保留策略：** 仅保留最近 **2 小时**（后台每分钟清理；查询也会钳制时间窗）。超过 TTL 的上报直接丢弃。
+
+### `GET /api/v1/users/{id}/logs?from&to&limit&offset&order&level`
+
+返回 `{ items, total, ttl_hours }`（形状与事件流一致）；`items[].name` 为 `app_log`，`properties` 含 `level` / `tag` / `message`。
+
+### `DELETE /api/v1/users/{id}/logs`
+
+清空该用户全部终端日志，返回 `{ ok, deleted }`。
+
 ### `GET /api/v1/stability/overview?from&to`
 
 返回 `crash` / `error` / `anr` 计数、`issue_count`、`affected_users`、按日 `trend`。
@@ -383,6 +400,7 @@ curl -X POST http://127.0.0.1:8080/track \
 | `002_derived_tables.sql` | `users` / `subscriptions` / `daily_stats` / DAU&付费去重 |
 | `003_install_dedup.sql` | `daily_install_users` |
 | `004_stability.sql` | `stability_issues` / `stability_events` / `stability_issue_users` |
+| `005_app_logs.sql` | `app_logs`（并从 `events` 迁出历史 `app_log`） |
 
 ---
 
@@ -415,20 +433,21 @@ OpenAPI 文档（FastAPI 自带）：http://127.0.0.1:8080/docs
 
 | 入口 | 说明 |
 |------|------|
-| http://101.126.68.169:18099/ | Console 静态站 |
-| http://101.126.68.169:18099/track | 上报 |
-| http://101.126.68.169:18099/api/v1/* | 分析 API |
-| http://101.126.68.169:18099/health | 健康检查 |
+| http://101.126.68.169:5000/ | Console 静态站 |
+| http://101.126.68.169:5000/track | 上报 |
+| http://101.126.68.169:5000/api/v1/* | 分析 API |
+| http://101.126.68.169:5000/health | 健康检查 |
 
-架构：nginx `:18099` → 静态 console + 反代 uvicorn `127.0.0.1:18100`；库用本机已有 Postgres `:5434` 的 `track` 库。
+架构：nginx `:5000` → 静态 console + 反代 uvicorn `127.0.0.1:18100`；库用本机已有 Postgres `:5434` 的 `track` 库（非新建 Docker）。
 
 ```bash
-# 更新代码后
+# 更新 Python
 rsync -az --exclude .venv track-server-py/ wanren:/opt/track/server/
 ssh wanren 'systemctl restart track-server-py'
 
+# 更新 Console
 rsync -az --exclude node_modules --exclude dist track-console/ wanren:/opt/track/console-src/
 ssh wanren 'export NVM_DIR=/root/.nvm; . $NVM_DIR/nvm.sh; nvm use 22.15.0; cd /opt/track/console-src && npm i && npm run build && rm -rf /opt/track/console && mkdir -p /opt/track/console && cp -a dist/. /opt/track/console/'
 ```
 
-systemd：`track-server-py.service`；nginx：`/etc/nginx/conf.d/track-18099.conf`。
+systemd：`track-server-py.service`；nginx：`/etc/nginx/conf.d/track-5000.conf`。

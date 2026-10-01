@@ -21,7 +21,7 @@ class MainActivity : AppCompatActivity() {
         val status = findViewById<TextView>(R.id.status)
 
         findViewById<Button>(R.id.btnInit).setOnClickListener {
-            val url = urlInput.text.toString().trim()
+            val url = urlInput.text.toString().trim().ifEmpty { FastTracker.DEFAULT_TRACK_URL }
             FastTracker.init(
                 url = url,
                 config = TrackerConfig(

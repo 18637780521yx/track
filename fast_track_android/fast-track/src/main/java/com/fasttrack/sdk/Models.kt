@@ -17,6 +17,14 @@ data class TrackerConfig(
     val enableCrashReporting: Boolean = true,
     val enableAnrWatchdog: Boolean = true,
     val anrTimeoutMs: Long = 5_000L,
+    /** Activity.onResume 自动打 page_view（可用 [FastTracker.setPageAlias] 改名） */
+    val autoTrackPageView: Boolean = true,
+    /** 这些 Activity 简单类名不自动打 page_view（路由页等） */
+    val autoTrackPageIgnore: Set<String> = emptySet(),
+    /** 网络切换自动打 network_change */
+    val autoTrackNetworkChange: Boolean = true,
+    /** 版本号变化自动打 app_upgrade */
+    val autoTrackAppUpgrade: Boolean = true,
 )
 
 data class FlushResult(

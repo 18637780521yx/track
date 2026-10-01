@@ -1,4 +1,4 @@
-import { Empty, Typography } from 'antd';
+import { Typography } from 'antd';
 
 const { Text } = Typography;
 
@@ -15,6 +15,8 @@ export function JsonPanel({ value, label }: JsonPanelProps) {
     (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) ||
     (Array.isArray(value) && value.length === 0);
 
+  if (empty) return null;
+
   return (
     <div className="json-panel">
       {label && (
@@ -22,11 +24,7 @@ export function JsonPanel({ value, label }: JsonPanelProps) {
           {label}
         </Text>
       )}
-      {empty ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无数据" style={{ margin: 0 }} />
-      ) : (
-        <pre className="json-panel-pre">{JSON.stringify(value, null, 2)}</pre>
-      )}
+      <pre className="json-panel-pre">{JSON.stringify(value, null, 2)}</pre>
     </div>
   );
 }

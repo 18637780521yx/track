@@ -22,6 +22,21 @@ from app.models import (
 from app.services.parse import SAFE_JSON_KEY, append_event_filters, inclusive_date_range
 
 
+def _resolved_user_sql(alias: str) -> str:
+    """优先 distinct；匿名事件经 users.anonymous_id 回挂到登录用户。"""
+    return f"""COALESCE(
+        NULLIF({alias}.distinct_id, ''),
+        (
+            SELECT u.user_id FROM users u
+            WHERE u.anonymous_id = {alias}.anonymous_id
+              AND NULLIF(u.distinct_id, '') IS NOT NULL
+            ORDER BY u.last_seen_at DESC
+            LIMIT 1
+        ),
+        {alias}.anonymous_id
+    )"""
+
+
 def _row_to_event(row: asyncpg.Record) -> EventRecord:
     props = row["properties"]
     common = row["common_properties"]
@@ -108,9 +123,9 @@ async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime) -> OverviewS
             )
             stats.dau = int(
                 await conn.fetchval(
-                    """
-                    SELECT COUNT(DISTINCT COALESCE(NULLIF(distinct_id, ''), anonymous_id))
-                    FROM events WHERE event_time >= $1 AND event_time < $2
+                    f"""
+                    SELECT COUNT(DISTINCT {_resolved_user_sql('e')})
+                    FROM events e WHERE e.event_time >= $1 AND e.event_time < $2
                     """,
                     frm,
                     to,
@@ -164,13 +179,13 @@ async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime) -> OverviewS
 
         if not stats.trend:
             fallback = await conn.fetch(
-                """
+                f"""
                 SELECT
-                    TO_CHAR(DATE(event_time AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
+                    TO_CHAR(DATE(e.event_time AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS day,
                     COUNT(*) AS cnt,
-                    COUNT(DISTINCT COALESCE(NULLIF(distinct_id, ''), anonymous_id)) AS users
-                FROM events
-                WHERE event_time >= $1 AND event_time < $2
+                    COUNT(DISTINCT {_resolved_user_sql('e')}) AS users
+                FROM events e
+                WHERE e.event_time >= $1 AND e.event_time < $2
                 GROUP BY day
                 ORDER BY day
                 """,
@@ -224,7 +239,7 @@ async def event_trend(
         SELECT
             TO_CHAR(DATE_TRUNC('{trunc}', event_time AT TIME ZONE 'UTC'), 'YYYY-MM-DD HH24:MI') AS bucket,
             COUNT(*) AS cnt,
-            COUNT(DISTINCT COALESCE(NULLIF(distinct_id, ''), anonymous_id)) AS users
+            COUNT(DISTINCT {_resolved_user_sql('events')}) AS users
         FROM events
         WHERE event_time >= $1 AND event_time < $2
     """
@@ -331,11 +346,13 @@ async def funnel(
     cte = "WITH "
     args: list[Any] = [frm, to]
     arg_idx = 3
+    uid = _resolved_user_sql("events")
+    euid = _resolved_user_sql("e")
     for i, step in enumerate(steps):
         if i == 0:
             cte += f"""
                 step{i} AS (
-                    SELECT DISTINCT COALESCE(NULLIF(distinct_id, ''), anonymous_id) AS user_id,
+                    SELECT DISTINCT {uid} AS user_id,
                            MIN(event_time) AS step_time
                     FROM events
                     WHERE event_time >= $1 AND event_time < $2 AND name = ${arg_idx}
@@ -348,7 +365,7 @@ async def funnel(
                 , step{i} AS (
                     SELECT s.user_id, MIN(e.event_time) AS step_time
                     FROM step{i - 1} s
-                    JOIN events e ON COALESCE(NULLIF(e.distinct_id, ''), e.anonymous_id) = s.user_id
+                    JOIN events e ON {euid} = s.user_id
                     WHERE e.name = ${arg_idx}
                       AND e.event_time > s.step_time
                       AND e.event_time <= s.step_time + INTERVAL '{window}'
@@ -400,10 +417,10 @@ async def retention(
     day_list = list(range(days + 1))
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            """
+            f"""
             WITH cohort AS (
                 SELECT
-                    COALESCE(NULLIF(distinct_id, ''), anonymous_id) AS user_id,
+                    {_resolved_user_sql('events')} AS user_id,
                     DATE(MIN(event_time) AT TIME ZONE 'UTC') AS cohort_date
                 FROM events
                 WHERE name = $1
@@ -416,7 +433,7 @@ async def retention(
                     c.user_id,
                     DATE(e.event_time AT TIME ZONE 'UTC') AS return_date
                 FROM cohort c
-                JOIN events e ON COALESCE(NULLIF(e.distinct_id, ''), e.anonymous_id) = c.user_id
+                JOIN events e ON {_resolved_user_sql('e')} = c.user_id
                 WHERE e.name = $4
                   AND e.event_time >= $2 AND e.event_time < $3
             )
@@ -511,17 +528,37 @@ async def get_user(pool: asyncpg.Pool, user_id: str) -> UserRecord | None:
             """,
             user_id,
         )
+        if row is None:
+            row = await conn.fetchrow(
+                """
+                SELECT user_id, distinct_id, anonymous_id, first_seen_at, last_seen_at,
+                       first_open_at, signup_at, is_paid, total_revenue, channel
+                FROM users
+                WHERE anonymous_id = $1
+                  AND distinct_id IS NOT NULL AND distinct_id != ''
+                ORDER BY last_seen_at DESC
+                LIMIT 1
+                """,
+                user_id,
+            )
     return _row_to_user(row) if row else None
 
 
 async def list_user_events(
-    pool: asyncpg.Pool, user_id: str, frm: datetime, to: datetime, limit: int, offset: int
+    pool: asyncpg.Pool,
+    user_id: str,
+    frm: datetime,
+    to: datetime,
+    limit: int,
+    offset: int,
+    order: str = "desc",
+    event_name: str = "",
 ) -> tuple[list[EventRecord], int] | None:
     user = await get_user(pool, user_id)
     if user is None:
         return None
     if limit <= 0:
-        limit = 200
+        limit = 50
     if limit > 1000:
         limit = 1000
 
@@ -530,34 +567,117 @@ async def list_user_events(
         if v and v not in ids:
             ids.append(v)
 
+    order_sql = "DESC" if (order or "").lower() != "asc" else "ASC"
+    name_filter = (event_name or "").strip()
+    where = """
+        event_time >= $1 AND event_time < $2
+          AND (distinct_id = ANY($3) OR anonymous_id = ANY($3))
+    """
+    args: list[Any] = [frm, to, ids]
+    if name_filter:
+        where += f" AND name = ${len(args) + 1}"
+        args.append(name_filter)
+    else:
+        # app_log 已拆到 app_logs；排除残留行，避免时间线被日志淹没
+        where += " AND name <> 'app_log'"
+
     async with pool.acquire() as conn:
         total = int(
-            await conn.fetchval(
-                """
-                SELECT COUNT(*) FROM events
-                WHERE event_time >= $1 AND event_time < $2
-                  AND (distinct_id = ANY($3) OR anonymous_id = ANY($3))
-                """,
-                frm,
-                to,
-                ids,
-            )
-            or 0
+            await conn.fetchval(f"SELECT COUNT(*) FROM events WHERE {where}", *args) or 0
         )
+        limit_idx = len(args) + 1
+        offset_idx = len(args) + 2
         rows = await conn.fetch(
-            """
+            f"""
             SELECT event_id, name, properties, common_properties, distinct_id,
                    anonymous_id, session_id, event_time, received_at
             FROM events
-            WHERE event_time >= $1 AND event_time < $2
-              AND (distinct_id = ANY($3) OR anonymous_id = ANY($3))
-            ORDER BY event_time ASC
-            LIMIT $4 OFFSET $5
+            WHERE {where}
+            ORDER BY event_time {order_sql}
+            LIMIT ${limit_idx} OFFSET ${offset_idx}
             """,
-            frm,
-            to,
-            ids,
+            *args,
             limit,
             offset,
         )
     return [_row_to_event(r) for r in rows], total
+
+async def delete_user(pool: asyncpg.Pool, user_id: str) -> dict[str, int] | None:
+    """删除用户及其相关埋点 / 日志 / 衍生数据。"""
+    user = await get_user(pool, user_id)
+    if user is None:
+        return None
+
+    ids: list[str] = []
+    for v in (user.user_id, user.anonymous_id, user.distinct_id or ""):
+        if v and v not in ids:
+            ids.append(v)
+    uid = user.user_id
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            events_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM events
+                        WHERE distinct_id = ANY($1) OR anonymous_id = ANY($1)
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    ids,
+                )
+                or 0
+            )
+            logs_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM app_logs
+                        WHERE user_id = ANY($1)
+                           OR anonymous_id = ANY($1)
+                           OR distinct_id = ANY($1)
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    ids,
+                )
+                or 0
+            )
+            stab_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM stability_events
+                        WHERE user_id = ANY($1)
+                           OR anonymous_id = ANY($1)
+                           OR distinct_id = ANY($1)
+                        RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    ids,
+                )
+                or 0
+            )
+            await conn.execute(
+                "DELETE FROM stability_issue_users WHERE user_id = ANY($1)",
+                ids,
+            )
+            await conn.execute("DELETE FROM subscriptions WHERE user_id = $1", uid)
+            for table in (
+                "daily_active_users",
+                "daily_paying_users",
+                "daily_install_users",
+            ):
+                await conn.execute(f"DELETE FROM {table} WHERE user_id = $1", uid)
+            await conn.execute("DELETE FROM users WHERE user_id = $1", uid)
+
+    return {
+        "events": events_n,
+        "app_logs": logs_n,
+        "stability_events": stab_n,
+    }
+
