@@ -8,6 +8,14 @@ import java.util.Locale
 import java.util.TimeZone
 
 internal object AutoProperties {
+    /** `Settings.Secure.ANDROID_ID`；读不到返回 null。 */
+    fun androidId(context: Context): String? {
+        val udid = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+            ?.trim()
+            .orEmpty()
+        return udid.takeIf { it.isNotEmpty() }
+    }
+
     fun staticProperties(context: Context, environment: String?): Map<String, Any?> {
         val appInfo = try {
             context.packageManager.getPackageInfo(context.packageName, 0)
@@ -15,7 +23,7 @@ internal object AutoProperties {
             null
         }
         val env = environment ?: if (isDebuggable(context)) "sandbox" else "production"
-        val udid = Settings.Secure.getString(context.contentResolver, Settings.Secure.ANDROID_ID)
+        val udid = androidId(context) ?: ""
         return mapOf(
             "environment" to env,
             "build_mode" to if (isDebuggable(context)) "debug" else "release",

@@ -117,7 +117,8 @@ FastTracker.flush() // 可选：退后台 / 关键页时强制上报
 | `trackPage(page, …)` | 手动 page_view（逻辑页） |
 | `track(name, properties)` | 业务埋点 |
 | `identify(userId)` | 绑定登录用户 `distinct_id` |
-| `resetIdentity()` | 登出：清 distinct、换 anonymous、新 session |
+| `getAnonymousId()` | 当前匿名 ID（`ANDROID_ID`） |
+| `resetIdentity()` | 登出：清 distinct、新 session；匿名 ID 仍为 `ANDROID_ID` |
 | `registerCommonProperties` / `unregisterCommonProperties` | 公共属性（每条事件的 `common_properties`） |
 | `setOptOut(true/false)` | 隐私退出：停止 track / flush |
 | `flush()` | 立即上报队列 |
@@ -157,7 +158,8 @@ FastTracker.track("page_view", mapOf("page" to "home", "from" to "push"))
 FastTracker.track("button_click") // properties 可省略
 ```
 
-每条事件自动带上：`event_id`、`session_id`、`anonymous_id` / `distinct_id`、设备与 App 公共属性、`timestamp`。
+每条事件自动带上：`event_id`、`session_id`、`anonymous_id` / `distinct_id`、设备与 App 公共属性、`timestamp`。  
+`anonymous_id` 优先用 `Settings.Secure.ANDROID_ID`（与公共属性 `device_udid` 同一串；读不到才生成本地 UUID）。已登录用户的画像仍以 `distinct_id` 为准。
 
 ### `identify` / `resetIdentity`
 
@@ -282,7 +284,7 @@ FastTracker.init(
       "properties": { "page": "home" },
       "common_properties": { "device_os": "android", "sdk_version": "…" },
       "distinct_id": "user_10086",
-      "anonymous_id": "uuid",
+      "anonymous_id": "ANDROID_ID",
       "session_id": "uuid",
       "timestamp": "2026-09-29T12:00:00.000Z"
     }

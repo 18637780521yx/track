@@ -121,7 +121,7 @@ object FastTracker {
 
         val store = meta!!
         optedOut = store.optedOut
-        anonymousId = store.anonymousId ?: UUID.randomUUID().toString().also { store.anonymousId = it }
+        anonymousId = resolveAnonymousId(context, store)
         distinctId = store.distinctId
         session = store.loadSession()
         ensureSession(forceNew = session == null)
@@ -208,13 +208,34 @@ object FastTracker {
         track("identify", props)
     }
 
+    /** 当前匿名 ID（ANDROID_ID；读不到时才是本地 UUID）。init 前为 null。 */
+    @JvmStatic
+    fun getAnonymousId(): String? = if (::anonymousId.isInitialized) anonymousId else null
+
     @JvmStatic
     fun resetIdentity() {
         distinctId = null
         meta?.distinctId = null
-        anonymousId = UUID.randomUUID().toString()
-        meta?.anonymousId = anonymousId
+        val ctx = appContext
+        val store = meta
+        anonymousId = if (ctx != null && store != null) {
+            resolveAnonymousId(ctx, store)
+        } else {
+            UUID.randomUUID().toString().also { store?.anonymousId = it }
+        }
         ensureSession(forceNew = true)
+    }
+
+    /** 优先 ANDROID_ID，便于现场 `adb` / 设置里同一串搜 Track；没有则沿用或生成 UUID。 */
+    private fun resolveAnonymousId(context: Context, store: MetaStore): String {
+        val androidId = AutoProperties.androidId(context)
+        if (!androidId.isNullOrEmpty()) {
+            if (store.anonymousId != androidId) {
+                store.anonymousId = androidId
+            }
+            return androidId
+        }
+        return store.anonymousId ?: UUID.randomUUID().toString().also { store.anonymousId = it }
     }
 
     @JvmStatic
