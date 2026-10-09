@@ -16,9 +16,13 @@ internal object StackFingerprint {
     }
 
     private fun normalize(line: String): String {
+        // Use the MatchResult lambda form of replace — NOT replace(regex, "$N").
+        // Java Matcher.appendReplacement treats $ in the replacement as a group
+        // reference, so a literal "$N" throws IllegalArgumentException:
+        // "Illegal group reference" (e.g. on frames like Foo$1 / Enclosing$2).
         return line
-            .replace(Regex("\\$[0-9]+"), "\$N")
-            .replace(Regex(":\\d+"), ":N")
+            .replace(Regex("\\$[0-9]+")) { "\$N" }
+            .replace(Regex(":\\d+")) { ":N" }
     }
 
     private fun sha256(input: String): String {

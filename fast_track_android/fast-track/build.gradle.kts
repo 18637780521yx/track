@@ -6,7 +6,7 @@ plugins {
 }
 
 group = "com.wenrai"
-version = (findProperty("fastTrackVersion") as String?) ?: "1.0.0"
+version = (findProperty("fastTrackVersion") as String?) ?: "1.0.1"
 
 android {
     namespace = "com.fasttrack.sdk"

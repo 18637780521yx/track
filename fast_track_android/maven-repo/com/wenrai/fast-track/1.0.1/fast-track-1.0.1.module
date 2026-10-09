@@ -1,0 +1,180 @@
+{
+  "formatVersion": "1.1",
+  "component": {
+    "group": "com.wenrai",
+    "module": "fast-track",
+    "version": "1.0.1",
+    "attributes": {
+      "org.gradle.status": "release"
+    }
+  },
+  "createdBy": {
+    "gradle": {
+      "version": "8.14"
+    }
+  },
+  "variants": [
+    {
+      "name": "releaseVariantReleaseApiPublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-api"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-android",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-runtime",
+          "version": {
+            "requires": "2.6.1"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-ktx",
+          "version": {
+            "requires": "2.6.1"
+          }
+        },
+        {
+          "group": "com.squareup.okhttp3",
+          "module": "okhttp",
+          "version": {
+            "requires": "4.12.0"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-process",
+          "version": {
+            "requires": "2.7.0"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-common-java8",
+          "version": {
+            "requires": "2.7.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "1.9.22"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "fast-track-1.0.1.aar",
+          "url": "fast-track-1.0.1.aar",
+          "size": 109804,
+          "sha512": "883e6dbc29191703be39b27e1b598282faca2ccdac5332589195df8a586b11f31de60b8aa192a252583008243093d5e4f676e93f6f8cf892d459bea6237237fa",
+          "sha256": "10e9cd7c9450ef1ad5725257715fa169fb66a738461a949f89b17b3798c8e074",
+          "sha1": "ef941d89f7cf0fc64787e39e96af2d64a741f85e",
+          "md5": "954007049677a62450bb0e0152d19436"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseRuntimePublication",
+      "attributes": {
+        "org.gradle.category": "library",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.libraryelements": "aar",
+        "org.gradle.usage": "java-runtime"
+      },
+      "dependencies": [
+        {
+          "group": "org.jetbrains.kotlinx",
+          "module": "kotlinx-coroutines-android",
+          "version": {
+            "requires": "1.7.3"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-runtime",
+          "version": {
+            "requires": "2.6.1"
+          }
+        },
+        {
+          "group": "androidx.room",
+          "module": "room-ktx",
+          "version": {
+            "requires": "2.6.1"
+          }
+        },
+        {
+          "group": "com.squareup.okhttp3",
+          "module": "okhttp",
+          "version": {
+            "requires": "4.12.0"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-process",
+          "version": {
+            "requires": "2.7.0"
+          }
+        },
+        {
+          "group": "androidx.lifecycle",
+          "module": "lifecycle-common-java8",
+          "version": {
+            "requires": "2.7.0"
+          }
+        },
+        {
+          "group": "org.jetbrains.kotlin",
+          "module": "kotlin-stdlib",
+          "version": {
+            "requires": "1.9.22"
+          }
+        }
+      ],
+      "files": [
+        {
+          "name": "fast-track-1.0.1.aar",
+          "url": "fast-track-1.0.1.aar",
+          "size": 109804,
+          "sha512": "883e6dbc29191703be39b27e1b598282faca2ccdac5332589195df8a586b11f31de60b8aa192a252583008243093d5e4f676e93f6f8cf892d459bea6237237fa",
+          "sha256": "10e9cd7c9450ef1ad5725257715fa169fb66a738461a949f89b17b3798c8e074",
+          "sha1": "ef941d89f7cf0fc64787e39e96af2d64a741f85e",
+          "md5": "954007049677a62450bb0e0152d19436"
+        }
+      ]
+    },
+    {
+      "name": "releaseVariantReleaseSourcePublication",
+      "attributes": {
+        "org.gradle.category": "documentation",
+        "org.gradle.dependency.bundling": "external",
+        "org.gradle.docstype": "sources",
+        "org.gradle.usage": "java-runtime"
+      },
+      "files": [
+        {
+          "name": "fast-track-1.0.1-sources.jar",
+          "url": "fast-track-1.0.1-sources.jar",
+          "size": 23150,
+          "sha512": "9d7b71cfa7de3ef2810ac17b426df1aac259c22bba0de49408f782db10e346b2aae739995d9a8eed4432460f24c511410057bcfc795720f8aee710cecab77d27",
+          "sha256": "7a4c43cefcd729ca5dcbc62430b7a1bf51580b0e7283501a764819f1659a3f93",
+          "sha1": "7df5cb080edd73fc7ccc762c8c573149f8e9af86",
+          "md5": "833bd95dff2e15d2d01f584f6e104070"
+        }
+      ]
+    }
+  ]
+}
