@@ -336,6 +336,23 @@ SDK 上报事件名：
 
 **保留策略：** 仅保留最近 **2 小时**（后台每分钟清理；查询也会钳制时间窗）。超过 TTL 的上报直接丢弃。
 
+### 通用入库降噪（`TRACK_NOISE_RULES`）
+
+入库前按**可配置规则**丢弃高频重复事件（`app/services/noise.py`），与具体产品解耦。
+
+| `TRACK_NOISE_RULES` | 行为 |
+|---|---|
+| 未设置 | 使用默认：`content_play\|onchange\|content_id,content_end\|throttle\|600\|content_id` |
+| `none` / `-` / `off` | 关闭降噪 |
+| 自定义 | 见下 |
+
+规则语法（逗号分隔多条）：`事件名|模式|…`
+
+- **`onchange|prop`**：同设备同事件，`properties[prop]` 未变则丢（只记切换）
+- **`throttle|秒|prop`**：同设备同事件同 prop，窗口内只留 1 条；`prop` 可省略
+
+示例：`page_view|throttle|60|page,heartbeat|throttle|300`
+
 ### `GET /api/v1/users/{id}/logs?from&to&limit&offset&order&level`
 
 返回 `{ items, total, ttl_hours }`（形状与事件流一致）；`items[].name` 为 `app_log`，`properties` 含 `level` / `tag` / `message`。

@@ -119,6 +119,7 @@ async def merge_anonymous_into_distinct(
         )
         await _remap_user_children(conn, from_id=anonymous_id, to_id=distinct_id)
         await conn.execute("DELETE FROM users WHERE user_id = $1", anonymous_id)
+        await _refresh_new_users_for_dates(conn, [_utc_date(anon["first_seen_at"])])
         return
 
     if anon is not None and canon is not None and anon["user_id"] != canon["user_id"]:
@@ -161,6 +162,15 @@ async def merge_anonymous_into_distinct(
         )
         await _remap_user_children(conn, from_id=anonymous_id, to_id=distinct_id)
         await conn.execute("DELETE FROM users WHERE user_id = $1", anonymous_id)
+        # 匿名、登录曾各算一次新增：合并后按保留行的 first_seen 重算
+        await _refresh_new_users_for_dates(
+            conn,
+            [
+                _utc_date(anon["first_seen_at"]),
+                _utc_date(canon["first_seen_at"]),
+                _utc_date(ts),
+            ],
+        )
         return
 
     # 仅写回 anonymous_id 到已登录用户
@@ -182,8 +192,65 @@ async def merge_anonymous_into_distinct(
     )
 
 
+def _utc_date(ts: datetime | None):
+    if ts is None:
+        return None
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts.astimezone(timezone.utc).date()
+
+
+async def _refresh_daily_user_counters(conn: asyncpg.Connection, dates: list) -> None:
+    seen = set()
+    for day in dates:
+        if day is None or day in seen:
+            continue
+        seen.add(day)
+        await conn.execute(
+            """
+            INSERT INTO daily_stats (date, dau, installs, paying_users)
+            SELECT $1::date,
+                   (SELECT COUNT(*) FROM daily_active_users WHERE date = $1::date),
+                   (SELECT COUNT(*) FROM daily_install_users WHERE date = $1::date),
+                   (SELECT COUNT(*) FROM daily_paying_users WHERE date = $1::date)
+            ON CONFLICT (date) DO UPDATE SET
+                dau = EXCLUDED.dau,
+                installs = EXCLUDED.installs,
+                paying_users = EXCLUDED.paying_users,
+                updated_at = NOW()
+            """,
+            day,
+        )
+
+
+async def _refresh_new_users_for_dates(conn: asyncpg.Connection, dates: list) -> None:
+    seen = set()
+    for day in dates:
+        if day is None or day in seen:
+            continue
+        seen.add(day)
+        await conn.execute(
+            """
+            INSERT INTO daily_stats (date, new_users)
+            SELECT $1::date, COUNT(*)
+            FROM users
+            WHERE (first_seen_at AT TIME ZONE 'UTC')::date = $1::date
+            ON CONFLICT (date) DO UPDATE SET
+                new_users = (
+                    SELECT COUNT(*) FROM users
+                    WHERE (first_seen_at AT TIME ZONE 'UTC')::date = $1::date
+                ),
+                updated_at = NOW()
+            """,
+            day,
+        )
+
+
 async def _remap_user_children(conn: asyncpg.Connection, from_id: str, to_id: str) -> None:
+    affected: list = []
     for table in ("daily_active_users", "daily_install_users", "daily_paying_users"):
+        rows = await conn.fetch(f"SELECT date FROM {table} WHERE user_id = $1", from_id)
+        affected.extend(r["date"] for r in rows)
         await conn.execute(
             f"""
             INSERT INTO {table} (date, user_id)
@@ -194,6 +261,7 @@ async def _remap_user_children(conn: asyncpg.Connection, from_id: str, to_id: st
             from_id,
         )
         await conn.execute(f"DELETE FROM {table} WHERE user_id = $1", from_id)
+    await _refresh_daily_user_counters(conn, affected)
 
     await conn.execute(
         "UPDATE subscriptions SET user_id = $1 WHERE user_id = $2",
@@ -302,8 +370,23 @@ async def upsert_user(
             )
 
     if is_new:
-        day = ts.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        await bump_daily_counter(conn, day, "new_users", 1)
+        # 同一设备先匿名再登录：匿名行已算过新增，登录 PK 不是新人
+        already_counted = False
+        if e.distinct_id and e.anonymous_id and e.distinct_id != e.anonymous_id:
+            already_counted = bool(
+                await conn.fetchval(
+                    """
+                    SELECT 1 FROM users
+                    WHERE user_id = $1
+                       OR (anonymous_id = $1 AND user_id <> $2)
+                    """,
+                    e.anonymous_id,
+                    user_id,
+                )
+            )
+        if not already_counted:
+            day = ts.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+            await bump_daily_counter(conn, day, "new_users", 1)
     return is_new
 
 
@@ -471,6 +554,7 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
         return 0, 0
 
     from app.services.applog import ingest_app_log, is_app_log_event
+    from app.services.noise import should_drop_noisy_event
     from app.services.stability import ingest_stability, is_stability_event
 
     stored = 0
@@ -486,6 +570,11 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
             e.anonymous_id = anon
             e.session_id = session
             e.timestamp = ts
+
+            # 导播循环降噪：同设备同 content 的反复 play/end 不入库
+            if should_drop_noisy_event(e):
+                dropped += 1
+                continue
 
             if is_stability_event(e.name):
                 try:
