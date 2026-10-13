@@ -1,0 +1,178 @@
+name: CI
+
+# 推到 main 或打开 PR 时，在 GitHub 的机器上按改动目录检查。
+# 服务、控制台、Android SDK、Flutter SDK、Go 参考实现各跑各的。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: 判断改动范围
+    runs-on: ubuntu-latest
+    outputs:
+      server_py: ${{ steps.filter.outputs.server_py }}
+      console: ${{ steps.filter.outputs.console }}
+      android: ${{ steps.filter.outputs.android }}
+      flutter: ${{ steps.filter.outputs.flutter }}
+      go: ${{ steps.filter.outputs.go }}
+      workflow: ${{ steps.filter.outputs.workflow }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            server_py:
+              - 'track-server-py/**'
+            console:
+              - 'track-console/**'
+            android:
+              - 'fast_track_android/**'
+            flutter:
+              - 'fast_track/**'
+            go:
+              - 'track-server/**'
+            workflow:
+              - '.github/workflows/ci.yml'
+
+  server-py:
+    name: Python 服务冒烟
+    needs: changes
+    if: needs.changes.outputs.server_py == 'true' || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: track
+          POSTGRES_PASSWORD: track
+          POSTGRES_DB: track
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U track -d track"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ADDR: ":8080"
+      DATABASE_URL: postgres://track:track@127.0.0.1:5432/track?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: track-server-py/requirements.txt
+      - name: 安装依赖
+        working-directory: track-server-py
+        run: pip install -r requirements.txt
+      - name: 迁移、健康检查、上报一条事件
+        working-directory: track-server-py
+        run: |
+          set -euo pipefail
+          python -m app.main > /tmp/track-server.log 2>&1 &
+          echo $! > /tmp/track-server.pid
+          cleanup() {
+            if [ -f /tmp/track-server.pid ]; then
+              kill "$(cat /tmp/track-server.pid)" >/dev/null 2>&1 || true
+            fi
+          }
+          dump() {
+            echo "--- track-server.log ---"
+            tail -80 /tmp/track-server.log || true
+          }
+          trap 'dump; cleanup' EXIT
+
+          ok=0
+          for _ in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8080/health >/dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ok" != 1 ]; then
+            echo "服务没有在 40 秒内通过 /health"
+            exit 1
+          fi
+
+          code=$(curl -s -o /tmp/ingest.json -w '%{http_code}' \
+            -H 'Content-Type: application/json' \
+            -d '{"events":[{"event_id":"ci-1","name":"page_view","properties":{"page":"ci"},"anonymous_id":"ci-anon","session_id":"ci-sess","timestamp":"2026-10-13T12:00:00.000Z"}]}' \
+            http://127.0.0.1:8080/track)
+          echo "POST /track -> $code $(cat /tmp/ingest.json)"
+          test "$code" = "200"
+          python -c 'import json; b=json.load(open("/tmp/ingest.json")); assert b.get("ok") is True and b.get("stored", 0) >= 1, b'
+
+  console:
+    name: 控制台构建
+    needs: changes
+    if: needs.changes.outputs.console == 'true' || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: track-console/package-lock.json
+      - name: 安装依赖并构建
+        working-directory: track-console
+        run: |
+          npm ci
+          npm run build
+
+  android:
+    name: Android SDK 编译
+    needs: changes
+    if: needs.changes.outputs.android == 'true' || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - name: 编译 release AAR
+        working-directory: fast_track_android
+        run: ./gradlew :fast-track:assembleRelease --no-daemon
+
+  flutter:
+    name: Flutter SDK 测试
+    needs: changes
+    if: needs.changes.outputs.flutter == 'true' || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: 拉依赖并跑测试
+        working-directory: fast_track
+        run: |
+          flutter pub get
+          flutter test
+
+  go:
+    name: Go 服务编译
+    needs: changes
+    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.workflow == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: track-server/go.mod
+          cache-dependency-path: track-server/go.sum
+      - name: 编译
+        working-directory: track-server
+        run: go build -o /dev/null ./cmd/server
