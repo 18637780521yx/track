@@ -41,9 +41,10 @@ test -d "$STAGE/app"
 test -d "$STAGE/migrations"
 test -f "$STAGE/requirements.txt"
 
-changed=$("$RSYNC" -ain --delete --exclude '__pycache__/' "$STAGE/app/" "$ROOT/app/" || true)
+# -c 按校验和比较。只看时间戳不同不算变更，否则每次发布都会重启。
+changed=$("$RSYNC" -acin --delete --exclude '__pycache__/' "$STAGE/app/" "$ROOT/app/" || true)
 changed+=$'\n'
-changed+=$("$RSYNC" -ain "$STAGE/migrations/" "$ROOT/migrations/" || true)
+changed+=$("$RSYNC" -acin "$STAGE/migrations/" "$ROOT/migrations/" || true)
 real=$(printf '%s\n' "$changed" | grep -E '^[<>ch*]' || true)
 req_changed=0
 if ! cmp -s "$STAGE/requirements.txt" "$ROOT/requirements.txt"; then
