@@ -26,15 +26,15 @@ DOCKER=/usr/bin/docker
 SYSTEMCTL=/usr/bin/systemctl
 CURL=/usr/bin/curl
 RSYNC=/usr/bin/rsync
-MKDIR=/usr/bin/mkdir
+MKTEMP=/usr/bin/mktemp
 TAR=/usr/bin/tar
 DATE=/usr/bin/date
 
 log() { printf '%s %s\n' "$("$DATE" '+%Y-%m-%dT%H:%M:%S')" "$*" | tee -a "$LOG"; }
 
-"$MKDIR" -p "$BACKUP_DIR" /opt/track/logs
+/usr/bin/mkdir -p "$BACKUP_DIR" /opt/track/logs
 
-STAGE="$("$MKDIR" -d)"
+STAGE="$("$MKTEMP" -d)"
 trap 'rm -rf "$STAGE"' EXIT
 "$TAR" -xzf "$RELEASE_TGZ" -C "$STAGE"
 test -d "$STAGE/app"
@@ -75,7 +75,7 @@ apply_tree() {
 
 restore_code() {
   local tmp
-  tmp=$("$MKDIR" -d)
+  tmp=$("$MKTEMP" -d)
   "$TAR" -xzf "$SNAP" -C "$tmp"
   "$RSYNC" -a --delete --exclude '__pycache__/' "$tmp/app/" "$ROOT/app/"
   "$RSYNC" -a --delete "$tmp/migrations/" "$ROOT/migrations/"
