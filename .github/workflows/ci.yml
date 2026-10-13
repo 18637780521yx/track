@@ -140,3 +140,34 @@ jobs:
       - name: 编译 release AAR
         working-directory: fast_track_android
         run: ./gradlew :fast-track:assembleRelease --no-daemon
+
+  deploy-server:
+    name: 发布 Python 服务
+    needs: [changes, server-py]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.server_py == 'true' && needs.server-py.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 备份、替换、健康检查
+        env:
+          SSH_KEY: ${{ secrets.TRACK_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KEY}" ]; then
+            echo "缺少 secret TRACK_SSH_KEY"
+            exit 1
+          fi
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/track_deploy
+          chmod 600 ~/.ssh/track_deploy
+          ssh-keyscan -H 101.126.68.169 >> ~/.ssh/known_hosts
+          tar -C track-server-py -czf /tmp/track-release.tgz app migrations requirements.txt
+          scp -i ~/.ssh/track_deploy -o IdentitiesOnly=yes \
+            /tmp/track-release.tgz \
+            root@101.126.68.169:/tmp/track-release.tgz
+          scp -i ~/.ssh/track_deploy -o IdentitiesOnly=yes \
+            track-server-py/scripts/deploy.sh \
+            root@101.126.68.169:/tmp/track-deploy.sh
+          ssh -i ~/.ssh/track_deploy -o IdentitiesOnly=yes \
+            root@101.126.68.169 \
+            "bash /tmp/track-deploy.sh /tmp/track-release.tgz ${{ github.sha }}"
