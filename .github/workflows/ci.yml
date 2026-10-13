@@ -140,7 +140,20 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
-      - uses: android-actions/setup-android@v3
+      # 托管 runner 自带 SDK。android-actions/setup-android 会去装已下线的
+      # tools 包，并卡在 Preview 协议上，编译还没开始就失败。
+      - name: 安装 android-34
+        run: |
+          set -euo pipefail
+          export ANDROID_HOME="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          if [ -x "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          else
+            SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager | head -1)"
+          fi
+          test -n "${SDKMANAGER}"
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" "platforms;android-34" "build-tools;34.0.0" >/tmp/sdkmanager.log
       - name: 编译 release AAR
         working-directory: fast_track_android
         run: ./gradlew :fast-track:assembleRelease --no-daemon
