@@ -1,7 +1,8 @@
 name: CI
 
 # 推到 main 或打开 PR 时，在 GitHub 的机器上按改动目录检查。
-# 服务、控制台、Android SDK、Flutter SDK、Go 参考实现各跑各的。
+# 当前只检查在用的三块：Python 服务、控制台、Android SDK。
+# Flutter SDK 和 Go 服务先不跑。
 on:
   push:
     branches: [main]
@@ -19,8 +20,6 @@ jobs:
       server_py: ${{ steps.filter.outputs.server_py }}
       console: ${{ steps.filter.outputs.console }}
       android: ${{ steps.filter.outputs.android }}
-      flutter: ${{ steps.filter.outputs.flutter }}
-      go: ${{ steps.filter.outputs.go }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v4
@@ -34,10 +33,6 @@ jobs:
               - 'track-console/**'
             android:
               - 'fast_track_android/**'
-            flutter:
-              - 'fast_track/**'
-            go:
-              - 'track-server/**'
             workflow:
               - '.github/workflows/ci.yml'
 
@@ -145,35 +140,3 @@ jobs:
       - name: 编译 release AAR
         working-directory: fast_track_android
         run: ./gradlew :fast-track:assembleRelease --no-daemon
-
-  flutter:
-    name: Flutter SDK 测试
-    needs: changes
-    if: needs.changes.outputs.flutter == 'true' || needs.changes.outputs.workflow == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: subosito/flutter-action@v2
-        with:
-          channel: stable
-          cache: true
-      - name: 拉依赖并跑测试
-        working-directory: fast_track
-        run: |
-          flutter pub get
-          flutter test
-
-  go:
-    name: Go 服务编译
-    needs: changes
-    if: needs.changes.outputs.go == 'true' || needs.changes.outputs.workflow == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: track-server/go.mod
-          cache-dependency-path: track-server/go.sum
-      - name: 编译
-        working-directory: track-server
-        run: go build -o /dev/null ./cmd/server
