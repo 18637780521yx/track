@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 
 import 'config.dart';
+import 'html_report.dart';
 
 class PerfSession {
   PerfSession({
@@ -25,12 +26,19 @@ class PerfSession {
   void addAlert(Map<String, dynamic> alert) => alerts.add(alert);
 }
 
+class ReportPaths {
+  ReportPaths({required this.jsonPath, required this.htmlPath});
+
+  final String jsonPath;
+  final String htmlPath;
+}
+
 class ReportWriter {
   ReportWriter(this.config);
 
   final PerfAgentConfig config;
 
-  Future<String> writeJson(PerfSession session) async {
+  Future<ReportPaths> writeReports(PerfSession session) async {
     final dir = Directory(config.reportsDir);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -38,9 +46,9 @@ class ReportWriter {
 
     final endedAt = DateTime.now();
     final report = {
-      'schemaVersion': 1,
+      'schemaVersion': 2,
       'agent': 'flutter-perf-agent',
-      'phase': 'phase1',
+      'phase': 'phase2',
       'sessionId': session.sessionId,
       'testName': session.testName,
       'mode': session.mode,
@@ -66,16 +74,20 @@ class ReportWriter {
     final safeName = session.testName
         .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-]+'), '_')
         .replaceAll(RegExp(r'_+'), '_');
-    final fileName =
-        '${endedAt.toIso8601String().replaceAll(':', '-')}_${safeName}_${session.sessionId}.json';
-    final path = p.join(dir.path, fileName);
-    await File(path).writeAsString(
+    final stamp = endedAt.toIso8601String().replaceAll(':', '-');
+    final base = '${stamp}_${safeName}_${session.sessionId}';
+    final jsonPath = p.join(dir.path, '$base.json');
+    final htmlPath = p.join(dir.path, '$base.html');
+
+    await File(jsonPath).writeAsString(
       const JsonEncoder.withIndent('  ').convert(report),
     );
-    return path;
+    await File(htmlPath).writeAsString(buildHtmlReport(report));
+
+    return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }
 
-  /// Evaluate thresholds against a tap diff and return alerts (may be empty).
+  /// Evaluate thresholds against a step diff and return alerts (may be empty).
   List<Map<String, dynamic>> evaluateDiff(
     Map<String, dynamic> diff, {
     required String stepId,
@@ -116,6 +128,20 @@ class ReportWriter {
         'action': action,
         'message': '本次操作新增 Jank $jankDelta 次',
         'value': jankDelta,
+      });
+    }
+
+    // Surface new Sleuth issues after the action when possible.
+    final beforeIssues = (diff['issuesBefore'] as List?) ?? const [];
+    final afterIssues = (diff['issuesAfter'] as List?) ?? const [];
+    if (afterIssues.length > beforeIssues.length) {
+      final newly = afterIssues.skip(beforeIssues.length).take(5).toList();
+      alerts.add({
+        'type': 'sleuth_issues',
+        'stepId': stepId,
+        'action': action,
+        'message': '操作后新增 Sleuth issue ${afterIssues.length - beforeIssues.length} 条',
+        'value': newly,
       });
     }
 

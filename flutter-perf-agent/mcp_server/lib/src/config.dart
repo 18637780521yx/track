@@ -8,6 +8,9 @@ class PerfAgentConfig {
     required this.bridgeHost,
     required this.bridgePort,
     required this.waitStableMs,
+    required this.maxRetries,
+    required this.retryDelayMs,
+    required this.debugLog,
     required this.reportsDir,
     required this.maxFrameCostMs,
     required this.memoryIncreaseWarningMB,
@@ -18,6 +21,9 @@ class PerfAgentConfig {
   final String bridgeHost;
   final int bridgePort;
   final int waitStableMs;
+  final int maxRetries;
+  final int retryDelayMs;
+  final bool debugLog;
   final String reportsDir;
   final double maxFrameCostMs;
   final double memoryIncreaseWarningMB;
@@ -51,6 +57,9 @@ class PerfAgentConfig {
       bridgeHost: json['bridgeHost'] as String? ?? '127.0.0.1',
       bridgePort: json['bridgePort'] as int? ?? 19288,
       waitStableMs: json['waitStableMs'] as int? ?? 500,
+      maxRetries: json['maxRetries'] as int? ?? 2,
+      retryDelayMs: json['retryDelayMs'] as int? ?? 300,
+      debugLog: json['debugLog'] as bool? ?? false,
       reportsDir: reportsDir,
       maxFrameCostMs: (thresholds['maxFrameCostMs'] as num?)?.toDouble() ?? 16,
       memoryIncreaseWarningMB:

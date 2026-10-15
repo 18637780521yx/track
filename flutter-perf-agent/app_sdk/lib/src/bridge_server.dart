@@ -152,8 +152,9 @@ class PerfBridgeServer {
   Future<Response> _wait(Request request) async {
     final body = await _readJson(request);
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
-    await _waitStable(wait);
-    return _json({'ok': true, 'waitedMs': wait});
+    final frames = body['frames'] as int? ?? 2;
+    await _waitStable(wait, frames: frames);
+    return _json({'ok': true, 'waitedMs': wait, 'frames': frames});
   }
 
   FutureOr<Response> _ui(Request request) {
@@ -212,11 +213,16 @@ class PerfBridgeServer {
     return <String, dynamic>{};
   }
 
-  Future<void> _waitStable(int ms) async {
-    await SchedulerBinding.instance.endOfFrame;
+  Future<void> _waitStable(int ms, {int frames = 2}) async {
+    final frameCount = frames < 1 ? 1 : frames;
+    for (var i = 0; i < frameCount; i++) {
+      await SchedulerBinding.instance.endOfFrame;
+    }
     if (ms > 0) {
       await Future<void>.delayed(Duration(milliseconds: ms));
     }
-    await SchedulerBinding.instance.endOfFrame;
+    for (var i = 0; i < frameCount; i++) {
+      await SchedulerBinding.instance.endOfFrame;
+    }
   }
 }

@@ -91,7 +91,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 8),
                 const Text(
-                  'Phase1：登录 → 点按钮采性能',
+                  'Phase2：登录 → 首页 → 滑动列表',
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 32),
@@ -150,17 +150,26 @@ class HomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('首页')),
-      body: ListView.builder(
-        key: const Key('home_list'),
-        itemCount: 40,
-        itemBuilder: (context, index) {
-          return ListTile(
-            title: Text('列表项 #$index'),
-            subtitle: Text('用于后续 Phase2 滑动性能测试'),
-            onTap: () {},
-          );
-        },
+      appBar: AppBar(
+        title: const Text('首页', key: Key('home_title')),
+      ),
+      body: Semantics(
+        label: '首页列表',
+        child: ListView.builder(
+          key: const Key('home_list'),
+          itemCount: 60,
+          itemBuilder: (context, index) {
+            // Intentionally a bit heavy to exercise jank/FPS during scroll.
+            return ListTile(
+              key: Key('list_item_$index'),
+              leading: CircleAvatar(child: Text('$index')),
+              title: Text('列表项 #$index'),
+              subtitle: Text('Phase2 滑动性能测试 · item $index'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () {},
+            );
+          },
+        ),
       ),
       floatingActionButton: Semantics(
         label: '刷新按钮',

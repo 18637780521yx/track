@@ -1,13 +1,22 @@
+import 'dart:io' as io;
+
 import 'package:vm_service/vm_service.dart';
 import 'package:vm_service/vm_service_io.dart';
 
 /// Thin VM-service client that calls flutter_skill App extensions.
-///
-/// UI actions belong to flutter_skill; this class only invokes them.
 class FlutterSkillVmClient {
-  FlutterSkillVmClient(this.wsUri);
+  FlutterSkillVmClient(
+    this.wsUri, {
+    this.maxRetries = 2,
+    this.retryDelayMs = 300,
+    this.debugLog = false,
+  });
 
   final String wsUri;
+  final int maxRetries;
+  final int retryDelayMs;
+  final bool debugLog;
+
   VmService? _service;
   String? _isolateId;
 
@@ -25,6 +34,12 @@ class FlutterSkillVmClient {
     return uri;
   }
 
+  void _log(String msg) {
+    if (debugLog) {
+      io.stderr.writeln('[flutter_skill_vm] $msg');
+    }
+  }
+
   Future<void> connect() async {
     _service = await vmServiceConnectUri(wsUri);
     final vm = await _service!.getVM();
@@ -32,12 +47,12 @@ class FlutterSkillVmClient {
     if (isolates == null || isolates.isEmpty) {
       throw StateError('No Dart isolates at $wsUri');
     }
-    // Prefer the main isolate.
     final main = isolates.cast<IsolateRef?>().firstWhere(
           (i) => i?.name?.contains('main') == true,
           orElse: () => isolates.first,
         );
     _isolateId = main!.id;
+    _log('connected isolate=$_isolateId');
   }
 
   Future<void> disconnect() async {
@@ -48,54 +63,146 @@ class FlutterSkillVmClient {
     _isolateId = null;
   }
 
-  /// Tap via flutter_skill. Tries [text] first, then [key] if provided.
   Future<Map<String, dynamic>> tap({
     String? text,
     String? key,
     String? ref,
-  }) async {
-    if (text == null && key == null && ref == null) {
-      throw ArgumentError('tap requires text, key, or ref');
-    }
-
-    // Prefer text for natural-language targets ("登录"), then key.
-    if (text != null) {
-      final byText = await _call('ext.flutter.flutter_skill.tap', {
-        'text': text,
-      });
-      if (_ok(byText)) return {...byText, 'matchedBy': 'text'};
-      // Fall through to key if text failed and key given.
-      if (key == null && ref == null) return byText;
-    }
-
-    if (key != null) {
-      final byKey = await _call('ext.flutter.flutter_skill.tap', {
-        'key': key,
-      });
-      if (_ok(byKey)) return {...byKey, 'matchedBy': 'key'};
-      if (ref == null && text == null) return byKey;
-    }
-
-    if (ref != null) {
-      final byRef = await _call('ext.flutter.flutter_skill.tap', {
-        'ref': ref,
-      });
-      return {...byRef, 'matchedBy': 'ref'};
-    }
-
-    // Last attempt: treat the same string as key if only text was tried.
-    if (text != null) {
-      final asKey = await _call('ext.flutter.flutter_skill.tap', {
-        'key': text,
-      });
-      return {...asKey, 'matchedBy': 'key_fallback'};
-    }
-
-    return {'success': false, 'error': 'tap failed'};
+  }) {
+    return _withRetry('tap', () async {
+      if (text == null && key == null && ref == null) {
+        throw ArgumentError('tap requires text, key, or ref');
+      }
+      if (text != null) {
+        final byText = await _call('ext.flutter.flutter_skill.tap', {
+          'text': text,
+        });
+        if (_ok(byText)) return {...byText, 'matchedBy': 'text'};
+        if (key == null && ref == null) return byText;
+      }
+      if (key != null) {
+        final byKey = await _call('ext.flutter.flutter_skill.tap', {
+          'key': key,
+        });
+        if (_ok(byKey)) return {...byKey, 'matchedBy': 'key'};
+        if (ref == null && text == null) return byKey;
+      }
+      if (ref != null) {
+        final byRef = await _call('ext.flutter.flutter_skill.tap', {
+          'ref': ref,
+        });
+        return {...byRef, 'matchedBy': 'ref'};
+      }
+      if (text != null) {
+        final asKey = await _call('ext.flutter.flutter_skill.tap', {
+          'key': text,
+        });
+        return {...asKey, 'matchedBy': 'key_fallback'};
+      }
+      return {'success': false, 'error': 'tap failed'};
+    });
   }
 
-  Future<Map<String, dynamic>> inspectInteractive() async {
-    return _call('ext.flutter.flutter_skill.inspectInteractive', {});
+  Future<Map<String, dynamic>> enterText({
+    required String text,
+    String? target,
+    String? key,
+    String? ref,
+  }) {
+    return _withRetry('enterText', () async {
+      final params = <String, String>{'text': text};
+      // Prefer key for ValueKey fields; also try text label as key/text.
+      if (key != null) {
+        params['key'] = key;
+      } else if (target != null) {
+        params['key'] = target;
+      }
+      if (ref != null) params['ref'] = ref;
+
+      var result = await _call('ext.flutter.flutter_skill.enterText', params);
+      if (_ok(result)) return {...result, 'matchedBy': 'key'};
+
+      // Retry treating target as visible text focus then type — tap first.
+      if (target != null) {
+        await _call('ext.flutter.flutter_skill.tap', {'text': target});
+        result = await _call('ext.flutter.flutter_skill.enterText', {
+          'text': text,
+        });
+        if (_ok(result)) return {...result, 'matchedBy': 'focus_then_type'};
+
+        result = await _call('ext.flutter.flutter_skill.enterText', {
+          'text': text,
+          'key': target,
+        });
+      }
+      return result;
+    });
+  }
+
+  /// Scroll until [target] is visible (flutter_skill scroll_to).
+  Future<Map<String, dynamic>> scrollTo({String? key, String? text}) {
+    return _withRetry('scrollTo', () async {
+      final params = <String, String>{};
+      if (key != null) params['key'] = key;
+      if (text != null) params['text'] = text;
+      if (params.isEmpty) {
+        throw ArgumentError('scrollTo requires key or text');
+      }
+      return _call('ext.flutter.flutter_skill.scroll', params);
+    });
+  }
+
+  /// Directional swipe (up/down/left/right).
+  Future<Map<String, dynamic>> swipe({
+    required String direction,
+    double distance = 300,
+    String? key,
+  }) {
+    return _withRetry('swipe', () async {
+      return _call('ext.flutter.flutter_skill.swipe', {
+        'direction': direction,
+        'distance': distance.toString(),
+        if (key != null) 'key': key,
+      });
+    });
+  }
+
+  Future<Map<String, dynamic>> inspectInteractive() {
+    return _withRetry(
+      'inspect',
+      () => _call('ext.flutter.flutter_skill.inspectInteractive', {}),
+    );
+  }
+
+  Future<Map<String, dynamic>> _withRetry(
+    String label,
+    Future<Map<String, dynamic>> Function() action,
+  ) async {
+    Object? lastError;
+    Map<String, dynamic>? lastResult;
+    final attempts = maxRetries + 1;
+    for (var i = 0; i < attempts; i++) {
+      try {
+        _log('$label attempt ${i + 1}/$attempts');
+        final result = await action();
+        lastResult = result;
+        if (_ok(result)) {
+          return {...result, 'attempts': i + 1};
+        }
+        lastError = result['error'] ?? 'action not ok';
+      } catch (e) {
+        lastError = e;
+        _log('$label error: $e');
+      }
+      if (i < attempts - 1) {
+        await Future<void>.delayed(Duration(milliseconds: retryDelayMs));
+      }
+    }
+    return {
+      'success': false,
+      'error': lastError?.toString() ?? 'unknown',
+      'lastResult': lastResult,
+      'attempts': attempts,
+    };
   }
 
   Future<Map<String, dynamic>> _call(
@@ -114,15 +221,16 @@ class FlutterSkillVmClient {
       args: params,
     );
 
-    // Matches flutter_skill FlutterSkillClient: extension payload is response.json.
     final json = response.json;
     if (json == null) return {'success': false, 'error': 'empty response'};
     return Map<String, dynamic>.from(json);
   }
 
-  static bool _ok(Map<String, dynamic> result) {
+  static bool isOk(Map<String, dynamic> result) {
     if (result['success'] == true || result['ok'] == true) return true;
     final err = result['error'];
     return err == null && result.isNotEmpty && result['success'] != false;
   }
+
+  static bool _ok(Map<String, dynamic> result) => isOk(result);
 }

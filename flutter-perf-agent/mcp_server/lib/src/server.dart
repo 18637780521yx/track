@@ -1,19 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io' as io;
 
 import 'package:dart_mcp/server.dart';
 
+import 'action_runner.dart';
 import 'bridge_client.dart';
 import 'config.dart';
 import 'flutter_skill_client.dart';
-import 'perf_diff.dart';
 import 'report_writer.dart';
 
-/// Phase1 MCP tools: start_perf_test / stop_perf_test / tap / get_ui_snapshot.
-///
-/// Architecture:
-/// - UI actions → flutter_skill (VM service extensions)
-/// - Snapshots / session → App PerfBridge (HTTP)
+/// Phase2 MCP tools: start/stop + tap/scroll/input_text + UI/threshold.
 base class PerfMcpServer extends MCPServer with ToolsSupport {
   PerfMcpServer(
     super.channel, {
@@ -21,12 +18,13 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.1.1',
+            version: '0.2.0',
           ),
           instructions:
-              'Flutter UI via flutter_skill + Sleuth performance capture. '
-              '1) Launch example_app (profile, with PerfAgent). '
-              '2) start_perf_test. 3) tap. 4) stop_perf_test for JSON report.',
+              'Flutter-Perf-Agent Phase2. '
+              'Launch example_app (profile). Then: start_perf_test → '
+              'input_text / tap / scroll → stop_perf_test (JSON+HTML report). '
+              'UI via flutter_skill; metrics via PerfBridge+Sleuth.',
         ) {
     _bridge = BridgeClient(config);
     _reports = ReportWriter(config);
@@ -34,8 +32,17 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     registerTool(_startTool, _startPerfTest);
     registerTool(_stopTool, _stopPerfTest);
     registerTool(_tapTool, _tap);
+    registerTool(_scrollTool, _scroll);
+    registerTool(_inputTool, _inputText);
     registerTool(_uiTool, _getUiSnapshot);
     registerTool(_thresholdTool, _getThresholdConfig);
+
+    if (config.debugLog) {
+      io.stderr.writeln(
+        '[flutter-perf-agent-mcp] ready bridge=${config.bridgeBaseUrl} '
+        'retries=${config.maxRetries}',
+      );
+    }
   }
 
   final PerfAgentConfig config;
@@ -46,16 +53,27 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   String? _vmWsUri;
   int _stepCounter = 0;
 
+  ActionRunner? get _runner {
+    final session = _session;
+    if (session == null) return null;
+    return ActionRunner(
+      config: config,
+      bridge: _bridge,
+      reports: _reports,
+      session: session,
+      vmWsUri: () => _vmWsUri,
+      nextStepId: () => ++_stepCounter,
+    );
+  }
+
   final _startTool = Tool(
     name: 'start_perf_test',
     description:
-        '启动性能测试会话：连接 App PerfBridge，记录 VM URI（供 flutter_skill），读取基线快照。',
+        '启动性能测试会话：连接 PerfBridge，记录 VM URI，读取基线快照。',
     inputSchema: Schema.object(
       properties: {
         'testName': Schema.string(description: '测试名称'),
-        'waitStableMs': Schema.int(
-          description: '页面稳定等待毫秒，默认读配置',
-        ),
+        'waitStableMs': Schema.int(description: '页面稳定等待毫秒'),
       },
       required: ['testName'],
     ),
@@ -63,10 +81,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _stopTool = Tool(
     name: 'stop_perf_test',
-    description: '停止测试，汇总步骤与告警，写出 JSON 报告并返回路径与摘要。',
+    description: '停止测试，写出 JSON + HTML 报告，返回路径与告警摘要。',
     inputSchema: Schema.object(
       properties: {
-        'sessionId': Schema.string(description: '会话 ID（可选，默认当前会话）'),
+        'sessionId': Schema.string(description: '会话 ID（可选）'),
       },
     ),
   );
@@ -74,31 +92,58 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   final _tapTool = Tool(
     name: 'tap',
     description:
-        '用 flutter_skill 点击控件（text/key），操作前后经 Bridge 采集 Sleuth/RSS 快照并算 diff。'
-        '若 flutter_skill 不可用则回退到 Bridge legacy tap。',
+        'flutter_skill 点击控件；前后采集性能 diff。失败可回退 legacy 语义点击。',
     inputSchema: Schema.object(
       properties: {
-        'targetDesc': Schema.string(
-          description: '控件文本或 Key，例如「登录」或 login_button',
-        ),
+        'targetDesc': Schema.string(description: '文本或 Key，如「登录」/ login_button'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
-        'useLegacyTap': Schema.bool(
-          description: '强制使用 Bridge legacy 语义点击（默认 false）',
-        ),
+        'useLegacyTap': Schema.bool(description: '强制 legacy tap'),
       },
       required: ['targetDesc'],
     ),
   );
 
+  final _scrollTool = Tool(
+    name: 'scroll',
+    description:
+        '滑动页面。提供 direction+distance 做 swipe；或提供 targetDesc 滚到目标控件。'
+        '前后自动采性能。',
+    inputSchema: Schema.object(
+      properties: {
+        'targetDesc': Schema.string(description: '滚到该控件（key/text），可选'),
+        'direction': Schema.string(
+          description: 'up / down / left / right，默认 down',
+        ),
+        'distance': Schema.int(description: '滑动距离，默认 300'),
+        'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
+      },
+    ),
+  );
+
+  final _inputTool = Tool(
+    name: 'input_text',
+    description: '向输入框输入文字（flutter_skill enterText），前后采性能。',
+    inputSchema: Schema.object(
+      properties: {
+        'targetDesc': Schema.string(
+          description: '输入框 Key 或标签，如 password_field / 密码输入框',
+        ),
+        'text': Schema.string(description: '要输入的文本'),
+        'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
+      },
+      required: ['targetDesc', 'text'],
+    ),
+  );
+
   final _uiTool = Tool(
     name: 'get_ui_snapshot',
-    description: '获取当前可交互控件（优先 flutter_skill inspect，失败则 Bridge /ui）。',
+    description: '获取可交互控件（优先 flutter_skill inspect）。',
     inputSchema: Schema.object(properties: {}),
   );
 
   final _thresholdTool = Tool(
     name: 'get_perf_threshold_config',
-    description: '读取性能告警阈值配置。',
+    description: '读取性能告警阈值与重试配置。',
     inputSchema: Schema.object(properties: {}),
   );
 
@@ -108,9 +153,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final wait = args['waitStableMs'] as int?;
 
     final health = await _bridge.health();
-    if (health['ok'] != true) {
-      return _err(health);
-    }
+    if (health['ok'] != true) return _err(health);
 
     final rawVm = health['vmServiceUri'] as String?;
     if (rawVm != null && rawVm.isNotEmpty) {
@@ -123,9 +166,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       sessionId: sessionId,
       waitStableMs: wait,
     );
-    if (started['ok'] != true) {
-      return _err(started);
-    }
+    if (started['ok'] != true) return _err(started);
 
     final startedVm = started['vmServiceUri'] as String?;
     if (startedVm != null && startedVm.isNotEmpty) {
@@ -148,6 +189,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'bridge': config.bridgeBaseUrl,
       'vmServiceUri': _vmWsUri,
       'uiDriver': 'flutter_skill',
+      'phase': 'phase2',
     });
   }
 
@@ -161,11 +203,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     }
 
     final stop = await _bridge.stopSession();
-    final path = await _reports.writeJson(session);
+    final paths = await _reports.writeReports(session);
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
-      'reportPath': path,
+      'reportPath': paths.jsonPath,
+      'htmlReportPath': paths.htmlPath,
       'stepCount': session.steps.length,
       'alertCount': session.alerts.length,
       'alerts': session.alerts,
@@ -177,126 +220,114 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }
 
   FutureOr<CallToolResult> _tap(CallToolRequest request) async {
-    final session = _session;
-    if (session == null) {
-      return _err({
-        'ok': false,
-        'error': 'no active session — call start_perf_test first',
-      });
-    }
+    final runner = _runner;
+    if (runner == null) return _noSession();
 
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String? ?? '').trim();
-    final wait = args['waitStableMs'] as int? ?? config.waitStableMs;
+    final wait = args['waitStableMs'] as int?;
     final forceLegacy = args['useLegacyTap'] == true;
     if (target.isEmpty) {
       return _err({'ok': false, 'error': 'targetDesc is required'});
     }
 
-    _stepCounter += 1;
-    final stepId = 'step_$_stepCounter';
-    final t0 = DateTime.now();
-
-    // 1) before snapshot
-    final beforeRes = await _bridge.snapshot();
-    if (beforeRes['ok'] != true) return _err(beforeRes);
-    final before =
-        (beforeRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
-
-    // 2) UI action via flutter_skill (or legacy fallback)
-    Map<String, dynamic> actionResult;
-    String driver;
-    if (!forceLegacy && _vmWsUri != null) {
-      driver = 'flutter_skill';
-      actionResult = await _tapWithFlutterSkill(target);
-      if (!_actionOk(actionResult)) {
-        // fallback
-        driver = 'legacy_fallback';
-        final legacy = await _bridge.tapLegacy(
-          targetDesc: target,
-          waitStableMs: wait,
-        );
-        actionResult = {
-          'success': legacy['ok'] == true,
-          'flutterSkill': actionResult,
-          'legacy': legacy['action'],
-        };
-      } else {
-        await _bridge.waitStable(waitStableMs: wait);
-      }
-    } else {
-      driver = 'legacy';
-      final legacy = await _bridge.tapLegacy(
+    final step = await runner.run(
+      action: 'tap',
+      actionLabel: 'tap:$target',
+      waitStableMs: wait,
+      extraStepFields: {'targetDesc': target},
+      skillAction: forceLegacy
+          ? (client) async => {'success': false, 'error': 'forced legacy'}
+          : (client) => client.tap(text: target, key: target),
+      legacyFallback: () => _bridge.tapLegacy(
         targetDesc: target,
         waitStableMs: wait,
-      );
-      actionResult = {
-        'success': legacy['ok'] == true,
-        'legacy': legacy['action'],
-        'diffFromBridge': legacy['diff'],
-      };
-      if (legacy['ok'] == true && legacy['diff'] is Map) {
-        // Bridge legacy already includes diff; still recompute for consistency.
-      }
-    }
-
-    // 3) after snapshot
-    final afterRes = await _bridge.snapshot();
-    if (afterRes['ok'] != true) return _err(afterRes);
-    final after =
-        (afterRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
-
-    final diff = computePerfDiff(
-      before: before,
-      after: after,
-      durationMs: DateTime.now().difference(t0).inMilliseconds,
+      ),
     );
-
-    final ok = _actionOk(actionResult);
-    final alerts = _reports.evaluateDiff(
-      diff,
-      stepId: stepId,
-      action: 'tap:$target',
-    );
-    for (final a in alerts) {
-      session.addAlert(a);
-    }
-
-    final step = {
-      'stepId': stepId,
-      'action': 'tap',
-      'targetDesc': target,
-      'driver': driver,
-      'ok': ok,
-      'actionResult': actionResult,
-      'diff': diff,
-      'alerts': alerts,
-      'at': DateTime.now().toIso8601String(),
-    };
-    session.addStep(step);
-    return _ok(step);
+    return step.containsKey('error') && step['ok'] == false
+        ? _err(step)
+        : _ok(step);
   }
 
-  Future<Map<String, dynamic>> _tapWithFlutterSkill(String target) async {
-    final client = FlutterSkillVmClient(_vmWsUri!);
-    try {
-      await client.connect();
-      // Natural language / visible text first; Key id as secondary.
-      return await client.tap(text: target, key: target);
-    } catch (e) {
-      return {
-        'success': false,
-        'error': 'flutter_skill tap failed: $e',
-        'vmServiceUri': _vmWsUri,
-      };
-    } finally {
-      await client.disconnect();
+  FutureOr<CallToolResult> _scroll(CallToolRequest request) async {
+    final runner = _runner;
+    if (runner == null) return _noSession();
+
+    final args = request.arguments ?? const <String, Object?>{};
+    final target = (args['targetDesc'] as String?)?.trim();
+    final direction = (args['direction'] as String? ?? 'down').toLowerCase();
+    final distance = (args['distance'] as num?)?.toDouble() ?? 300;
+    final wait = args['waitStableMs'] as int?;
+
+    if ((target == null || target.isEmpty) &&
+        !{'up', 'down', 'left', 'right'}.contains(direction)) {
+      return _err({
+        'ok': false,
+        'error': 'provide targetDesc and/or direction(up|down|left|right)',
+      });
     }
+
+    final step = await runner.run(
+      action: 'scroll',
+      actionLabel: target != null && target.isNotEmpty
+          ? 'scroll_to:$target'
+          : 'swipe:$direction:$distance',
+      waitStableMs: wait,
+      extraStepFields: {
+        'targetDesc': target,
+        'direction': direction,
+        'distance': distance,
+      },
+      skillAction: (client) async {
+        if (target != null && target.isNotEmpty) {
+          final to = await client.scrollTo(key: target, text: target);
+          if (FlutterSkillVmClient.isOk(to)) return to;
+        }
+        return client.swipe(direction: direction, distance: distance);
+      },
+    );
+    return step.containsKey('error') && step['ok'] == false
+        ? _err(step)
+        : _ok(step);
+  }
+
+  FutureOr<CallToolResult> _inputText(CallToolRequest request) async {
+    final runner = _runner;
+    if (runner == null) return _noSession();
+
+    final args = request.arguments ?? const <String, Object?>{};
+    final target = (args['targetDesc'] as String? ?? '').trim();
+    final text = args['text'] as String? ?? '';
+    final wait = args['waitStableMs'] as int?;
+    if (target.isEmpty) {
+      return _err({'ok': false, 'error': 'targetDesc is required'});
+    }
+
+    final step = await runner.run(
+      action: 'input_text',
+      actionLabel: 'input_text:$target',
+      waitStableMs: wait,
+      extraStepFields: {
+        'targetDesc': target,
+        'textLength': text.length,
+        // Do not echo secrets in full; keep short preview for debug.
+        'textPreview': text.length <= 4 ? text : '${text.substring(0, 2)}***',
+      },
+      skillAction: (client) => client.enterText(text: text, target: target),
+    );
+    return step.containsKey('error') && step['ok'] == false
+        ? _err(step)
+        : _ok(step);
   }
 
   FutureOr<CallToolResult> _getUiSnapshot(CallToolRequest request) async {
     if (_vmWsUri != null) {
-      final client = FlutterSkillVmClient(_vmWsUri!);
+      final client = FlutterSkillVmClient(
+        _vmWsUri!,
+        maxRetries: config.maxRetries,
+        retryDelayMs: config.retryDelayMs,
+        debugLog: config.debugLog,
+      );
       try {
         await client.connect();
         final inspected = await client.inspectInteractive();
@@ -306,7 +337,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
           'data': inspected,
         });
       } catch (e) {
-        // fall through to bridge
         final ui = await _bridge.ui();
         return _ok({
           ...ui,
@@ -328,8 +358,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'configPath': config.configPath,
       'bridge': config.bridgeBaseUrl,
       'waitStableMs': config.waitStableMs,
+      'maxRetries': config.maxRetries,
+      'retryDelayMs': config.retryDelayMs,
+      'debugLog': config.debugLog,
       'reportsDir': config.reportsDir,
       'uiDriver': 'flutter_skill',
+      'phase': 'phase2',
       'thresholds': {
         'maxFrameCostMs': config.maxFrameCostMs,
         'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
@@ -338,15 +372,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     });
   }
 
-  bool _actionOk(Map<String, dynamic> result) {
-    if (result['success'] == true || result['ok'] == true) return true;
-    // flutter_skill sometimes returns success nested
-    final nested = result['result'];
-    if (nested is Map && (nested['success'] == true || nested['ok'] == true)) {
-      return true;
-    }
-    return false;
-  }
+  CallToolResult _noSession() => _err({
+        'ok': false,
+        'error': 'no active session — call start_perf_test first',
+      });
 
   CallToolResult _ok(Object data) => CallToolResult(
         content: [
