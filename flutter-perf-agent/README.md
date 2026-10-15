@@ -2,15 +2,18 @@
 
 自然语言驱动 Flutter App：**UI 自动化 + 性能打点 + JSON/HTML 报告**。
 
-**当前版本：V1（Phase3 完成）**
+**当前版本：V1（0.5.1 Sleuth + flutter_skill 完整能力）**
 
 ## 一句话架构
 
 ```
 Cursor MCP
-  ├─ flutter_skill（点击 / 输入 / 滑动 / 截图）
-  └─ PerfBridge + Sleuth（会话 / 性能快照 / 告警）
+  ├─ flutter_skill 全量（tap/scroll/input + skill_* 手势/检查/等待/截图/导航/日志…）
+  └─ PerfBridge + Sleuth 全量（snapshot / issues / diagnose / route / summary）
 ```
+
+> GC / 堆 / shader 等 VM 型 detector：请用 `flutter run --profile --no-dds`  
+> （DDS 占着 VM 时 Sleuth 连不上，这些 detector 会哑火。）
 
 ## 目录
 
@@ -48,13 +51,32 @@ Cursor 里配置 MCP 后可以说：
 
 | Tool | 说明 |
 |------|------|
-| `start_perf_test` | 开会话（先清理旧会话） |
-| `input_text` | 输入 + 性能 diff |
-| `tap` | 点击 + 性能 diff（登录类自动加跳转等待） |
-| `scroll` | 滑动 / 滚到目标 + 性能 diff |
+| `start_perf_test` | 开会话（清理旧会话） |
+| `input_text` / `tap` / `scroll` | 常用 UI + Sleuth/RSS diff |
+| `skill_*` | **flutter_skill 全量**（见下） |
 | `stop_perf_test` | JSON + HTML（含截图） |
-| `get_ui_snapshot` | 可交互控件 |
-| `get_perf_threshold_config` | 阈值与稳定性配置 |
+| `get_ui_snapshot` | 可交互控件（inspect） |
+| `export_session_snapshot` / `import_session_snapshot` | 会话快照 I/O |
+| `get_sleuth_snapshot` | 完整 Sleuth 会话快照 |
+| `get_sleuth_issues` | detector issues（含 fixHint） |
+| `get_sleuth_diagnose` | vmConnected / initialized |
+| `get_sleuth_summary` | markdown 摘要 |
+| `get_sleuth_route_health` | 路由健康分 |
+| `get_perf_threshold_config` | 阈值与配置 |
+
+### `skill_*`（flutter_skill 全量）
+
+| 类别 | Tools |
+|------|------|
+| 检查 | `skill_interactive` / `_structured` / `skill_get_widget_tree` / `_properties` / `skill_get_text_content` / `skill_find_by_type` |
+| 手势 | `skill_long_press` / `_double_tap` / `_drag` / `_press_key` / `_type_text` / `_focus` / `_blur` / `_set_checkbox` / `_hover` / `_tap_at` / `_long_press_at` / `_swipe_coordinates` / `_edge_swipe` / `_go_back` |
+| 等待/表单 | `skill_wait_for_element` / `_gone` / `skill_get_text_value` / `_checkbox_state` / `_slider_value` |
+| 截图 | `skill_screenshot` / `_region` / `_element` |
+| 导航 | `skill_get_current_route` / `_navigation_stack` |
+| 指示器/日志 | `skill_enable/disable_indicators` / `_get_indicator_status` / `skill_get_logs` / `_errors` / `_clear_logs` |
+| 辅助指标 | `skill_get_performance` / `_frame_stats` / `_http_requests` / `_clear_http_requests`（主指标仍用 `get_sleuth_*`） |
+
+> 性能走 **Sleuth 全量**（非 DevTools 外连）。flutter_skill 仍需 VM。
 
 ## 文档
 

@@ -1,6 +1,6 @@
 name: flutter_perf_agent_mcp
-description: Phase1 MCP server for Flutter-Perf-Agent (start/stop/tap + JSON report).
-version: 0.1.0
+description: Flutter-Perf-Agent MCP — full flutter_skill UI + full Sleuth + reports.
+version: 0.5.1
 publish_to: none
 
 environment:

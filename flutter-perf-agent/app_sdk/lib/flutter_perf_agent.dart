@@ -13,3 +13,4 @@ library;
 export 'src/perf_agent.dart';
 export 'src/perf_snapshot.dart';
 export 'src/bridge_server.dart';
+export 'src/sleuth_facade.dart';

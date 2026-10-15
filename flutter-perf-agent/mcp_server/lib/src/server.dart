@@ -9,8 +9,10 @@ import 'bridge_client.dart';
 import 'config.dart';
 import 'flutter_skill_client.dart';
 import 'report_writer.dart';
+import 'skill_mcp_bindings.dart';
+import 'snapshot_io.dart';
 
-/// Phase3 MCP tools: start/stop + tap/scroll/input_text + screenshots.
+/// MCP tools: UI via flutter_skill (full); metrics via PerfBridge + Sleuth.
 base class PerfMcpServer extends MCPServer with ToolsSupport {
   PerfMcpServer(
     super.channel, {
@@ -18,13 +20,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.3.0',
+            version: '0.5.1',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (Phase3). '
-              'Launch example_app (prefer --profile). Then: start_perf_test → '
-              'input_text / tap / scroll → stop_perf_test (JSON+HTML+screenshots). '
-              'UI via flutter_skill; metrics via PerfBridge+Sleuth.',
+              'Flutter-Perf-Agent V1 (0.5.1 Sleuth + full flutter_skill). '
+              'Prefer: flutter run --profile --no-dds. '
+              'Flow: start_perf_test → tap/input_text/scroll/skill_* → '
+              'get_sleuth_issues / get_sleuth_diagnose → stop_perf_test. '
+              'UI: full flutter_skill (skill_* + tap/scroll/input). '
+              'Metrics: full Sleuth via PerfBridge.',
         ) {
     _bridge = BridgeClient(config);
     _reports = ReportWriter(config);
@@ -36,11 +40,27 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     registerTool(_inputTool, _inputText);
     registerTool(_uiTool, _getUiSnapshot);
     registerTool(_thresholdTool, _getThresholdConfig);
+    registerTool(_exportTool, _exportSnapshot);
+    registerTool(_importTool, _importSnapshot);
+    registerTool(_sleuthSnapTool, _getSleuthSnapshot);
+    registerTool(_sleuthIssuesTool, _getSleuthIssues);
+    registerTool(_sleuthDiagTool, _getSleuthDiagnose);
+    registerTool(_sleuthSummaryTool, _getSleuthSummary);
+    registerTool(_sleuthRouteTool, _getSleuthRouteHealth);
+
+    registerFlutterSkillTools(
+      registerTool: registerTool,
+      ensureSkillClient: _ensureSkillClient,
+      runner: () => _runner,
+      ok: _ok,
+      err: _err,
+    );
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.3.0 bridge=${config.bridgeBaseUrl} '
-        'retries=${config.maxRetries} shots=${config.captureScreenshots}',
+        '[flutter-perf-agent-mcp] v0.5.1 bridge=${config.bridgeBaseUrl} '
+        'metrics=sleuth_full ui=flutter_skill_full '
+        'retries=${config.maxRetries}',
       );
     }
   }
@@ -87,7 +107,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   final _startTool = Tool(
     name: 'start_perf_test',
     description:
-        '启动性能测试会话：先清理旧会话，连接 PerfBridge，记录 VM URI，读取基线。',
+        '启动性能测试会话：清理旧会话，连接 PerfBridge，记录 VM URI（仅供 flutter_skill）。',
     inputSchema: Schema.object(
       properties: {
         'testName': Schema.string(description: '测试名称'),
@@ -99,21 +119,21 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _stopTool = Tool(
     name: 'stop_perf_test',
-    description: '停止测试，写出 JSON + HTML 报告（含截图），返回路径与告警。',
+    description: '停止测试，写出 JSON + HTML（Sleuth/RSS 指标 + 截图）。',
     inputSchema: Schema.object(
       properties: {
         'sessionId': Schema.string(description: '会话 ID（可选）'),
+        'exportSnapshot': Schema.bool(description: '是否导出 session_snapshot.json'),
       },
     ),
   );
 
   final _tapTool = Tool(
     name: 'tap',
-    description:
-        'flutter_skill 点击；前后采性能。登录类点击会额外等待页面跳转。',
+    description: 'flutter_skill 点击；前后采 Sleuth/RSS 性能 diff。',
     inputSchema: Schema.object(
       properties: {
-        'targetDesc': Schema.string(description: '文本或 Key，如「登录」/ login_button'),
+        'targetDesc': Schema.string(description: '文本或 Key'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
         'useLegacyTap': Schema.bool(description: '强制 legacy tap'),
       },
@@ -123,15 +143,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _scrollTool = Tool(
     name: 'scroll',
-    description:
-        '滑动。direction+distance 做 swipe；或 targetDesc 滚到目标。前后采性能。',
+    description: '滑动或滚到目标；前后采 Sleuth/RSS。',
     inputSchema: Schema.object(
       properties: {
-        'targetDesc': Schema.string(description: '滚到该控件（key/text），可选'),
-        'direction': Schema.string(
-          description: 'up / down / left / right，默认 down',
-        ),
-        'distance': Schema.int(description: '滑动距离，默认 300'),
+        'targetDesc': Schema.string(description: '滚到该控件，可选'),
+        'direction': Schema.string(description: 'up/down/left/right'),
+        'distance': Schema.int(description: '滑动距离'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
       },
     ),
@@ -139,12 +156,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _inputTool = Tool(
     name: 'input_text',
-    description: '向输入框输入文字（flutter_skill enterText），前后采性能。',
+    description: '输入文字；前后采 Sleuth/RSS。',
     inputSchema: Schema.object(
       properties: {
-        'targetDesc': Schema.string(
-          description: '输入框 Key 或标签，如 password_field',
-        ),
+        'targetDesc': Schema.string(description: '输入框 Key 或标签'),
         'text': Schema.string(description: '要输入的文本'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
       },
@@ -154,14 +169,77 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _uiTool = Tool(
     name: 'get_ui_snapshot',
-    description: '获取可交互控件（优先 flutter_skill inspect）。',
+    description: '获取可交互控件（flutter_skill inspect）。',
     inputSchema: Schema.object(properties: {}),
   );
 
   final _thresholdTool = Tool(
     name: 'get_perf_threshold_config',
-    description: '读取性能告警阈值与稳定性配置。',
+    description: '读取阈值与配置（metricsSource=sleuth）。',
     inputSchema: Schema.object(properties: {}),
+  );
+
+  final _exportTool = Tool(
+    name: 'export_session_snapshot',
+    description: '导出会话快照 JSON（可再 import）。',
+    inputSchema: Schema.object(properties: {}),
+  );
+
+  final _importTool = Tool(
+    name: 'import_session_snapshot',
+    description: '导入快照并生成只读 HTML/JSON 报告。',
+    inputSchema: Schema.object(
+      properties: {
+        'snapshotPath': Schema.string(description: 'session_snapshot.json 路径'),
+      },
+      required: ['snapshotPath'],
+    ),
+  );
+
+  final _sleuthSnapTool = Tool(
+    name: 'get_sleuth_snapshot',
+    description: '完整 Sleuth 会话快照（帧/issues/因果/热力/路由等）。',
+    inputSchema: Schema.object(
+      properties: {
+        'compact': Schema.bool(description: 'true 时只返回 markdown 摘要'),
+      },
+    ),
+  );
+
+  final _sleuthIssuesTool = Tool(
+    name: 'get_sleuth_issues',
+    description: '当前 Sleuth detector issues 列表（含 fixHint）。',
+    inputSchema: Schema.object(
+      properties: {
+        'limit': Schema.int(description: '条数上限，默认 50'),
+      },
+    ),
+  );
+
+  final _sleuthDiagTool = Tool(
+    name: 'get_sleuth_diagnose',
+    description: 'Sleuth 诊断：initialized / vmConnected / captureMode。',
+    inputSchema: Schema.object(properties: {}),
+  );
+
+  final _sleuthSummaryTool = Tool(
+    name: 'get_sleuth_summary',
+    description: 'Sleuth markdown 摘要（可贴 PR/Slack）。',
+    inputSchema: Schema.object(
+      properties: {
+        'topN': Schema.int(description: 'Top issues，默认 5'),
+      },
+    ),
+  );
+
+  final _sleuthRouteTool = Tool(
+    name: 'get_sleuth_route_health',
+    description: '路由健康分；不传 route 则返回历史列表。',
+    inputSchema: Schema.object(
+      properties: {
+        'routeName': Schema.string(description: '可选路由名'),
+      },
+    ),
   );
 
   FutureOr<CallToolResult> _startPerfTest(CallToolRequest request) async {
@@ -169,7 +247,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final testName = args['testName'] as String? ?? 'unnamed';
     final wait = args['waitStableMs'] as int?;
 
-    // Clear any leftover Bridge session from prior runs / probes.
     await _bridge.stopSession();
     await _disposeSkill();
 
@@ -202,7 +279,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     );
     _stepCounter = 0;
 
-    // Warm VM connection once per session.
     try {
       await _ensureSkillClient();
     } catch (e) {
@@ -219,8 +295,11 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'bridge': config.bridgeBaseUrl,
       'vmServiceUri': _vmWsUri,
       'uiDriver': 'flutter_skill',
-      'phase': 'phase3',
-      'version': '0.3.0',
+      'metricsSource': 'sleuth_bridge',
+      'sleuth': health['sleuth'],
+      'phase': 'sleuth_full',
+      'uiSurface': 'flutter_skill_full',
+      'version': '0.5.1',
     });
   }
 
@@ -233,18 +312,50 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       });
     }
 
+    final args = request.arguments ?? const <String, Object?>{};
+    final doExport = args['exportSnapshot'] == true;
+
     final stop = await _bridge.stopSession();
-    final paths = await _reports.writeReports(session);
+    final sleuthDiag = await _bridge.sleuthDiagnose();
+    final sleuthSum = await _bridge.sleuthSummary(topN: 10);
+    // Full snapshot can be large — keep for report artifact, trim in MCP reply.
+    final sleuthFinal = await _bridge.sleuthSnapshot();
+    String? snapshotPath;
+    if (doExport) {
+      snapshotPath = await SnapshotIo.exportSession(
+        session: session,
+        reportsDir: config.reportsDir,
+        extra: {
+          'sleuthDiagnose': sleuthDiag,
+          'sleuthSummary': sleuthSum,
+        },
+      );
+    }
+    final paths = await _reports.writeReports(
+      session,
+      sleuthFinal: sleuthFinal,
+      sleuthDiagnose: sleuthDiag,
+      sleuthSummaryMarkdown: sleuthSum['markdown'] as String?,
+    );
     await _disposeSkill();
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
       'reportPath': paths.jsonPath,
       'htmlReportPath': paths.htmlPath,
+      if (snapshotPath != null) 'snapshotPath': snapshotPath,
       'stepCount': session.steps.length,
       'alertCount': session.alerts.length,
       'alerts': session.alerts,
+      'sleuthDiagnose': sleuthDiag,
+      'sleuthSummaryMarkdown': sleuthSum['markdown'],
+      'sleuthIssueCount': (sleuthFinal['snapshot'] is Map)
+          ? ((sleuthFinal['snapshot']['currentIssues'] as List?)?.length ??
+              (sleuthFinal['snapshot']['issues'] as List?)?.length)
+          : null,
       'bridgeStop': stop,
+      'metricsSource': 'sleuth_bridge',
+      'version': '0.5.1',
     };
     _session = null;
     _vmWsUri = null;
@@ -395,19 +506,82 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'postActionSettleMs': config.postActionSettleMs,
       'navigationWaitMs': config.navigationWaitMs,
       'maxRetries': config.maxRetries,
-      'retryDelayMs': config.retryDelayMs,
       'captureScreenshots': config.captureScreenshots,
-      'debugLog': config.debugLog,
-      'reportsDir': config.reportsDir,
+      'metricsSource': 'sleuth_bridge',
       'uiDriver': 'flutter_skill',
-      'phase': 'phase3',
-      'version': '0.3.0',
+      'phase': 'sleuth_full',
+      'uiSurface': 'flutter_skill_full',
+      'version': '0.5.1',
+      'note':
+          'Full Sleuth via Bridge. Full flutter_skill via skill_* tools. '
+          'For GC/heap: flutter run --profile --no-dds. '
+          'VM used for flutter_skill UI.',
       'thresholds': {
         'maxFrameCostMs': config.maxFrameCostMs,
         'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
         'slowRequestMs': config.slowRequestMs,
       },
     });
+  }
+
+  FutureOr<CallToolResult> _getSleuthSnapshot(CallToolRequest request) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final r = await _bridge.sleuthSnapshot(compact: args['compact'] == true);
+    return r['ok'] == true ? _ok(r) : _err(r);
+  }
+
+  FutureOr<CallToolResult> _getSleuthIssues(CallToolRequest request) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final r = await _bridge.sleuthIssues(
+      limit: (args['limit'] as num?)?.toInt() ?? 50,
+    );
+    return r['ok'] == true ? _ok(r) : _err(r);
+  }
+
+  FutureOr<CallToolResult> _getSleuthDiagnose(CallToolRequest request) async {
+    final r = await _bridge.sleuthDiagnose();
+    return r['ok'] == true ? _ok(r) : _err(r);
+  }
+
+  FutureOr<CallToolResult> _getSleuthSummary(CallToolRequest request) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final r = await _bridge.sleuthSummary(
+      topN: (args['topN'] as num?)?.toInt() ?? 5,
+    );
+    return r['ok'] == true ? _ok(r) : _err(r);
+  }
+
+  FutureOr<CallToolResult> _getSleuthRouteHealth(
+    CallToolRequest request,
+  ) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final r = await _bridge.sleuthRouteHealth(
+      routeName: args['routeName'] as String?,
+    );
+    return r['ok'] == true ? _ok(r) : _err(r);
+  }
+
+  FutureOr<CallToolResult> _exportSnapshot(CallToolRequest request) async {
+    final session = _session;
+    if (session == null) return _noSession();
+    final path = await SnapshotIo.exportSession(
+      session: session,
+      reportsDir: config.reportsDir,
+    );
+    return _ok({'ok': true, 'snapshotPath': path});
+  }
+
+  FutureOr<CallToolResult> _importSnapshot(CallToolRequest request) async {
+    final path =
+        (request.arguments ?? const {})['snapshotPath'] as String? ?? '';
+    if (path.isEmpty) {
+      return _err({'ok': false, 'error': 'snapshotPath required'});
+    }
+    final r = await SnapshotIo.importSession(
+      snapshotPath: path,
+      reportsDir: config.reportsDir,
+    );
+    return r['ok'] == true ? _ok(r) : _err(r);
   }
 
   CallToolResult _noSession() => _err({

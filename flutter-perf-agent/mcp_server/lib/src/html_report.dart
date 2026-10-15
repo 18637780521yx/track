@@ -17,6 +17,9 @@ String buildHtmlReport(Map<String, dynamic> report) {
   final thresholds =
       (report['thresholds'] as Map?)?.cast<String, dynamic>() ?? {};
   final note = _esc(report['note']?.toString() ?? '');
+  final sleuthMd = report['sleuthSummaryMarkdown']?.toString();
+  final sleuthDiag =
+      (report['sleuthDiagnose'] as Map?)?.cast<String, dynamic>();
 
   final alertCards = alerts.isEmpty
       ? '<p class="muted">无告警</p>'
@@ -53,7 +56,7 @@ String buildHtmlReport(Map<String, dynamic> report) {
   <p><strong>目标：</strong>${_esc(s['targetDesc']?.toString() ?? s['text']?.toString() ?? '-')}</p>
   <div class="metrics">
     <div><label>耗时</label><b>${diff['durationMs'] ?? '-'} ms</b></div>
-    <div><label>内存 Δ</label><b>${_num(diff['memoryDeltaMb'])} MB</b></div>
+    <div><label>RSS Δ</label><b>${_num(diff['memoryDeltaMb'])} MB</b></div>
     <div><label>Jank Δ</label><b>${diff['jankDelta'] ?? '-'}</b></div>
     <div><label>FPS</label><b>${_num(diff['fpsBefore'])} → ${_num(diff['fpsAfter'])}</b></div>
     <div><label>P90</label><b>${_num(diff['p90FrameMsBefore'])} → ${_num(diff['p90FrameMsAfter'])} ms</b></div>
@@ -140,6 +143,15 @@ String buildHtmlReport(Map<String, dynamic> report) {
     <div class="stat"><label>memoryIncreaseWarningMB</label><b>${thresholds['memoryIncreaseWarningMB'] ?? '-'}</b></div>
     <div class="stat"><label>slowRequestMs</label><b>${thresholds['slowRequestMs'] ?? '-'}</b></div>
   </div>
+
+  <h2>Sleuth</h2>
+  <div class="grid">
+    <div class="stat"><label>vmConnected</label><b>${sleuthDiag?['vmConnected'] ?? '-'}</b></div>
+    <div class="stat"><label>initialized</label><b>${sleuthDiag?['initialized'] ?? '-'}</b></div>
+    <div class="stat"><label>captureMode</label><b>${sleuthDiag?['captureMode'] ?? '-'}</b></div>
+  </div>
+  ${sleuthDiag?['advisory'] != null ? '<p class="muted">${_esc(sleuthDiag!['advisory']?.toString())}</p>' : ''}
+  ${sleuthMd != null && sleuthMd.isNotEmpty ? '<details open><summary>Sleuth summary</summary><pre>${_esc(sleuthMd)}</pre></details>' : ''}
 
   <h2>告警</h2>
   $alertCards

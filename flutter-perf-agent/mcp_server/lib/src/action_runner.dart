@@ -13,7 +13,10 @@ typedef SkillAction = Future<Map<String, dynamic>> Function(
   FlutterSkillVmClient client,
 );
 
-/// Shared before → action → settle → after → diff (+ optional screenshot).
+/// Shared before → action → settle → after → Sleuth/RSS diff (+ screenshot).
+///
+/// Metrics come from PerfBridge snapshots (Sleuth + RSS). VM is used only for
+/// flutter_skill UI actions — not for DevTools Timeline/CPU/Heap probes.
 class ActionRunner {
   ActionRunner({
     required this.config,
@@ -44,7 +47,6 @@ class ActionRunner {
     required SkillAction skillAction,
     Map<String, dynamic>? extraStepFields,
     int? waitStableMs,
-    /// Extra settle after action (e.g. navigation after login).
     int? extraSettleMs,
     Future<Map<String, dynamic>> Function()? legacyFallback,
   }) async {
@@ -128,10 +130,19 @@ class ActionRunner {
     );
 
     final ok = _actionOk(actionResult);
+
+    Map<String, dynamic>? sleuthIssues;
+    try {
+      sleuthIssues = await bridge.sleuthIssues(limit: 30);
+    } catch (e) {
+      _log('sleuth issues fetch failed: $e');
+    }
+
     final alerts = reports.evaluateDiff(
       diff,
       stepId: stepId,
       action: actionLabel,
+      sleuthIssues: sleuthIssues,
     );
     for (final a in alerts) {
       session.addAlert(a);
@@ -160,9 +171,10 @@ class ActionRunner {
       'driver': driver,
       'actionResult': actionResult,
       'diff': diff,
+      'metricsSource': 'sleuth_bridge',
+      if (sleuthIssues != null) 'sleuthIssues': sleuthIssues,
       'alerts': alerts,
       if (screenshotPath != null) 'screenshotPath': screenshotPath,
-      // Keep data URI out of JSON dump size — HTML builder reads file if needed.
       if (screenshotDataUri != null) 'screenshotDataUri': screenshotDataUri,
       'at': DateTime.now().toIso8601String(),
       ...?extraStepFields,
@@ -170,7 +182,6 @@ class ActionRunner {
     session.addStep(step);
     _log('end $actionLabel ok=$ok alerts=${alerts.length}');
 
-    // Strip huge data URI from returned MCP payload (still in session for HTML).
     final forMcp = Map<String, dynamic>.from(step)
       ..remove('screenshotDataUri');
     return forMcp;

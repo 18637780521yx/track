@@ -17,9 +17,17 @@ Future<void> main() async {
   runApp(
     Sleuth.track(
       child: const PerfDemoApp(),
-      config: const SleuthConfig(
+      // Full detector set (default enabledDetectors = all). For GC / heap /
+      // shader / heavy_compute: flutter run --profile --no-dds
+      config: SleuthConfig(
         fpsTarget: 60,
         enableNetworkMonitoring: true,
+        showOverlay: true,
+        autoFrameBudget: true,
+        enableDebugCallbacks: !kReleaseMode && !kProfileMode,
+        thresholds: const DetectorThresholds(
+          memoryBudgetBytes: 512 * 1024 * 1024,
+        ),
       ),
     ),
   );

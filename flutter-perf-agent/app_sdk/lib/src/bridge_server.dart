@@ -10,13 +10,13 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'perf_snapshot.dart';
+import 'sleuth_facade.dart';
 import 'ui_actions.dart';
 
-/// Local HTTP bridge: session + Sleuth snapshots for the PC-side MCP server.
+/// Local HTTP bridge: session + full Sleuth exports for the PC-side MCP server.
 ///
-/// UI actions (tap/scroll/input) are owned by **flutter_skill** and invoked by
-/// the MCP server via VM service extensions. Bridge `/tap` is a legacy
-/// fallback only.
+/// UI actions (tap/scroll/input) are owned by **flutter_skill** (VM extensions).
+/// Bridge `/tap` is a legacy fallback. Sleuth full dumps go through `/sleuth/*`.
 class PerfBridgeServer {
   PerfBridgeServer({
     this.host = '127.0.0.1',
@@ -49,7 +49,12 @@ class PerfBridgeServer {
       ..get('/snapshot', _snapshot)
       ..post('/wait', _wait)
       ..post('/tap', _tapLegacy)
-      ..get('/ui', _ui);
+      ..get('/ui', _ui)
+      ..get('/sleuth/snapshot', _sleuthSnapshot)
+      ..get('/sleuth/summary', _sleuthSummary)
+      ..get('/sleuth/diagnose', _sleuthDiagnose)
+      ..get('/sleuth/issues', _sleuthIssues)
+      ..get('/sleuth/route_health', _sleuthRouteHealth);
 
     final handler = const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
@@ -94,11 +99,12 @@ class PerfBridgeServer {
     return _json({
       'ok': true,
       'bridge': 'flutter-perf-agent',
-      'version': '0.3.0',
+      'version': '0.4.1',
       'sessionId': sessionId,
       'testName': testName,
       'vmServiceUri': vmUri,
       'uiDriver': 'flutter_skill',
+      'sleuth': SleuthFacade.diagnose(),
       'mode': kReleaseMode
           ? 'release'
           : (kProfileMode ? 'profile' : 'debug'),
@@ -166,6 +172,32 @@ class PerfBridgeServer {
     });
   }
 
+  FutureOr<Response> _sleuthSnapshot(Request request) {
+    final compact = request.url.queryParameters['compact'] == '1';
+    return _json(SleuthFacade.snapshot(compact: compact));
+  }
+
+  FutureOr<Response> _sleuthSummary(Request request) {
+    final topN =
+        int.tryParse(request.url.queryParameters['topN'] ?? '') ?? 5;
+    return _json(SleuthFacade.summary(topN: topN));
+  }
+
+  FutureOr<Response> _sleuthDiagnose(Request request) {
+    return _json(SleuthFacade.diagnose());
+  }
+
+  FutureOr<Response> _sleuthIssues(Request request) {
+    final limit =
+        int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50;
+    return _json(SleuthFacade.issues(limit: limit));
+  }
+
+  FutureOr<Response> _sleuthRouteHealth(Request request) {
+    final route = request.url.queryParameters['route'];
+    return _json(SleuthFacade.routeHealth(routeName: route));
+  }
+
   /// Legacy in-process tap. Prefer MCP → flutter_skill VM extension.
   Future<Response> _tapLegacy(Request request) async {
     final body = await _readJson(request);
@@ -216,14 +248,21 @@ class PerfBridgeServer {
 
   Future<void> _waitStable(int ms, {int frames = 2}) async {
     final frameCount = frames < 1 ? 1 : frames;
-    for (var i = 0; i < frameCount; i++) {
-      await SchedulerBinding.instance.endOfFrame;
+    Future<void> framesOrTimeout() async {
+      try {
+        for (var i = 0; i < frameCount; i++) {
+          await SchedulerBinding.instance.endOfFrame
+              .timeout(const Duration(seconds: 2));
+        }
+      } catch (_) {
+        // Idle / paused UI isolate — don't block the HTTP bridge forever.
+      }
     }
+
+    await framesOrTimeout();
     if (ms > 0) {
       await Future<void>.delayed(Duration(milliseconds: ms));
     }
-    for (var i = 0; i < frameCount; i++) {
-      await SchedulerBinding.instance.endOfFrame;
-    }
+    await framesOrTimeout();
   }
 }

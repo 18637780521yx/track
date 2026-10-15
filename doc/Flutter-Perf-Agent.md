@@ -22,8 +22,11 @@
 2. 不支持跨App操作，只测当前被测Flutter应用
 3. 不做线上APM、不做云端部署，**本地单机工具**
 4. V1不支持多设备并发测试
-5. 不做完整内存快照深度分析（仅内存趋势和泄漏预警）
+5. 不做完整堆快照 Diff 图形化；V1 指标以 Sleuth + RSS 为准
 6. 不支持iOS真机深度无障碍（优先Android模拟器/本地桌面Flutter）
+7. 本期不做 App Size / Deep links
+8. 不外连 DevTools 采 Timeline/CPU/Heap；VM 仅用于 flutter_skill UI
+9. 不嵌 DevTools Web UI
 
 ## 2. 用户角色
 **目标用户：Flutter开发者 / 移动端测试工程师**

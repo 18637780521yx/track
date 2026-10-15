@@ -6,3 +6,4 @@ export 'src/html_report.dart';
 export 'src/perf_diff.dart';
 export 'src/report_writer.dart';
 export 'src/server.dart';
+export 'src/snapshot_io.dart';

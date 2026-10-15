@@ -11,9 +11,21 @@
   "reportsDir": "reports",
   "enableNetworkCapture": true,
   "enableWidgetAntiPattern": true,
+  "devtoolsSampling": {
+    "enabled": false,
+    "http": false,
+    "logging": false,
+    "clearCpuEachStep": false,
+    "cpuTopN": 10,
+    "artifactRawTraces": false
+  },
+  "debugger": {
+    "pauseAllowed": false
+  },
   "thresholds": {
     "maxFrameCostMs": 16,
     "memoryIncreaseWarningMB": 5,
+    "heapIncreaseWarningMB": 8,
     "slowRequestMs": 300
   }
 }

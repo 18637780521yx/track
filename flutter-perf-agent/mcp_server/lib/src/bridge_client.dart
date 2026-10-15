@@ -40,6 +40,25 @@ class BridgeClient {
 
   Future<Map<String, dynamic>> ui() => _get('/ui');
 
+  /// Full Sleuth session snapshot (issues, frames, causal, routes…).
+  Future<Map<String, dynamic>> sleuthSnapshot({bool compact = false}) =>
+      _get('/sleuth/snapshot${compact ? '?compact=1' : ''}');
+
+  Future<Map<String, dynamic>> sleuthSummary({int topN = 5}) =>
+      _get('/sleuth/summary?topN=$topN');
+
+  Future<Map<String, dynamic>> sleuthDiagnose() => _get('/sleuth/diagnose');
+
+  Future<Map<String, dynamic>> sleuthIssues({int limit = 50}) =>
+      _get('/sleuth/issues?limit=$limit');
+
+  Future<Map<String, dynamic>> sleuthRouteHealth({String? routeName}) {
+    final q = (routeName == null || routeName.isEmpty)
+        ? ''
+        : '?route=${Uri.encodeQueryComponent(routeName)}';
+    return _get('/sleuth/route_health$q');
+  }
+
   /// Legacy Bridge tap (in-app UiActions). Prefer flutter_skill via MCP.
   Future<Map<String, dynamic>> tapLegacy({
     required String targetDesc,

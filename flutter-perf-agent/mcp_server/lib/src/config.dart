@@ -19,6 +19,14 @@ class PerfAgentConfig {
     required this.memoryIncreaseWarningMB,
     required this.slowRequestMs,
     required this.configPath,
+    required this.devtoolsSamplingEnabled,
+    required this.devtoolsHttpEnabled,
+    required this.devtoolsLoggingEnabled,
+    required this.devtoolsClearCpuEachStep,
+    required this.devtoolsCpuTopN,
+    required this.devtoolsArtifactRawTraces,
+    required this.debuggerPauseAllowed,
+    required this.heapIncreaseWarningMB,
   });
 
   final String bridgeHost;
@@ -36,6 +44,15 @@ class PerfAgentConfig {
   final int slowRequestMs;
   final String configPath;
 
+  final bool devtoolsSamplingEnabled;
+  final bool devtoolsHttpEnabled;
+  final bool devtoolsLoggingEnabled;
+  final bool devtoolsClearCpuEachStep;
+  final int devtoolsCpuTopN;
+  final bool devtoolsArtifactRawTraces;
+  final bool debuggerPauseAllowed;
+  final double heapIncreaseWarningMB;
+
   String get bridgeBaseUrl => 'http://$bridgeHost:$bridgePort';
 
   static Future<PerfAgentConfig> load(
@@ -51,6 +68,10 @@ class PerfAgentConfig {
 
     final thresholds =
         (json['thresholds'] as Map?)?.cast<String, dynamic>() ?? {};
+    final devtools =
+        (json['devtoolsSampling'] as Map?)?.cast<String, dynamic>() ?? {};
+    final debugger =
+        (json['debugger'] as Map?)?.cast<String, dynamic>() ?? {};
 
     var reportsDir = reportsDirOverride ??
         json['reportsDir'] as String? ??
@@ -75,6 +96,17 @@ class PerfAgentConfig {
           (thresholds['memoryIncreaseWarningMB'] as num?)?.toDouble() ?? 5,
       slowRequestMs: (thresholds['slowRequestMs'] as num?)?.toInt() ?? 300,
       configPath: configPath,
+      // Default off: metrics are Sleuth-only; VM is for flutter_skill UI.
+      devtoolsSamplingEnabled: devtools['enabled'] as bool? ?? false,
+      devtoolsHttpEnabled: devtools['http'] as bool? ?? false,
+      devtoolsLoggingEnabled: devtools['logging'] as bool? ?? false,
+      devtoolsClearCpuEachStep: devtools['clearCpuEachStep'] as bool? ?? true,
+      devtoolsCpuTopN: (devtools['cpuTopN'] as num?)?.toInt() ?? 10,
+      devtoolsArtifactRawTraces:
+          devtools['artifactRawTraces'] as bool? ?? false,
+      debuggerPauseAllowed: debugger['pauseAllowed'] as bool? ?? false,
+      heapIncreaseWarningMB:
+          (thresholds['heapIncreaseWarningMB'] as num?)?.toDouble() ?? 8,
     );
   }
 }

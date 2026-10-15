@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter_perf_agent_mcp/perf_mcp_server.dart';
 import 'package:path/path.dart' as p;
 
-/// End-to-end smoke without Cursor: Bridge + flutter_skill + report writer.
+/// End-to-end smoke: Bridge + flutter_skill + Sleuth/RSS reports.
 Future<void> main(List<String> args) async {
   final repoRoot = p.normalize(p.join(Directory.current.path, '..'));
   final configPath = p.join(repoRoot, 'perf_agent_config.json');
@@ -20,7 +20,6 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
 
-  // Clear leftover session from prior probes.
   await bridge.stopSession();
 
   final rawVm = health['vmServiceUri'] as String?;
@@ -29,7 +28,7 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
   final wsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
-  stdout.writeln('vm=$wsUri');
+  stdout.writeln('vm=$wsUri (UI only)');
 
   final session = PerfSession(
     sessionId: 'smoke_${DateTime.now().millisecondsSinceEpoch}',
@@ -42,6 +41,7 @@ Future<void> main(List<String> args) async {
   final started = await bridge.startSession(
     testName: session.testName,
     sessionId: session.sessionId,
+    waitStableMs: 0,
   );
   stdout.writeln(
     'session ok=${started['ok']} id=${started['sessionId']} '
@@ -145,6 +145,7 @@ Future<void> main(List<String> args) async {
       'driver': actionResult.containsKey('legacy')
           ? 'legacy_fallback'
           : 'flutter_skill',
+      'metricsSource': 'sleuth_bridge',
       'actionResult': actionResult,
       'diff': diff,
       'alerts': alerts,
@@ -199,9 +200,6 @@ Future<void> main(List<String> args) async {
   stdout.writeln('json: ${paths.jsonPath}');
   stdout.writeln('html: ${paths.htmlPath}');
   stdout.writeln('steps=${session.steps.length} alerts=${session.alerts.length}');
-  stdout.writeln(
-    'okSteps=${session.steps.where((s) => s['ok'] == true).length}',
-  );
 
   final okCount = session.steps.where((s) => s['ok'] == true).length;
   if (okCount < 4) {

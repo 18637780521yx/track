@@ -7,8 +7,10 @@
 3. App 正在跑（建议 `--profile`）
 
 ```bash
-cd example_app && flutter run -d macos --profile
+# 完整 Sleuth（含 GC/堆等）：务必 --no-dds
+cd example_app && flutter run -d macos --profile --no-dds
 curl http://127.0.0.1:19288/health
+curl http://127.0.0.1:19288/sleuth/diagnose
 ```
 
 ## Cursor 自然语言示例
@@ -37,6 +39,40 @@ stop_perf_test
 启动测试「探路」
 调用 get_ui_snapshot 告诉我现在有哪些可点控件
 再点击登录按钮并停止，输出报告
+```
+
+### Sleuth 完整能力（0.5）
+
+```
+启动测试「sleuth_full」
+get_sleuth_diagnose   # 确认 vmConnected
+在 password_field 输入 123456，点登录，向下滑
+get_sleuth_issues
+get_sleuth_summary
+get_sleuth_route_health
+停止测试并给出报告路径
+```
+
+### flutter_skill 完整能力（0.5.1）
+
+常用仍用 `tap` / `input_text` / `scroll`；其余走 `skill_*`：
+
+```
+启动测试「skill_full」
+skill_interactive / skill_get_widget_tree
+skill_wait_for_element（text=登录）
+skill_long_press / skill_double_tap / skill_go_back
+skill_screenshot / skill_get_logs
+get_sleuth_issues
+停止测试
+```
+
+### 导出会话快照
+
+```
+启动测试「snapshot_demo」
+…操作…
+停止测试并 export_session_snapshot
 ```
 
 ## 不用 Cursor：命令行 Demo

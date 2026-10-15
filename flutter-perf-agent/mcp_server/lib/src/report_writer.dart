@@ -38,7 +38,12 @@ class ReportWriter {
 
   final PerfAgentConfig config;
 
-  Future<ReportPaths> writeReports(PerfSession session) async {
+  Future<ReportPaths> writeReports(
+    PerfSession session, {
+    Map<String, dynamic>? sleuthFinal,
+    Map<String, dynamic>? sleuthDiagnose,
+    String? sleuthSummaryMarkdown,
+  }) async {
     final dir = Directory(config.reportsDir);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
@@ -47,9 +52,11 @@ class ReportWriter {
     final endedAt = DateTime.now();
     // HTML may embed screenshots from data URI or file path.
     final htmlReport = {
-      'schemaVersion': 3,
+      'schemaVersion': 5,
       'agent': 'flutter-perf-agent',
-      'phase': 'phase3',
+      'phase': 'sleuth_full',
+      'version': '0.5.0',
+      'metricsSource': 'sleuth_bridge',
       'sessionId': session.sessionId,
       'testName': session.testName,
       'mode': session.mode,
@@ -63,13 +70,18 @@ class ReportWriter {
       },
       'steps': session.steps,
       'alerts': session.alerts,
+      if (sleuthDiagnose != null) 'sleuthDiagnose': sleuthDiagnose,
+      if (sleuthSummaryMarkdown != null)
+        'sleuthSummaryMarkdown': sleuthSummaryMarkdown,
+      if (sleuthFinal != null) 'sleuthFinal': sleuthFinal,
       'summary': {
         'stepCount': session.steps.length,
         'alertCount': session.alerts.length,
         'okSteps': session.steps.where((s) => s['ok'] == true).length,
       },
       'note':
-          '采集工具本身会引入额外开销；请优先使用 flutter run --profile 获取可信数据。',
+          '完整 Sleuth 快照经 PerfBridge。UI 仍用 flutter_skill（VM）。'
+          'GC/堆等需 Sleuth 连上 VM：flutter run --profile --no-dds。',
     };
 
     // JSON keeps screenshot paths only (no huge base64).
@@ -98,11 +110,12 @@ class ReportWriter {
     return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }
 
-  /// Evaluate thresholds against a step diff and return alerts (may be empty).
+  /// Evaluate thresholds against a Sleuth/RSS step diff (+ live issues).
   List<Map<String, dynamic>> evaluateDiff(
     Map<String, dynamic> diff, {
     required String stepId,
     required String action,
+    Map<String, dynamic>? sleuthIssues,
   }) {
     final alerts = <Map<String, dynamic>>[];
     final memMb = (diff['memoryDeltaMb'] as num?)?.toDouble();
@@ -112,7 +125,7 @@ class ReportWriter {
         'stepId': stepId,
         'action': action,
         'message':
-            '内存上涨 ${memMb.toStringAsFixed(2)} MB ≥ 阈值 ${config.memoryIncreaseWarningMB} MB',
+            'RSS 上涨 ${memMb.toStringAsFixed(2)} MB ≥ 阈值 ${config.memoryIncreaseWarningMB} MB',
         'value': memMb,
         'threshold': config.memoryIncreaseWarningMB,
       });
@@ -142,7 +155,6 @@ class ReportWriter {
       });
     }
 
-    // Surface new Sleuth issues after the action when possible.
     final beforeIssues = (diff['issuesBefore'] as List?) ?? const [];
     final afterIssues = (diff['issuesAfter'] as List?) ?? const [];
     if (afterIssues.length > beforeIssues.length) {
@@ -151,9 +163,35 @@ class ReportWriter {
         'type': 'sleuth_issues',
         'stepId': stepId,
         'action': action,
-        'message': '操作后新增 Sleuth issue ${afterIssues.length - beforeIssues.length} 条',
+        'message':
+            '操作后新增 Sleuth issue ${afterIssues.length - beforeIssues.length} 条',
         'value': newly,
       });
+    }
+
+    // Surface live detector issues (full Sleuth surface).
+    if (sleuthIssues != null && sleuthIssues['ok'] == true) {
+      final issues = (sleuthIssues['issues'] as List?) ?? const [];
+      final severe = <Map<String, dynamic>>[];
+      for (final item in issues) {
+        if (item is! Map) continue;
+        final sev = item['severity']?.toString().toLowerCase() ?? '';
+        if (sev.contains('error') ||
+            sev.contains('critical') ||
+            sev.contains('warning')) {
+          severe.add(Map<String, dynamic>.from(item));
+        }
+      }
+      if (severe.isNotEmpty) {
+        alerts.add({
+          'type': 'sleuth_detector',
+          'stepId': stepId,
+          'action': action,
+          'message': 'Sleuth 当前有 ${severe.length} 条 warning+ issue',
+          'value': severe.take(8).toList(),
+          'totalIssues': issues.length,
+        });
+      }
     }
 
     return alerts;
