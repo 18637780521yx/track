@@ -1,0 +1,13 @@
+{
+  "bridgeHost": "127.0.0.1",
+  "bridgePort": 19288,
+  "waitStableMs": 500,
+  "reportsDir": "reports",
+  "enableNetworkCapture": true,
+  "enableWidgetAntiPattern": true,
+  "thresholds": {
+    "maxFrameCostMs": 16,
+    "memoryIncreaseWarningMB": 5,
+    "slowRequestMs": 300
+  }
+}

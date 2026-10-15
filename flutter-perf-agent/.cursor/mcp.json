@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "flutter-perf-agent": {
+      "command": "/Users/fc/fvm/default/bin/dart",
+      "args": [
+        "/Users/fc/Desktop/未命名文件夹 2/track/flutter-perf-agent/mcp_server/bin/server.dart",
+        "--config",
+        "/Users/fc/Desktop/未命名文件夹 2/track/flutter-perf-agent/perf_agent_config.json"
+      ],
+      "env": {
+        "PATH": "/Users/fc/fvm/default/bin:/Users/fc/.pub-cache/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      }
+    }
+  }
+}

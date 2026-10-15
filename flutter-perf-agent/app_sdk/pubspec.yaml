@@ -1,0 +1,21 @@
+name: flutter_perf_agent
+description: Phase1 App SDK — Sleuth snapshots + local HTTP bridge for Flutter-Perf-Agent.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_skill: ^0.9.37
+  sleuth: ^0.37.0
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
