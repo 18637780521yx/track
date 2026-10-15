@@ -213,6 +213,7 @@ class FlutterSkillVmClient {
     for (var i = 0; i < attempts; i++) {
       try {
         _log('$label attempt ${i + 1}/$attempts');
+        await ensureConnected();
         final result = await action();
         lastResult = result;
         if (_ok(result)) {
@@ -222,6 +223,10 @@ class FlutterSkillVmClient {
       } catch (e) {
         lastError = e;
         _log('$label error: $e');
+        // VM service often drops after hot restart / long idle — force reconnect.
+        if (_isServiceGone(e)) {
+          await disconnect();
+        }
       }
       if (i < attempts - 1) {
         await Future<void>.delayed(Duration(milliseconds: retryDelayMs));
@@ -233,6 +238,14 @@ class FlutterSkillVmClient {
       'lastResult': lastResult,
       'attempts': attempts,
     };
+  }
+
+  static bool _isServiceGone(Object e) {
+    final msg = e.toString();
+    return msg.contains('Service has disappeared') ||
+        msg.contains('Service connection disposed') ||
+        msg.contains('not connected') ||
+        msg.contains('Connection closed');
   }
 
   Future<Map<String, dynamic>> _call(
