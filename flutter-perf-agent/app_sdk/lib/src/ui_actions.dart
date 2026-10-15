@@ -5,22 +5,24 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
-/// Minimal semantics-based tap (Phase1). Prefer Key / Semantics label.
+/// Legacy semantics tap / UI dump.
+///
+/// **Primary UI driver is flutter_skill** (VM extensions). This class remains
+/// as a Bridge `/tap` fallback and for `/ui` listing when flutter_skill is
+/// unavailable.
 class UiActions {
   static SemanticsOwner? get _semanticsOwner {
     final binding = WidgetsBinding.instance;
     binding.ensureSemantics();
-    // Prefer the pipeline owner that actually hosts the app semantics tree.
     // ignore: deprecated_member_use
     return binding.pipelineOwner.semanticsOwner ??
         RendererBinding.instance.rootPipelineOwner.semanticsOwner;
   }
 
-  /// Find a semantics node whose label/value/tooltip contains [desc], then tap center.
+  /// Find a semantics node whose label/value/tooltip contains [desc], then tap.
   static Future<Map<String, dynamic>> tapByDescription(String desc) async {
     WidgetsBinding.instance.ensureSemantics();
 
-    // Allow a frame for semantics to settle.
     await SchedulerBinding.instance.endOfFrame;
     await Future<void>.delayed(const Duration(milliseconds: 16));
 
@@ -62,11 +64,11 @@ class UiActions {
       return {
         'ok': false,
         'error': 'No semantics node matching "$desc"',
-        'hint': 'Add Semantics(label: ...) or use Key-backed widgets',
+        'hint':
+            'Prefer flutter_skill tap (text/key). Or add Semantics(label: ...).',
       };
     }
 
-    // Prefer actionable / button-like nodes.
     SemanticsNode target = matches.first;
     for (final m in matches) {
       final d = m.getSemanticsData();
@@ -83,7 +85,6 @@ class UiActions {
       center = MatrixUtils.transformPoint(transform, center);
     }
 
-    // Walk up parent transforms if available.
     SemanticsNode? parent = target.parent;
     while (parent != null) {
       final t = parent.transform;
@@ -97,6 +98,7 @@ class UiActions {
 
     return {
       'ok': true,
+      'legacy': true,
       'targetDesc': desc,
       'x': center.dx,
       'y': center.dy,
@@ -109,7 +111,6 @@ class UiActions {
     try {
       return data.flagsCollection.isButton;
     } catch (_) {
-      // Fallback for older SDKs.
       // ignore: deprecated_member_use
       return data.hasFlag(ui.SemanticsFlag.isButton);
     }
@@ -166,7 +167,6 @@ class UiActions {
 
   static int _nextPointer = 90001;
 
-  /// Dump a compact list of interactive semantics labels for LLM inspection.
   static List<Map<String, dynamic>> dumpInteractive() {
     WidgetsBinding.instance.ensureSemantics();
     final owner = _semanticsOwner;

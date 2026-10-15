@@ -32,9 +32,16 @@ class BridgeClient {
   Future<Map<String, dynamic>> snapshot({bool raw = false}) =>
       _get('/snapshot${raw ? '?raw=1' : ''}');
 
+  Future<Map<String, dynamic>> waitStable({int? waitStableMs}) {
+    return _post('/wait', {
+      'waitStableMs': waitStableMs ?? config.waitStableMs,
+    });
+  }
+
   Future<Map<String, dynamic>> ui() => _get('/ui');
 
-  Future<Map<String, dynamic>> tap({
+  /// Legacy Bridge tap (in-app UiActions). Prefer flutter_skill via MCP.
+  Future<Map<String, dynamic>> tapLegacy({
     required String targetDesc,
     int? waitStableMs,
   }) {

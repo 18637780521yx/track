@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -11,7 +12,11 @@ import 'package:shelf_router/shelf_router.dart';
 import 'perf_snapshot.dart';
 import 'ui_actions.dart';
 
-/// Local HTTP bridge so the PC-side MCP server can drive the app.
+/// Local HTTP bridge: session + Sleuth snapshots for the PC-side MCP server.
+///
+/// UI actions (tap/scroll/input) are owned by **flutter_skill** and invoked by
+/// the MCP server via VM service extensions. Bridge `/tap` is a legacy
+/// fallback only.
 class PerfBridgeServer {
   PerfBridgeServer({
     this.host = '127.0.0.1',
@@ -42,7 +47,8 @@ class PerfBridgeServer {
       ..post('/session/start', _sessionStart)
       ..post('/session/stop', _sessionStop)
       ..get('/snapshot', _snapshot)
-      ..post('/tap', _tap)
+      ..post('/wait', _wait)
+      ..post('/tap', _tapLegacy)
       ..get('/ui', _ui);
 
     final handler = const Pipeline()
@@ -83,13 +89,16 @@ class PerfBridgeServer {
         headers: {'content-type': 'application/json; charset=utf-8'},
       );
 
-  FutureOr<Response> _health(Request request) {
+  Future<Response> _health(Request request) async {
+    final vmUri = await _vmServiceUri();
     return _json({
       'ok': true,
       'bridge': 'flutter-perf-agent',
-      'version': '0.1.0',
+      'version': '0.1.1',
       'sessionId': sessionId,
       'testName': testName,
+      'vmServiceUri': vmUri,
+      'uiDriver': 'flutter_skill',
       'mode': kReleaseMode
           ? 'release'
           : (kProfileMode ? 'profile' : 'debug'),
@@ -111,6 +120,7 @@ class PerfBridgeServer {
       'sessionId': sessionId,
       'testName': testName,
       'startedAt': sessionStartedAt!.toIso8601String(),
+      'vmServiceUri': await _vmServiceUri(),
       'baseline': PerfSnapshot.capture().toJson(),
     });
   }
@@ -139,14 +149,23 @@ class PerfBridgeServer {
     });
   }
 
+  Future<Response> _wait(Request request) async {
+    final body = await _readJson(request);
+    final wait = body['waitStableMs'] as int? ?? waitStableMs;
+    await _waitStable(wait);
+    return _json({'ok': true, 'waitedMs': wait});
+  }
+
   FutureOr<Response> _ui(Request request) {
     return _json({
       'ok': true,
       'elements': UiActions.dumpInteractive(),
+      'note': 'Prefer flutter_skill inspectInteractive via MCP when available',
     });
   }
 
-  Future<Response> _tap(Request request) async {
+  /// Legacy in-process tap. Prefer MCP → flutter_skill VM extension.
+  Future<Response> _tapLegacy(Request request) async {
     final body = await _readJson(request);
     final target = (body['targetDesc'] as String?)?.trim() ?? '';
     if (target.isEmpty) {
@@ -167,10 +186,22 @@ class PerfBridgeServer {
 
     return _json({
       'ok': action['ok'] == true,
+      'legacy': true,
       'action': action,
       'diff': diff.toJson(),
       'sessionId': sessionId,
+      'warning':
+          'Bridge /tap is legacy. Primary path is flutter_skill via MCP.',
     });
+  }
+
+  Future<String?> _vmServiceUri() async {
+    try {
+      final info = await developer.Service.getInfo();
+      return info.serverUri?.toString();
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<Map<String, dynamic>> _readJson(Request request) async {
