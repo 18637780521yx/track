@@ -45,10 +45,11 @@ class ReportWriter {
     }
 
     final endedAt = DateTime.now();
-    final report = {
-      'schemaVersion': 2,
+    // HTML may embed screenshots from data URI or file path.
+    final htmlReport = {
+      'schemaVersion': 3,
       'agent': 'flutter-perf-agent',
-      'phase': 'phase2',
+      'phase': 'phase3',
       'sessionId': session.sessionId,
       'testName': session.testName,
       'mode': session.mode,
@@ -71,6 +72,16 @@ class ReportWriter {
           '采集工具本身会引入额外开销；请优先使用 flutter run --profile 获取可信数据。',
     };
 
+    // JSON keeps screenshot paths only (no huge base64).
+    final jsonSteps = session.steps.map((s) {
+      final copy = Map<String, dynamic>.from(s)..remove('screenshotDataUri');
+      return copy;
+    }).toList();
+    final jsonReport = {
+      ...htmlReport,
+      'steps': jsonSteps,
+    };
+
     final safeName = session.testName
         .replaceAll(RegExp(r'[^\w\u4e00-\u9fff\-]+'), '_')
         .replaceAll(RegExp(r'_+'), '_');
@@ -80,9 +91,9 @@ class ReportWriter {
     final htmlPath = p.join(dir.path, '$base.html');
 
     await File(jsonPath).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(report),
+      const JsonEncoder.withIndent('  ').convert(jsonReport),
     );
-    await File(htmlPath).writeAsString(buildHtmlReport(report));
+    await File(htmlPath).writeAsString(buildHtmlReport(htmlReport));
 
     return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }

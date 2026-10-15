@@ -94,7 +94,7 @@ class PerfBridgeServer {
     return _json({
       'ok': true,
       'bridge': 'flutter-perf-agent',
-      'version': '0.1.1',
+      'version': '0.3.0',
       'sessionId': sessionId,
       'testName': testName,
       'vmServiceUri': vmUri,

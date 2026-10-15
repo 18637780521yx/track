@@ -8,8 +8,11 @@ class PerfAgentConfig {
     required this.bridgeHost,
     required this.bridgePort,
     required this.waitStableMs,
+    required this.postActionSettleMs,
+    required this.navigationWaitMs,
     required this.maxRetries,
     required this.retryDelayMs,
+    required this.captureScreenshots,
     required this.debugLog,
     required this.reportsDir,
     required this.maxFrameCostMs,
@@ -21,8 +24,11 @@ class PerfAgentConfig {
   final String bridgeHost;
   final int bridgePort;
   final int waitStableMs;
+  final int postActionSettleMs;
+  final int navigationWaitMs;
   final int maxRetries;
   final int retryDelayMs;
+  final bool captureScreenshots;
   final bool debugLog;
   final String reportsDir;
   final double maxFrameCostMs;
@@ -57,8 +63,11 @@ class PerfAgentConfig {
       bridgeHost: json['bridgeHost'] as String? ?? '127.0.0.1',
       bridgePort: json['bridgePort'] as int? ?? 19288,
       waitStableMs: json['waitStableMs'] as int? ?? 500,
+      postActionSettleMs: json['postActionSettleMs'] as int? ?? 400,
+      navigationWaitMs: json['navigationWaitMs'] as int? ?? 800,
       maxRetries: json['maxRetries'] as int? ?? 2,
       retryDelayMs: json['retryDelayMs'] as int? ?? 300,
+      captureScreenshots: json['captureScreenshots'] as bool? ?? true,
       debugLog: json['debugLog'] as bool? ?? false,
       reportsDir: reportsDir,
       maxFrameCostMs: (thresholds['maxFrameCostMs'] as num?)?.toDouble() ?? 16,

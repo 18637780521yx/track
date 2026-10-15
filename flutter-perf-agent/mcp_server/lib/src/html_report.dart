@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 /// Build a self-contained HTML report from a report JSON map.
 String buildHtmlReport(Map<String, dynamic> report) {
@@ -38,6 +39,7 @@ String buildHtmlReport(Map<String, dynamic> report) {
           final alertBadge = stepAlerts.isEmpty
               ? ''
               : '<span class="badge bad">${stepAlerts.length} 告警</span>';
+          final shot = _screenshotHtml(s);
           return '''
 <article class="step ${ok ? 'ok' : 'fail'}">
   <header>
@@ -56,9 +58,10 @@ String buildHtmlReport(Map<String, dynamic> report) {
     <div><label>FPS</label><b>${_num(diff['fpsBefore'])} → ${_num(diff['fpsAfter'])}</b></div>
     <div><label>P90</label><b>${_num(diff['p90FrameMsBefore'])} → ${_num(diff['p90FrameMsAfter'])} ms</b></div>
   </div>
+  $shot
   <details>
     <summary>原始 step JSON</summary>
-    <pre>${_esc(const JsonEncoder.withIndent('  ').convert(s))}</pre>
+    <pre>${_esc(_stepJsonForDetails(s))}</pre>
   </details>
 </article>''';
         }).join('\n');
@@ -79,7 +82,6 @@ String buildHtmlReport(Map<String, dynamic> report) {
     --good: #0b6e4f;
     --bad: #b42318;
     --warn-bg: #fff1f0;
-    --accent: #0b6e4f;
   }
   * { box-sizing: border-box; }
   body {
@@ -103,6 +105,11 @@ String buildHtmlReport(Map<String, dynamic> report) {
   .step header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
   .step h3 { margin: 0; font-size: 1rem; }
   .metrics { display:grid; grid-template-columns: repeat(auto-fit,minmax(110px,1fr)); gap: 10px; margin: 12px 0; }
+  .shot { margin: 12px 0; }
+  .shot img {
+    max-width: 100%; border-radius: 8px; border: 1px solid var(--line);
+    background: #0f1a14;
+  }
   .badge { display:inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
   .badge.good { background: #e3f5ee; color: var(--good); }
   .badge.bad { background: #fdecec; color: var(--bad); }
@@ -144,6 +151,29 @@ String buildHtmlReport(Map<String, dynamic> report) {
 </main>
 </body>
 </html>''';
+}
+
+String _screenshotHtml(Map<String, dynamic> step) {
+  final dataUri = step['screenshotDataUri'] as String?;
+  if (dataUri != null && dataUri.isNotEmpty) {
+    return '<div class="shot"><img alt="step screenshot" src="$dataUri"/></div>';
+  }
+  final path = step['screenshotPath'] as String?;
+  if (path != null && path.isNotEmpty) {
+    try {
+      final bytes = File(path).readAsBytesSync();
+      final b64 = base64Encode(bytes);
+      return '<div class="shot"><img alt="step screenshot" src="data:image/png;base64,$b64"/></div>';
+    } catch (_) {
+      return '<p class="muted">截图文件不可读: ${_esc(path)}</p>';
+    }
+  }
+  return '';
+}
+
+String _stepJsonForDetails(Map<String, dynamic> step) {
+  final copy = Map<String, dynamic>.from(step)..remove('screenshotDataUri');
+  return const JsonEncoder.withIndent('  ').convert(copy);
 }
 
 String _esc(String? s) {

@@ -40,7 +40,10 @@ class FlutterSkillVmClient {
     }
   }
 
+  bool get isConnected => _service != null && _isolateId != null;
+
   Future<void> connect() async {
+    if (isConnected) return;
     _service = await vmServiceConnectUri(wsUri);
     final vm = await _service!.getVM();
     final isolates = vm.isolates;
@@ -53,6 +56,20 @@ class FlutterSkillVmClient {
         );
     _isolateId = main!.id;
     _log('connected isolate=$_isolateId');
+  }
+
+  /// Reconnect if the previous session dropped (hot restart / isolate recycle).
+  Future<void> ensureConnected() async {
+    if (!isConnected) {
+      await connect();
+      return;
+    }
+    try {
+      await _service!.getVM();
+    } catch (_) {
+      await disconnect();
+      await connect();
+    }
   }
 
   Future<void> disconnect() async {
@@ -171,6 +188,19 @@ class FlutterSkillVmClient {
       'inspect',
       () => _call('ext.flutter.flutter_skill.inspectInteractive', {}),
     );
+  }
+
+  /// Returns PNG/JPEG base64 from flutter_skill screenshot extension.
+  Future<String?> screenshotBase64({int maxWidth = 720}) async {
+    final result = await _withRetry('screenshot', () async {
+      return _call('ext.flutter.flutter_skill.screenshot', {
+        'quality': '0.65',
+        'maxWidth': maxWidth.toString(),
+      });
+    });
+    final image = result['image'];
+    if (image is String && image.isNotEmpty) return image;
+    return null;
   }
 
   Future<Map<String, dynamic>> _withRetry(

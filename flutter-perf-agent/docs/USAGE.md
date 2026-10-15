@@ -1,0 +1,74 @@
+# 使用教程
+
+## 前置
+
+1. 已接入 `PerfAgent` + `Sleuth`（见 [INTEGRATION.md](INTEGRATION.md)）
+2. Cursor 已配置 `flutter-perf-agent` MCP
+3. App 正在跑（建议 `--profile`）
+
+```bash
+cd example_app && flutter run -d macos --profile
+curl http://127.0.0.1:19288/health
+```
+
+## Cursor 自然语言示例
+
+### 完整登录 → 滑动
+
+```
+启动性能测试，名字：登录到列表滑动。
+1. 在 password_field 输入 123456
+2. 点击「登录」
+3. 向下滑动列表两次，distance 400
+停止测试，给我 JSON 和 HTML 报告路径，并列出告警。
+```
+
+### 只点一个按钮看性能
+
+```
+start_perf_test 名字：点刷新
+tap 刷新按钮
+stop_perf_test
+```
+
+### 先看页面再操作
+
+```
+启动测试「探路」
+调用 get_ui_snapshot 告诉我现在有哪些可点控件
+再点击登录按钮并停止，输出报告
+```
+
+## 不用 Cursor：命令行 Demo
+
+```bash
+# 终端1：跑 App
+cd example_app && flutter run -d macos --debug
+
+# 终端2：
+cd flutter-perf-agent
+./scripts/demo.sh
+```
+
+会跑通 `input_text → tap → scroll ×2`，并尝试打开最新 HTML 报告。
+
+## 报告里有什么
+
+| 产物 | 内容 |
+|------|------|
+| `reports/*.json` | 机器可读：步骤、diff、告警、截图路径 |
+| `reports/*.html` | 可视化：步骤卡片、告警标红、截图嵌入 |
+| `reports/screenshots/<session>/` | 每步 PNG |
+
+## 配置调参
+
+编辑 `perf_agent_config.json`：
+
+| 字段 | 含义 |
+|------|------|
+| `waitStableMs` | 操作后 Bridge 等待 |
+| `postActionSettleMs` | 额外 settle |
+| `navigationWaitMs` | 登录类点击后的跳转等待 |
+| `maxRetries` | flutter_skill 重试次数 |
+| `captureScreenshots` | 是否截图 |
+| `thresholds.*` | 告警阈值 |

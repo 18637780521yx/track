@@ -1,4 +1,7 @@
+import 'dart:convert';
 import 'dart:io' as io;
+
+import 'package:path/path.dart' as p;
 
 import 'bridge_client.dart';
 import 'config.dart';
@@ -10,23 +13,23 @@ typedef SkillAction = Future<Map<String, dynamic>> Function(
   FlutterSkillVmClient client,
 );
 
-/// Shared before → action → wait → after → diff pipeline for MCP tools.
+/// Shared before → action → settle → after → diff (+ optional screenshot).
 class ActionRunner {
   ActionRunner({
     required this.config,
     required this.bridge,
     required this.reports,
     required this.session,
-    required String? Function() vmWsUri,
+    required Future<FlutterSkillVmClient?> Function() ensureSkillClient,
     required int Function() nextStepId,
-  })  : _vmWsUri = vmWsUri,
+  })  : _ensureSkillClient = ensureSkillClient,
         _nextStepId = nextStepId;
 
   final PerfAgentConfig config;
   final BridgeClient bridge;
   final ReportWriter reports;
   final PerfSession session;
-  final String? Function() _vmWsUri;
+  final Future<FlutterSkillVmClient?> Function() _ensureSkillClient;
   final int Function() _nextStepId;
 
   void _log(String msg) {
@@ -41,6 +44,8 @@ class ActionRunner {
     required SkillAction skillAction,
     Map<String, dynamic>? extraStepFields,
     int? waitStableMs,
+    /// Extra settle after action (e.g. navigation after login).
+    int? extraSettleMs,
     Future<Map<String, dynamic>> Function()? legacyFallback,
   }) async {
     final wait = waitStableMs ?? config.waitStableMs;
@@ -61,26 +66,18 @@ class ActionRunner {
 
     Map<String, dynamic> actionResult;
     var driver = 'flutter_skill';
-    final uri = _vmWsUri();
+    final client = await _ensureSkillClient();
 
-    if (uri != null) {
-      final client = FlutterSkillVmClient(
-        uri,
-        maxRetries: config.maxRetries,
-        retryDelayMs: config.retryDelayMs,
-        debugLog: config.debugLog,
-      );
+    if (client != null) {
       try {
-        await client.connect();
+        await client.ensureConnected();
         actionResult = await skillAction(client);
       } catch (e) {
         actionResult = {
           'success': false,
           'error': 'flutter_skill $action failed: $e',
-          'vmServiceUri': uri,
+          'vmServiceUri': client.wsUri,
         };
-      } finally {
-        await client.disconnect();
       }
 
       if (!_actionOk(actionResult) && legacyFallback != null) {
@@ -94,6 +91,10 @@ class ActionRunner {
         };
       } else if (_actionOk(actionResult)) {
         await bridge.waitStable(waitStableMs: wait);
+        final settle = (extraSettleMs ?? 0) + config.postActionSettleMs;
+        if (settle > 0) {
+          await Future<void>.delayed(Duration(milliseconds: settle));
+        }
       }
     } else if (legacyFallback != null) {
       driver = 'legacy';
@@ -136,6 +137,22 @@ class ActionRunner {
       session.addAlert(a);
     }
 
+    String? screenshotPath;
+    String? screenshotDataUri;
+    if (config.captureScreenshots && client != null) {
+      try {
+        await client.ensureConnected();
+        final b64 = await client.screenshotBase64();
+        if (b64 != null && b64.isNotEmpty) {
+          screenshotPath = await _saveScreenshot(stepId, b64);
+          screenshotDataUri = 'data:image/png;base64,$b64';
+          _log('screenshot saved $screenshotPath');
+        }
+      } catch (e) {
+        _log('screenshot failed: $e');
+      }
+    }
+
     final step = {
       'stepId': stepId,
       'action': action,
@@ -144,12 +161,31 @@ class ActionRunner {
       'actionResult': actionResult,
       'diff': diff,
       'alerts': alerts,
+      if (screenshotPath != null) 'screenshotPath': screenshotPath,
+      // Keep data URI out of JSON dump size — HTML builder reads file if needed.
+      if (screenshotDataUri != null) 'screenshotDataUri': screenshotDataUri,
       'at': DateTime.now().toIso8601String(),
       ...?extraStepFields,
     };
     session.addStep(step);
     _log('end $actionLabel ok=$ok alerts=${alerts.length}');
-    return step;
+
+    // Strip huge data URI from returned MCP payload (still in session for HTML).
+    final forMcp = Map<String, dynamic>.from(step)
+      ..remove('screenshotDataUri');
+    return forMcp;
+  }
+
+  Future<String> _saveScreenshot(String stepId, String base64) async {
+    final dir = io.Directory(
+      p.join(config.reportsDir, 'screenshots', session.sessionId),
+    );
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    final path = p.join(dir.path, '$stepId.png');
+    await io.File(path).writeAsBytes(base64Decode(base64));
+    return path;
   }
 
   bool _actionOk(Map<String, dynamic> result) {

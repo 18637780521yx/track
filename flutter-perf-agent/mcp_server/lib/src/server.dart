@@ -10,7 +10,7 @@ import 'config.dart';
 import 'flutter_skill_client.dart';
 import 'report_writer.dart';
 
-/// Phase2 MCP tools: start/stop + tap/scroll/input_text + UI/threshold.
+/// Phase3 MCP tools: start/stop + tap/scroll/input_text + screenshots.
 base class PerfMcpServer extends MCPServer with ToolsSupport {
   PerfMcpServer(
     super.channel, {
@@ -18,12 +18,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.2.0',
+            version: '0.3.0',
           ),
           instructions:
-              'Flutter-Perf-Agent Phase2. '
-              'Launch example_app (profile). Then: start_perf_test → '
-              'input_text / tap / scroll → stop_perf_test (JSON+HTML report). '
+              'Flutter-Perf-Agent V1 (Phase3). '
+              'Launch example_app (prefer --profile). Then: start_perf_test → '
+              'input_text / tap / scroll → stop_perf_test (JSON+HTML+screenshots). '
               'UI via flutter_skill; metrics via PerfBridge+Sleuth.',
         ) {
     _bridge = BridgeClient(config);
@@ -39,8 +39,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] ready bridge=${config.bridgeBaseUrl} '
-        'retries=${config.maxRetries}',
+        '[flutter-perf-agent-mcp] v0.3.0 bridge=${config.bridgeBaseUrl} '
+        'retries=${config.maxRetries} shots=${config.captureScreenshots}',
       );
     }
   }
@@ -51,6 +51,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   PerfSession? _session;
   String? _vmWsUri;
+  FlutterSkillVmClient? _skill;
   int _stepCounter = 0;
 
   ActionRunner? get _runner {
@@ -61,15 +62,32 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       bridge: _bridge,
       reports: _reports,
       session: session,
-      vmWsUri: () => _vmWsUri,
+      ensureSkillClient: _ensureSkillClient,
       nextStepId: () => ++_stepCounter,
     );
+  }
+
+  Future<FlutterSkillVmClient?> _ensureSkillClient() async {
+    if (_vmWsUri == null) return null;
+    _skill ??= FlutterSkillVmClient(
+      _vmWsUri!,
+      maxRetries: config.maxRetries,
+      retryDelayMs: config.retryDelayMs,
+      debugLog: config.debugLog,
+    );
+    await _skill!.ensureConnected();
+    return _skill;
+  }
+
+  Future<void> _disposeSkill() async {
+    await _skill?.disconnect();
+    _skill = null;
   }
 
   final _startTool = Tool(
     name: 'start_perf_test',
     description:
-        '启动性能测试会话：连接 PerfBridge，记录 VM URI，读取基线快照。',
+        '启动性能测试会话：先清理旧会话，连接 PerfBridge，记录 VM URI，读取基线。',
     inputSchema: Schema.object(
       properties: {
         'testName': Schema.string(description: '测试名称'),
@@ -81,7 +99,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _stopTool = Tool(
     name: 'stop_perf_test',
-    description: '停止测试，写出 JSON + HTML 报告，返回路径与告警摘要。',
+    description: '停止测试，写出 JSON + HTML 报告（含截图），返回路径与告警。',
     inputSchema: Schema.object(
       properties: {
         'sessionId': Schema.string(description: '会话 ID（可选）'),
@@ -92,7 +110,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   final _tapTool = Tool(
     name: 'tap',
     description:
-        'flutter_skill 点击控件；前后采集性能 diff。失败可回退 legacy 语义点击。',
+        'flutter_skill 点击；前后采性能。登录类点击会额外等待页面跳转。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '文本或 Key，如「登录」/ login_button'),
@@ -106,8 +124,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   final _scrollTool = Tool(
     name: 'scroll',
     description:
-        '滑动页面。提供 direction+distance 做 swipe；或提供 targetDesc 滚到目标控件。'
-        '前后自动采性能。',
+        '滑动。direction+distance 做 swipe；或 targetDesc 滚到目标。前后采性能。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '滚到该控件（key/text），可选'),
@@ -126,7 +143,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(
-          description: '输入框 Key 或标签，如 password_field / 密码输入框',
+          description: '输入框 Key 或标签，如 password_field',
         ),
         'text': Schema.string(description: '要输入的文本'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
@@ -143,7 +160,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _thresholdTool = Tool(
     name: 'get_perf_threshold_config',
-    description: '读取性能告警阈值与重试配置。',
+    description: '读取性能告警阈值与稳定性配置。',
     inputSchema: Schema.object(properties: {}),
   );
 
@@ -151,6 +168,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final args = request.arguments ?? const <String, Object?>{};
     final testName = args['testName'] as String? ?? 'unnamed';
     final wait = args['waitStableMs'] as int?;
+
+    // Clear any leftover Bridge session from prior runs / probes.
+    await _bridge.stopSession();
+    await _disposeSkill();
 
     final health = await _bridge.health();
     if (health['ok'] != true) return _err(health);
@@ -181,6 +202,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     );
     _stepCounter = 0;
 
+    // Warm VM connection once per session.
+    try {
+      await _ensureSkillClient();
+    } catch (e) {
+      if (config.debugLog) {
+        io.stderr.writeln('[flutter-perf-agent-mcp] skill warm failed: $e');
+      }
+    }
+
     return _ok({
       'sessionId': _session!.sessionId,
       'testName': testName,
@@ -189,7 +219,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'bridge': config.bridgeBaseUrl,
       'vmServiceUri': _vmWsUri,
       'uiDriver': 'flutter_skill',
-      'phase': 'phase2',
+      'phase': 'phase3',
+      'version': '0.3.0',
     });
   }
 
@@ -204,6 +235,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     final stop = await _bridge.stopSession();
     final paths = await _reports.writeReports(session);
+    await _disposeSkill();
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
@@ -231,10 +263,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       return _err({'ok': false, 'error': 'targetDesc is required'});
     }
 
+    final looksLikeNav = _looksLikeNavigationTap(target);
     final step = await runner.run(
       action: 'tap',
       actionLabel: 'tap:$target',
       waitStableMs: wait,
+      extraSettleMs: looksLikeNav ? config.navigationWaitMs : 0,
       extraStepFields: {'targetDesc': target},
       skillAction: forceLegacy
           ? (client) async => {'success': false, 'error': 'forced legacy'}
@@ -247,6 +281,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     return step.containsKey('error') && step['ok'] == false
         ? _err(step)
         : _ok(step);
+  }
+
+  bool _looksLikeNavigationTap(String target) {
+    final t = target.toLowerCase();
+    return t.contains('登录') ||
+        t.contains('login') ||
+        t.contains('submit') ||
+        t.contains('下一步') ||
+        t.contains('确认');
   }
 
   FutureOr<CallToolResult> _scroll(CallToolRequest request) async {
@@ -310,7 +353,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       extraStepFields: {
         'targetDesc': target,
         'textLength': text.length,
-        // Do not echo secrets in full; keep short preview for debug.
         'textPreview': text.length <= 4 ? text : '${text.substring(0, 2)}***',
       },
       skillAction: (client) => client.enterText(text: text, target: target),
@@ -321,15 +363,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }
 
   FutureOr<CallToolResult> _getUiSnapshot(CallToolRequest request) async {
-    if (_vmWsUri != null) {
-      final client = FlutterSkillVmClient(
-        _vmWsUri!,
-        maxRetries: config.maxRetries,
-        retryDelayMs: config.retryDelayMs,
-        debugLog: config.debugLog,
-      );
+    final client = await _ensureSkillClient();
+    if (client != null) {
       try {
-        await client.connect();
         final inspected = await client.inspectInteractive();
         return _ok({
           'ok': true,
@@ -343,8 +379,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
           'driver': 'bridge_fallback',
           'flutterSkillError': e.toString(),
         });
-      } finally {
-        await client.disconnect();
       }
     }
 
@@ -358,12 +392,16 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       'configPath': config.configPath,
       'bridge': config.bridgeBaseUrl,
       'waitStableMs': config.waitStableMs,
+      'postActionSettleMs': config.postActionSettleMs,
+      'navigationWaitMs': config.navigationWaitMs,
       'maxRetries': config.maxRetries,
       'retryDelayMs': config.retryDelayMs,
+      'captureScreenshots': config.captureScreenshots,
       'debugLog': config.debugLog,
       'reportsDir': config.reportsDir,
       'uiDriver': 'flutter_skill',
-      'phase': 'phase2',
+      'phase': 'phase3',
+      'version': '0.3.0',
       'thresholds': {
         'maxFrameCostMs': config.maxFrameCostMs,
         'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,

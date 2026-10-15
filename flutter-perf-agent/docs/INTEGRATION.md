@@ -1,0 +1,95 @@
+# 接入指南
+
+把 Flutter-Perf-Agent 接到任意 Flutter 工程（仅 Debug / Profile）。
+
+## 1. 依赖
+
+```yaml
+# pubspec.yaml
+dependencies:
+  flutter_perf_agent:
+    path: /path/to/track/flutter-perf-agent/app_sdk
+  sleuth: ^0.37.0
+  flutter_skill: ^0.9.37   # 由 app_sdk 传递依赖，也可显式声明
+```
+
+```bash
+flutter pub get
+```
+
+## 2. 初始化
+
+```dart
+import 'package:flutter/foundation.dart';
+import 'package:flutter_perf_agent/flutter_perf_agent.dart';
+import 'package:sleuth/sleuth.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (!kReleaseMode) {
+    await PerfAgent.ensureInitialized(
+      host: '127.0.0.1',
+      port: 19288,
+    );
+  }
+
+  runApp(
+    Sleuth.track(
+      child: const MyApp(),
+      config: const SleuthConfig(fpsTarget: 60),
+    ),
+  );
+}
+```
+
+## 3. 给控件加稳定定位
+
+```dart
+TextField(key: const Key('password_field'), ...)
+FilledButton(
+  key: const Key('login_button'),
+  child: const Text('登录'),
+)
+// 或
+Semantics(label: '登录按钮', button: true, child: ...)
+```
+
+MCP / flutter_skill 优先用 **Key** 或可见 **Text**；语义 label 作补充。
+
+## 4. 配置 MCP（Cursor）
+
+```json
+{
+  "mcpServers": {
+    "flutter-perf-agent": {
+      "command": "/path/to/dart",
+      "args": [
+        "/path/to/flutter-perf-agent/mcp_server/bin/server.dart",
+        "--config",
+        "/path/to/flutter-perf-agent/perf_agent_config.json"
+      ]
+    }
+  }
+}
+```
+
+重启 Cursor 后即可在对话里调用工具。
+
+## 5. Android 模拟器注意
+
+Bridge 绑在 App 内 `127.0.0.1`。宿主机访问模拟器内端口需：
+
+```bash
+adb reverse tcp:19288 tcp:19288
+```
+
+桌面（macOS）无需此步。
+
+## 6. 可信性能数据
+
+```bash
+flutter run --profile
+```
+
+Debug 只适合验流程；报告里会有采集开销说明。

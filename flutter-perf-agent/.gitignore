@@ -11,5 +11,6 @@ build/
 .vscode/
 reports/*.json
 reports/*.html
+reports/screenshots/
 !reports/.gitkeep
 .DS_Store
