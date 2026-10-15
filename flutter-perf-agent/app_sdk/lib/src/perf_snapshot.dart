@@ -36,7 +36,13 @@ class PerfSnapshot {
       };
 
   /// Capture current metrics from Sleuth (+ RSS fallback).
-  static PerfSnapshot capture({bool includeRaw = false}) {
+  ///
+  /// [sleuth] — when false, only RSS is captured (fast path for session start,
+  /// avoids rare hangs in `Sleuth.exportSnapshotJson` on cold start).
+  static PerfSnapshot capture({
+    bool includeRaw = false,
+    bool sleuth = true,
+  }) {
     final now = DateTime.now().millisecondsSinceEpoch;
     final rss = (!kIsWeb && (Platform.isAndroid ||
             Platform.isIOS ||
@@ -52,53 +58,16 @@ class PerfSnapshot {
     final issues = <String>[];
     Map<String, dynamic>? raw;
 
-    try {
-      final jsonStr = Sleuth.exportSnapshotJson();
-      if (jsonStr != null && jsonStr.isNotEmpty) {
-        final decoded = jsonDecode(jsonStr);
-        if (decoded is Map<String, dynamic>) {
-          raw = includeRaw ? decoded : null;
-          avgFps = _asDouble(
-            decoded['throughputFps'] ??
-                decoded['avgFps'] ??
-                decoded['fps'] ??
-                _dig(decoded, ['frameStats', 'throughputFps']) ??
-                _dig(decoded, ['frameStats', 'avgFps']),
-          );
-          p90FrameMs = _asDouble(
-            decoded['p90FrameMs'] ??
-                _dig(decoded, ['frameStats', 'p90FrameMs']) ??
-                _dig(decoded, ['frameStats', 'p90Ms']),
-          );
-          jankCount = _asInt(
-            decoded['jankCount'] ??
-                _dig(decoded, ['frameStats', 'jankCount']) ??
-                _dig(decoded, ['frameStats', 'jank']),
-          );
-
-          final currentIssues = decoded['currentIssues'] ??
-              decoded['issues'] ??
-              _dig(decoded, ['frameStats', 'issues']);
-          if (currentIssues is List) {
-            for (final item in currentIssues) {
-              if (item is Map) {
-                final id = item['stableId'] ?? item['id'] ?? item['type'];
-                final title = item['title'] ?? item['message'] ?? item['summary'];
-                issues.add('${id ?? 'issue'}: ${title ?? item}');
-              } else {
-                issues.add(item.toString());
-              }
-            }
-          }
-        }
-      } else {
+    if (sleuth) {
+      try {
+        // Prefer object export first — usually cheaper than full JSON stringify.
         final snap = Sleuth.exportSnapshot();
         if (snap != null) {
-          // Best-effort reflection-free extraction via toString / known fields.
           try {
             final dynamic d = snap;
             avgFps = _asDouble(d.throughputFps ?? d.avgFps);
             jankCount = _asInt(d.jankCount);
+            p90FrameMs = _asDouble(d.p90FrameMs);
           } catch (_) {}
           try {
             final dynamic d = snap;
@@ -110,9 +79,53 @@ class PerfSnapshot {
             }
           } catch (_) {}
         }
+
+        if (includeRaw || avgFps == null) {
+          final jsonStr = Sleuth.exportSnapshotJson();
+          if (jsonStr != null && jsonStr.isNotEmpty) {
+            final decoded = jsonDecode(jsonStr);
+            if (decoded is Map<String, dynamic>) {
+              raw = includeRaw ? decoded : null;
+              avgFps ??= _asDouble(
+                decoded['throughputFps'] ??
+                    decoded['avgFps'] ??
+                    decoded['fps'] ??
+                    _dig(decoded, ['frameStats', 'throughputFps']) ??
+                    _dig(decoded, ['frameStats', 'avgFps']),
+              );
+              p90FrameMs ??= _asDouble(
+                decoded['p90FrameMs'] ??
+                    _dig(decoded, ['frameStats', 'p90FrameMs']) ??
+                    _dig(decoded, ['frameStats', 'p90Ms']),
+              );
+              jankCount ??= _asInt(
+                decoded['jankCount'] ??
+                    _dig(decoded, ['frameStats', 'jankCount']) ??
+                    _dig(decoded, ['frameStats', 'jank']),
+              );
+              if (issues.isEmpty) {
+                final currentIssues = decoded['currentIssues'] ??
+                    decoded['issues'] ??
+                    _dig(decoded, ['frameStats', 'issues']);
+                if (currentIssues is List) {
+                  for (final item in currentIssues) {
+                    if (item is Map) {
+                      final id = item['stableId'] ?? item['id'] ?? item['type'];
+                      final title =
+                          item['title'] ?? item['message'] ?? item['summary'];
+                      issues.add('${id ?? 'issue'}: ${title ?? item}');
+                    } else {
+                      issues.add(item.toString());
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        issues.add('sleuth_export_error: $e');
       }
-    } catch (e) {
-      issues.add('sleuth_export_error: $e');
     }
 
     return PerfSnapshot(

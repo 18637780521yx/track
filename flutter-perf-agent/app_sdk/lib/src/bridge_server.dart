@@ -115,13 +115,14 @@ class PerfBridgeServer {
 
     await _waitStable(wait);
 
+    // RSS-only baseline — full Sleuth export can stall the UI isolate on cold start.
     return _json({
       'ok': true,
       'sessionId': sessionId,
       'testName': testName,
       'startedAt': sessionStartedAt!.toIso8601String(),
       'vmServiceUri': await _vmServiceUri(),
-      'baseline': PerfSnapshot.capture().toJson(),
+      'baseline': PerfSnapshot.capture(sleuth: false).toJson(),
     });
   }
 
@@ -133,7 +134,7 @@ class PerfBridgeServer {
       'testName': testName,
       'startedAt': sessionStartedAt?.toIso8601String(),
       'endedAt': ended.toIso8601String(),
-      'finalSnapshot': PerfSnapshot.capture().toJson(),
+      'finalSnapshot': PerfSnapshot.capture(sleuth: false).toJson(),
     };
     sessionId = null;
     testName = null;
