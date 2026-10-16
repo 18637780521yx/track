@@ -22,8 +22,7 @@ dependencyResolutionManagement {
         google()
         mavenCentral()
         maven {
-            url = uri("http://101.126.68.169:8501/maven/")
-            isAllowInsecureProtocol = true
+            url = uri("https://ota.h10wanren.com:8443/maven/")
             content { includeGroup("com.wenrai") }
         }
     }
@@ -40,7 +39,7 @@ dependencies {
 ```bash
 cd track/fast_track_android
 ./scripts/publish-to-maven.sh
-# → http://101.126.68.169:8501/maven/com/wenrai/fast-track/
+# → https://ota.h10wanren.com:8443/maven/com/wenrai/fast-track/
 ```
 
 **方式 B：工程 module（本地联调）**

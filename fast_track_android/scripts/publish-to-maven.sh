@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Publish com.wenrai:fast-track to local maven-repo, then sync to OTA public/maven
-# (same layout as ota-sdk: http://101.126.68.169:8501/maven/).
+# (same layout as ota-sdk: https://ota.h10wanren.com:8443/maven/).
 #
 # Usage:
 #   ./scripts/publish-to-maven.sh
@@ -55,5 +55,5 @@ fi
 echo "Sync → $REMOTE_MAVEN"
 rsync -az "$PUBLIC_MAVEN/com/wenrai/fast-track/" "$REMOTE_MAVEN/com/wenrai/fast-track/"
 echo "Remote OK. Resolve via:"
-echo "  maven { url = uri(\"http://101.126.68.169:8501/maven/\"); isAllowInsecureProtocol = true }"
+echo "  maven { url = uri(\"https://ota.h10wanren.com:8443/maven/\") }"
 echo "  implementation(\"com.wenrai:fast-track:$VER\")"
