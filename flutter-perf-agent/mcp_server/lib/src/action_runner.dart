@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io' as io;
 
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
 import 'bridge_client.dart';
@@ -14,9 +15,6 @@ typedef SkillAction = Future<Map<String, dynamic>> Function(
 );
 
 /// Shared before → action → settle → after → Sleuth/RSS diff (+ screenshot).
-///
-/// Metrics come from PerfBridge snapshots (Sleuth + RSS). VM is used only for
-/// flutter_skill UI actions — not for DevTools Timeline/CPU/Heap probes.
 class ActionRunner {
   ActionRunner({
     required this.config,
@@ -41,14 +39,14 @@ class ActionRunner {
     }
   }
 
-  Future<Map<String, dynamic>> run({
+  Future<StepResult> run({
     required String action,
     required String actionLabel,
     required SkillAction skillAction,
     Map<String, dynamic>? extraStepFields,
     int? waitStableMs,
     int? extraSettleMs,
-    Future<Map<String, dynamic>> Function()? legacyFallback,
+    Future<ApiResponse<TapLegacyData>> Function()? legacyFallback,
   }) async {
     final wait = waitStableMs ?? config.waitStableMs;
     final stepId = 'step_${_nextStepId()}';
@@ -56,42 +54,57 @@ class ActionRunner {
     _log('begin $actionLabel ($stepId)');
 
     final beforeRes = await bridge.snapshot();
-    if (beforeRes['ok'] != true) {
-      return {
-        'ok': false,
-        'error': 'before snapshot failed',
-        'detail': beforeRes,
-      };
+    if (!beforeRes.isOk || beforeRes.data == null) {
+      final fail = StepResult(
+        stepId: stepId,
+        action: action,
+        ok: false,
+        driver: 'none',
+        actionResult: ActionResult(
+          success: false,
+          error: 'before snapshot failed: ${beforeRes.msg}',
+        ),
+        at: DateTime.now().toIso8601String(),
+        extra: {...?extraStepFields},
+      );
+      session.addStep(fail);
+      return fail;
     }
-    final before =
-        (beforeRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
+    final before = beforeRes.data!.snapshot;
 
-    Map<String, dynamic> actionResult;
+    ActionResult actionResult;
     var driver = 'flutter_skill';
     final client = await _ensureSkillClient();
 
     if (client != null) {
       try {
         await client.ensureConnected();
-        actionResult = await skillAction(client);
+        final raw = await skillAction(client);
+        actionResult = ActionResult.fromSkillMap(raw);
       } catch (e) {
-        actionResult = {
-          'success': false,
-          'error': 'flutter_skill $action failed: $e',
-          'vmServiceUri': client.wsUri,
-        };
+        actionResult = ActionResult(
+          success: false,
+          driver: 'flutter_skill',
+          error: 'flutter_skill $action failed: $e',
+          detail: {'vmServiceUri': client.wsUri},
+        );
       }
 
-      if (!_actionOk(actionResult) && legacyFallback != null) {
+      if (!actionResult.success && legacyFallback != null) {
         _log('$actionLabel flutter_skill failed, trying legacy');
         driver = 'legacy_fallback';
         final legacy = await legacyFallback();
-        actionResult = {
-          'success': legacy['ok'] == true || legacy['success'] == true,
-          'flutterSkill': actionResult,
-          'legacy': legacy,
-        };
-      } else if (_actionOk(actionResult)) {
+        final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
+        actionResult = ActionResult(
+          success: legacyOk,
+          driver: driver,
+          detail: {
+            'flutterSkill': actionResult.toJson(),
+            'legacy': legacy.toJson(),
+          },
+          error: legacyOk ? null : (legacy.msg),
+        );
+      } else if (actionResult.success) {
         await bridge.waitStable(waitStableMs: wait);
         final settle = (extraSettleMs ?? 0) + config.postActionSettleMs;
         if (settle > 0) {
@@ -101,27 +114,40 @@ class ActionRunner {
     } else if (legacyFallback != null) {
       driver = 'legacy';
       final legacy = await legacyFallback();
-      actionResult = {
-        'success': legacy['ok'] == true || legacy['success'] == true,
-        'legacy': legacy,
-      };
+      final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
+      actionResult = ActionResult(
+        success: legacyOk,
+        driver: driver,
+        detail: {'legacy': legacy.toJson()},
+        error: legacyOk ? null : legacy.msg,
+      );
     } else {
-      actionResult = {
-        'success': false,
-        'error': 'no vmServiceUri and no legacy fallback',
-      };
+      actionResult = const ActionResult(
+        success: false,
+        error: 'no vmServiceUri and no legacy fallback',
+      );
     }
 
     final afterRes = await bridge.snapshot();
-    if (afterRes['ok'] != true) {
-      return {
-        'ok': false,
-        'error': 'after snapshot failed',
-        'detail': afterRes,
-      };
+    if (!afterRes.isOk || afterRes.data == null) {
+      final fail = StepResult(
+        stepId: stepId,
+        action: action,
+        ok: false,
+        driver: driver,
+        actionResult: ActionResult(
+          success: false,
+          driver: driver,
+          error: 'after snapshot failed: ${afterRes.msg}',
+          detail: actionResult.toJson(),
+        ),
+        at: DateTime.now().toIso8601String(),
+        extra: {...?extraStepFields},
+      );
+      session.addStep(fail);
+      return fail;
     }
-    final after =
-        (afterRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
+    final after = afterRes.data!.snapshot;
 
     final diff = computePerfDiff(
       before: before,
@@ -129,11 +155,12 @@ class ActionRunner {
       durationMs: DateTime.now().difference(t0).inMilliseconds,
     );
 
-    final ok = _actionOk(actionResult);
+    final ok = actionResult.success;
 
-    Map<String, dynamic>? sleuthIssues;
+    SleuthIssuesData? sleuthIssues;
     try {
-      sleuthIssues = await bridge.sleuthIssues(limit: 30);
+      final issuesRes = await bridge.sleuthIssues(limit: 30);
+      if (issuesRes.isOk) sleuthIssues = issuesRes.data;
     } catch (e) {
       _log('sleuth issues fetch failed: $e');
     }
@@ -164,27 +191,23 @@ class ActionRunner {
       }
     }
 
-    final step = {
-      'stepId': stepId,
-      'action': action,
-      'ok': ok,
-      'driver': driver,
-      'actionResult': actionResult,
-      'diff': diff,
-      'metricsSource': 'sleuth_bridge',
-      if (sleuthIssues != null) 'sleuthIssues': sleuthIssues,
-      'alerts': alerts,
-      if (screenshotPath != null) 'screenshotPath': screenshotPath,
-      if (screenshotDataUri != null) 'screenshotDataUri': screenshotDataUri,
-      'at': DateTime.now().toIso8601String(),
-      ...?extraStepFields,
-    };
+    final step = StepResult(
+      stepId: stepId,
+      action: action,
+      ok: ok,
+      driver: driver,
+      actionResult: actionResult,
+      diff: diff,
+      sleuthIssues: sleuthIssues,
+      alerts: alerts,
+      screenshotPath: screenshotPath,
+      screenshotDataUri: screenshotDataUri,
+      at: DateTime.now().toIso8601String(),
+      extra: {...?extraStepFields},
+    );
     session.addStep(step);
     _log('end $actionLabel ok=$ok alerts=${alerts.length}');
-
-    final forMcp = Map<String, dynamic>.from(step)
-      ..remove('screenshotDataUri');
-    return forMcp;
+    return step;
   }
 
   Future<String> _saveScreenshot(String stepId, String base64) async {
@@ -197,14 +220,5 @@ class ActionRunner {
     final path = p.join(dir.path, '$stepId.png');
     await io.File(path).writeAsBytes(base64Decode(base64));
     return path;
-  }
-
-  bool _actionOk(Map<String, dynamic> result) {
-    if (result['success'] == true || result['ok'] == true) return true;
-    final nested = result['result'];
-    if (nested is Map && (nested['success'] == true || nested['ok'] == true)) {
-      return true;
-    }
-    return false;
   }
 }

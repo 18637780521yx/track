@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:sleuth/sleuth.dart';
 
 /// Lightweight performance snapshot taken around a UI action.
@@ -24,16 +25,17 @@ class PerfSnapshot {
   final List<String> sleuthIssues;
   final Map<String, dynamic>? rawSleuthJson;
 
-  Map<String, dynamic> toJson() => {
-        'timestampMs': timestampMs,
-        'rssBytes': rssBytes,
-        'rssMb': double.parse((rssBytes / (1024 * 1024)).toStringAsFixed(2)),
-        'avgFps': avgFps,
-        'p90FrameMs': p90FrameMs,
-        'jankCount': jankCount,
-        'sleuthIssues': sleuthIssues,
-        if (rawSleuthJson != null) 'sleuth': rawSleuthJson,
-      };
+  SnapshotPayload toPayload() => SnapshotPayload(
+        timestampMs: timestampMs,
+        rssBytes: rssBytes,
+        avgFps: avgFps,
+        p90FrameMs: p90FrameMs,
+        jankCount: jankCount,
+        sleuthIssues: sleuthIssues,
+        sleuth: rawSleuthJson,
+      );
+
+  Map<String, dynamic> toJson() => toPayload().toJson();
 
   /// Capture current metrics from Sleuth (+ RSS fallback).
   ///
@@ -188,19 +190,11 @@ class PerfDiff {
     return after.jankCount! - before.jankCount!;
   }
 
-  Map<String, dynamic> toJson() => {
-        'durationMs': durationMs,
-        'memoryDeltaBytes': memoryDeltaBytes,
-        'memoryDeltaMb':
-            double.parse(memoryDeltaMb.toStringAsFixed(3)),
-        'jankDelta': jankDelta,
-        'fpsBefore': before.avgFps,
-        'fpsAfter': after.avgFps,
-        'p90FrameMsBefore': before.p90FrameMs,
-        'p90FrameMsAfter': after.p90FrameMs,
-        'issuesBefore': before.sleuthIssues,
-        'issuesAfter': after.sleuthIssues,
-        'before': before.toJson(),
-        'after': after.toJson(),
-      };
+  PerfDiffData toData() => PerfDiffData.compute(
+        before: before.toPayload(),
+        after: after.toPayload(),
+        durationMs: durationMs,
+      );
+
+  Map<String, dynamic> toJson() => toData().toJson();
 }

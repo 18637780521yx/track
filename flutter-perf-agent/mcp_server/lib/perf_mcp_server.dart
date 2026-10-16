@@ -1,3 +1,5 @@
+export 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
+
 export 'src/action_runner.dart';
 export 'src/config.dart';
 export 'src/bridge_client.dart';

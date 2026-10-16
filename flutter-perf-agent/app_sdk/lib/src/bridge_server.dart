@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
@@ -15,8 +16,7 @@ import 'ui_actions.dart';
 
 /// Local HTTP bridge: session + full Sleuth exports for the PC-side MCP server.
 ///
-/// UI actions (tap/scroll/input) are owned by **flutter_skill** (VM extensions).
-/// Bridge `/tap` is a legacy fallback. Sleuth full dumps go through `/sleuth/*`.
+/// All JSON bodies use `{ code, data, msg }`.
 class PerfBridgeServer {
   PerfBridgeServer({
     this.host = '127.0.0.1',
@@ -88,27 +88,37 @@ class PerfBridgeServer {
     'Access-Control-Allow-Headers': 'Content-Type',
   };
 
-  Response _json(Object body, {int status = 200}) => Response(
-        status,
-        body: jsonEncode(body),
-        headers: {'content-type': 'application/json; charset=utf-8'},
-      );
+  Response _envelope(ApiResponse<dynamic> response, {int? httpStatus}) {
+    final status = httpStatus ??
+        (response.isOk
+            ? 200
+            : (response.code == ApiCodes.badRequest ? 400 : 200));
+    return Response(
+      status,
+      body: jsonEncode(response.toJson()),
+      headers: {'content-type': 'application/json; charset=utf-8'},
+    );
+  }
 
   Future<Response> _health(Request request) async {
     final vmUri = await _vmServiceUri();
-    return _json({
-      'ok': true,
-      'bridge': 'flutter-perf-agent',
-      'version': '0.4.1',
-      'sessionId': sessionId,
-      'testName': testName,
-      'vmServiceUri': vmUri,
-      'uiDriver': 'flutter_skill',
-      'sleuth': SleuthFacade.diagnose(),
-      'mode': kReleaseMode
-          ? 'release'
-          : (kProfileMode ? 'profile' : 'debug'),
-    });
+    final sleuth = SleuthFacade.diagnose();
+    return _envelope(
+      ApiResponse.ok(
+        HealthData(
+          bridge: 'flutter-perf-agent',
+          version: '0.6.0',
+          sessionId: sessionId,
+          testName: testName,
+          vmServiceUri: vmUri,
+          uiDriver: 'flutter_skill',
+          sleuth: sleuth.data,
+          mode: kReleaseMode
+              ? 'release'
+              : (kProfileMode ? 'profile' : 'debug'),
+        ),
+      ),
+    );
   }
 
   Future<Response> _sessionStart(Request request) async {
@@ -121,39 +131,43 @@ class PerfBridgeServer {
 
     await _waitStable(wait);
 
-    // RSS-only baseline — full Sleuth export can stall the UI isolate on cold start.
-    return _json({
-      'ok': true,
-      'sessionId': sessionId,
-      'testName': testName,
-      'startedAt': sessionStartedAt!.toIso8601String(),
-      'vmServiceUri': await _vmServiceUri(),
-      'baseline': PerfSnapshot.capture(sleuth: false).toJson(),
-    });
+    return _envelope(
+      ApiResponse.ok(
+        SessionStartData(
+          sessionId: sessionId!,
+          testName: testName!,
+          startedAt: sessionStartedAt!.toIso8601String(),
+          vmServiceUri: await _vmServiceUri(),
+          baseline: PerfSnapshot.capture(sleuth: false).toPayload(),
+        ),
+      ),
+    );
   }
 
   Future<Response> _sessionStop(Request request) async {
     final ended = DateTime.now();
-    final summary = {
-      'ok': true,
-      'sessionId': sessionId,
-      'testName': testName,
-      'startedAt': sessionStartedAt?.toIso8601String(),
-      'endedAt': ended.toIso8601String(),
-      'finalSnapshot': PerfSnapshot.capture(sleuth: false).toJson(),
-    };
+    final data = SessionStopData(
+      sessionId: sessionId,
+      testName: testName,
+      startedAt: sessionStartedAt?.toIso8601String(),
+      endedAt: ended.toIso8601String(),
+      finalSnapshot: PerfSnapshot.capture(sleuth: false).toPayload(),
+    );
     sessionId = null;
     testName = null;
     sessionStartedAt = null;
-    return _json(summary);
+    return _envelope(ApiResponse.ok(data));
   }
 
   FutureOr<Response> _snapshot(Request request) {
     final includeRaw = request.url.queryParameters['raw'] == '1';
-    return _json({
-      'ok': true,
-      'snapshot': PerfSnapshot.capture(includeRaw: includeRaw).toJson(),
-    });
+    return _envelope(
+      ApiResponse.ok(
+        SnapshotData(
+          snapshot: PerfSnapshot.capture(includeRaw: includeRaw).toPayload(),
+        ),
+      ),
+    );
   }
 
   Future<Response> _wait(Request request) async {
@@ -161,49 +175,56 @@ class PerfBridgeServer {
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
     final frames = body['frames'] as int? ?? 2;
     await _waitStable(wait, frames: frames);
-    return _json({'ok': true, 'waitedMs': wait, 'frames': frames});
+    return _envelope(
+      ApiResponse.ok(WaitData(waitedMs: wait, frames: frames)),
+    );
   }
 
   FutureOr<Response> _ui(Request request) {
-    return _json({
-      'ok': true,
-      'elements': UiActions.dumpInteractive(),
-      'note': 'Prefer flutter_skill inspectInteractive via MCP when available',
-    });
+    return _envelope(
+      ApiResponse.ok(
+        UiDumpData(
+          elements: UiActions.dumpInteractive(),
+          note: 'Prefer flutter_skill inspectInteractive via MCP when available',
+        ),
+      ),
+    );
   }
 
   FutureOr<Response> _sleuthSnapshot(Request request) {
     final compact = request.url.queryParameters['compact'] == '1';
-    return _json(SleuthFacade.snapshot(compact: compact));
+    return _envelope(SleuthFacade.snapshot(compact: compact));
   }
 
   FutureOr<Response> _sleuthSummary(Request request) {
     final topN =
         int.tryParse(request.url.queryParameters['topN'] ?? '') ?? 5;
-    return _json(SleuthFacade.summary(topN: topN));
+    return _envelope(SleuthFacade.summary(topN: topN));
   }
 
   FutureOr<Response> _sleuthDiagnose(Request request) {
-    return _json(SleuthFacade.diagnose());
+    return _envelope(SleuthFacade.diagnose());
   }
 
   FutureOr<Response> _sleuthIssues(Request request) {
     final limit =
         int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 50;
-    return _json(SleuthFacade.issues(limit: limit));
+    return _envelope(SleuthFacade.issues(limit: limit));
   }
 
   FutureOr<Response> _sleuthRouteHealth(Request request) {
     final route = request.url.queryParameters['route'];
-    return _json(SleuthFacade.routeHealth(routeName: route));
+    return _envelope(SleuthFacade.routeHealth(routeName: route));
   }
 
-  /// Legacy in-process tap. Prefer MCP → flutter_skill VM extension.
   Future<Response> _tapLegacy(Request request) async {
     final body = await _readJson(request);
     final target = (body['targetDesc'] as String?)?.trim() ?? '';
     if (target.isEmpty) {
-      return _json({'ok': false, 'error': 'targetDesc is required'}, status: 400);
+      return _envelope(
+        ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
+        httpStatus: 400,
+      );
     }
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
 
@@ -218,15 +239,22 @@ class PerfBridgeServer {
       durationMs: DateTime.now().difference(t0).inMilliseconds,
     );
 
-    return _json({
-      'ok': action['ok'] == true,
-      'legacy': true,
-      'action': action,
-      'diff': diff.toJson(),
-      'sessionId': sessionId,
-      'warning':
+    final data = TapLegacyData(
+      legacy: true,
+      action: action,
+      diff: diff.toData(),
+      sessionId: sessionId,
+      warning:
           'Bridge /tap is legacy. Primary path is flutter_skill via MCP.',
-    });
+    );
+
+    if (!action.success) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.actionFailed, action.error ?? 'tap failed',
+            data: data),
+      );
+    }
+    return _envelope(ApiResponse.ok(data));
   }
 
   Future<String?> _vmServiceUri() async {
@@ -254,9 +282,7 @@ class PerfBridgeServer {
           await SchedulerBinding.instance.endOfFrame
               .timeout(const Duration(seconds: 2));
         }
-      } catch (_) {
-        // Idle / paused UI isolate — don't block the HTTP bridge forever.
-      }
+      } catch (_) {}
     }
 
     await framesOrTimeout();

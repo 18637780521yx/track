@@ -10,6 +10,8 @@
 /// ```
 library;
 
+export 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
+
 export 'src/perf_agent.dart';
 export 'src/perf_snapshot.dart';
 export 'src/bridge_server.dart';

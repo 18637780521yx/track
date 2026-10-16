@@ -4,6 +4,7 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 /// Legacy semantics tap / UI dump.
 ///
@@ -20,7 +21,7 @@ class UiActions {
   }
 
   /// Find a semantics node whose label/value/tooltip contains [desc], then tap.
-  static Future<Map<String, dynamic>> tapByDescription(String desc) async {
+  static Future<ActionResult> tapByDescription(String desc) async {
     WidgetsBinding.instance.ensureSemantics();
 
     await SchedulerBinding.instance.endOfFrame;
@@ -28,15 +29,20 @@ class UiActions {
 
     final owner = _semanticsOwner;
     if (owner == null) {
-      return {
-        'ok': false,
-        'error': 'semanticsOwner is null — ensure Semantics is enabled',
-      };
+      return const ActionResult(
+        success: false,
+        driver: 'legacy',
+        error: 'semanticsOwner is null — ensure Semantics is enabled',
+      );
     }
 
     final root = owner.rootSemanticsNode;
     if (root == null) {
-      return {'ok': false, 'error': 'rootSemanticsNode is null'};
+      return const ActionResult(
+        success: false,
+        driver: 'legacy',
+        error: 'rootSemanticsNode is null',
+      );
     }
 
     final needle = desc.trim().toLowerCase();
@@ -61,12 +67,15 @@ class UiActions {
     walk(root);
 
     if (matches.isEmpty) {
-      return {
-        'ok': false,
-        'error': 'No semantics node matching "$desc"',
-        'hint':
-            'Prefer flutter_skill tap (text/key). Or add Semantics(label: ...).',
-      };
+      return ActionResult(
+        success: false,
+        driver: 'legacy',
+        error: 'No semantics node matching "$desc"',
+        detail: {
+          'hint':
+              'Prefer flutter_skill tap (text/key). Or add Semantics(label: ...).',
+        },
+      );
     }
 
     SemanticsNode target = matches.first;
@@ -96,15 +105,18 @@ class UiActions {
 
     await _injectTap(center);
 
-    return {
-      'ok': true,
-      'legacy': true,
-      'targetDesc': desc,
-      'x': center.dx,
-      'y': center.dy,
-      'label': target.getSemanticsData().label,
-      'matchCount': matches.length,
-    };
+    return ActionResult(
+      success: true,
+      driver: 'legacy',
+      detail: {
+        'legacy': true,
+        'targetDesc': desc,
+        'x': center.dx,
+        'y': center.dy,
+        'label': target.getSemanticsData().label,
+        'matchCount': matches.length,
+      },
+    );
   }
 
   static bool _isButton(SemanticsData data) {
@@ -167,13 +179,13 @@ class UiActions {
 
   static int _nextPointer = 90001;
 
-  static List<Map<String, dynamic>> dumpInteractive() {
+  static List<UiElement> dumpInteractive() {
     WidgetsBinding.instance.ensureSemantics();
     final owner = _semanticsOwner;
     final root = owner?.rootSemanticsNode;
     if (root == null) return const [];
 
-    final out = <Map<String, dynamic>>[];
+    final out = <UiElement>[];
     void walk(SemanticsNode node) {
       final data = node.getSemanticsData();
       final label = data.label.trim();
@@ -181,18 +193,20 @@ class UiActions {
           _isButton(data) ||
           _isTextField(data);
       if (label.isNotEmpty && actionable) {
-        out.add({
-          'label': label,
-          'value': data.value,
-          'isButton': _isButton(data),
-          'isTextField': _isTextField(data),
-          'rect': {
-            'l': node.rect.left,
-            't': node.rect.top,
-            'r': node.rect.right,
-            'b': node.rect.bottom,
-          },
-        });
+        out.add(
+          UiElement(
+            label: label,
+            value: data.value,
+            isButton: _isButton(data),
+            isTextField: _isTextField(data),
+            rect: {
+              'l': node.rect.left,
+              't': node.rect.top,
+              'r': node.rect.right,
+              'b': node.rect.bottom,
+            },
+          ),
+        );
       }
       node.visitChildren((child) {
         walk(child);

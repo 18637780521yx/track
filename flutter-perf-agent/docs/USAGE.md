@@ -53,7 +53,17 @@ get_sleuth_route_health
 停止测试并给出报告路径
 ```
 
-### flutter_skill 完整能力（0.5.1）
+### 响应信封（0.6）
+
+所有 Bridge HTTP 与 MCP tool JSON：
+
+```json
+{ "code": 0, "data": { }, "msg": "ok" }
+```
+
+`code == 0` 成功；非 0 见 `ApiCodes`（400 / 503 / 1001 无会话 / 1002 skill / 1003 sleuth / 1004 动作失败）。
+
+### flutter_skill 完整能力（0.5.1+）
 
 常用仍用 `tap` / `input_text` / `scroll`；其余走 `skill_*`：
 

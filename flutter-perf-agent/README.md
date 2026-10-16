@@ -2,14 +2,15 @@
 
 自然语言驱动 Flutter App：**UI 自动化 + 性能打点 + JSON/HTML 报告**。
 
-**当前版本：V1（0.5.1 Sleuth + flutter_skill 完整能力）**
+**当前版本：V1（0.6.0 code/data/msg + Sleuth + flutter_skill 全量）**
 
 ## 一句话架构
 
 ```
 Cursor MCP
-  ├─ flutter_skill 全量（tap/scroll/input + skill_* 手势/检查/等待/截图/导航/日志…）
-  └─ PerfBridge + Sleuth 全量（snapshot / issues / diagnose / route / summary）
+  ├─ flutter_skill 全量（tap/scroll/input + skill_* …）
+  └─ PerfBridge + Sleuth 全量
+       信封统一：{ code, data, msg }  （protocol 包）
 ```
 
 > GC / 堆 / shader 等 VM 型 detector：请用 `flutter run --profile --no-dds`  
@@ -19,6 +20,7 @@ Cursor MCP
 
 ```
 flutter-perf-agent/
+├── protocol/          # 纯 Dart：ApiResponse + DTO（Bridge/MCP 契约）
 ├── app_sdk/           # 嵌进被测 App
 ├── mcp_server/        # Cursor MCP（dart_mcp）
 ├── example_app/       # 登录 → 列表 Demo
@@ -76,7 +78,8 @@ Cursor 里配置 MCP 后可以说：
 | 指示器/日志 | `skill_enable/disable_indicators` / `_get_indicator_status` / `skill_get_logs` / `_errors` / `_clear_logs` |
 | 辅助指标 | `skill_get_performance` / `_frame_stats` / `_http_requests` / `_clear_http_requests`（主指标仍用 `get_sleuth_*`） |
 
-> 性能走 **Sleuth 全量**（非 DevTools 外连）。flutter_skill 仍需 VM。
+> 性能走 **Sleuth 全量**（非 DevTools 外连）。flutter_skill 仍需 VM。  
+> Bridge / MCP 响应统一 **`{ "code": 0, "data": ..., "msg": "ok" }`**（`code≠0` 为失败）。
 
 ## 文档
 

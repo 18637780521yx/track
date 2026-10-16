@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:dart_mcp/server.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'action_runner.dart';
 import 'bridge_client.dart';
@@ -13,6 +14,8 @@ import 'skill_mcp_bindings.dart';
 import 'snapshot_io.dart';
 
 /// MCP tools: UI via flutter_skill (full); metrics via PerfBridge + Sleuth.
+///
+/// All tool payloads use `{ code, data, msg }`.
 base class PerfMcpServer extends MCPServer with ToolsSupport {
   PerfMcpServer(
     super.channel, {
@@ -20,15 +23,14 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.5.1',
+            version: '0.6.0',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.5.1 Sleuth + full flutter_skill). '
+              'Flutter-Perf-Agent V1 (0.6 code/data/msg + Sleuth + full flutter_skill). '
               'Prefer: flutter run --profile --no-dds. '
               'Flow: start_perf_test → tap/input_text/scroll/skill_* → '
               'get_sleuth_issues / get_sleuth_diagnose → stop_perf_test. '
-              'UI: full flutter_skill (skill_* + tap/scroll/input). '
-              'Metrics: full Sleuth via PerfBridge.',
+              'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
     _reports = ReportWriter(config);
@@ -52,15 +54,13 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       registerTool: registerTool,
       ensureSkillClient: _ensureSkillClient,
       runner: () => _runner,
-      ok: _ok,
-      err: _err,
+      reply: _reply,
     );
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.5.1 bridge=${config.bridgeBaseUrl} '
-        'metrics=sleuth_full ui=flutter_skill_full '
-        'retries=${config.maxRetries}',
+        '[flutter-perf-agent-mcp] v0.6.0 bridge=${config.bridgeBaseUrl} '
+        'envelope=code/data/msg retries=${config.maxRetries}',
       );
     }
   }
@@ -251,9 +251,11 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     await _disposeSkill();
 
     final health = await _bridge.health();
-    if (health['ok'] != true) return _err(health);
+    if (!health.isOk || health.data == null) {
+      return _reply(health);
+    }
 
-    final rawVm = health['vmServiceUri'] as String?;
+    final rawVm = health.data!.vmServiceUri;
     if (rawVm != null && rawVm.isNotEmpty) {
       _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
     }
@@ -264,18 +266,22 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       sessionId: sessionId,
       waitStableMs: wait,
     );
-    if (started['ok'] != true) return _err(started);
+    if (!started.isOk || started.data == null) {
+      return _reply(started);
+    }
 
-    final startedVm = started['vmServiceUri'] as String?;
+    final startedVm = started.data!.vmServiceUri;
     if (startedVm != null && startedVm.isNotEmpty) {
       _vmWsUri = FlutterSkillVmClient.normalizeWsUri(startedVm);
     }
 
     _session = PerfSession(
-      sessionId: started['sessionId'] as String? ?? sessionId,
+      sessionId: started.data!.sessionId.isNotEmpty
+          ? started.data!.sessionId
+          : sessionId,
       testName: testName,
       startedAt: DateTime.now(),
-      mode: health['mode'] as String?,
+      mode: health.data!.mode,
     );
     _stepCounter = 0;
 
@@ -287,30 +293,28 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       }
     }
 
-    return _ok({
-      'sessionId': _session!.sessionId,
-      'testName': testName,
-      'mode': health['mode'],
-      'baseline': started['baseline'],
-      'bridge': config.bridgeBaseUrl,
-      'vmServiceUri': _vmWsUri,
-      'uiDriver': 'flutter_skill',
-      'metricsSource': 'sleuth_bridge',
-      'sleuth': health['sleuth'],
-      'phase': 'sleuth_full',
-      'uiSurface': 'flutter_skill_full',
-      'version': '0.5.1',
-    });
+    return _reply(
+      ApiResponse.ok({
+        'sessionId': _session!.sessionId,
+        'testName': testName,
+        'mode': health.data!.mode,
+        'baseline': started.data!.baseline?.toJson(),
+        'bridge': config.bridgeBaseUrl,
+        'vmServiceUri': _vmWsUri,
+        'uiDriver': 'flutter_skill',
+        'metricsSource': 'sleuth_bridge',
+        'sleuth': health.data!.sleuth?.toJson(),
+        'phase': 'sleuth_full',
+        'uiSurface': 'flutter_skill_full',
+        'envelope': 'code/data/msg',
+        'version': '0.6.0',
+      }),
+    );
   }
 
   FutureOr<CallToolResult> _stopPerfTest(CallToolRequest request) async {
     final session = _session;
-    if (session == null) {
-      return _err({
-        'ok': false,
-        'error': 'no active session — call start_perf_test first',
-      });
-    }
+    if (session == null) return _noSession();
 
     final args = request.arguments ?? const <String, Object?>{};
     final doExport = args['exportSnapshot'] == true;
@@ -318,7 +322,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final stop = await _bridge.stopSession();
     final sleuthDiag = await _bridge.sleuthDiagnose();
     final sleuthSum = await _bridge.sleuthSummary(topN: 10);
-    // Full snapshot can be large — keep for report artifact, trim in MCP reply.
     final sleuthFinal = await _bridge.sleuthSnapshot();
     String? snapshotPath;
     if (doExport) {
@@ -326,16 +329,16 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         session: session,
         reportsDir: config.reportsDir,
         extra: {
-          'sleuthDiagnose': sleuthDiag,
-          'sleuthSummary': sleuthSum,
+          if (sleuthDiag.data != null) 'sleuthDiagnose': sleuthDiag.toJson(),
+          if (sleuthSum.data != null) 'sleuthSummary': sleuthSum.toJson(),
         },
       );
     }
     final paths = await _reports.writeReports(
       session,
-      sleuthFinal: sleuthFinal,
-      sleuthDiagnose: sleuthDiag,
-      sleuthSummaryMarkdown: sleuthSum['markdown'] as String?,
+      sleuthFinal: sleuthFinal.data,
+      sleuthDiagnose: sleuthDiag.data,
+      sleuthSummaryMarkdown: sleuthSum.data?.markdown,
     );
     await _disposeSkill();
     final summary = {
@@ -346,20 +349,24 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       if (snapshotPath != null) 'snapshotPath': snapshotPath,
       'stepCount': session.steps.length,
       'alertCount': session.alerts.length,
-      'alerts': session.alerts,
-      'sleuthDiagnose': sleuthDiag,
-      'sleuthSummaryMarkdown': sleuthSum['markdown'],
-      'sleuthIssueCount': (sleuthFinal['snapshot'] is Map)
-          ? ((sleuthFinal['snapshot']['currentIssues'] as List?)?.length ??
-              (sleuthFinal['snapshot']['issues'] as List?)?.length)
-          : null,
-      'bridgeStop': stop,
+      'alerts': session.alerts.map((a) => a.toJson()).toList(),
+      'sleuthDiagnose': sleuthDiag.data?.toJson(),
+      'sleuthSummaryMarkdown': sleuthSum.data?.markdown,
+      'sleuthIssueCount': () {
+        final snap = sleuthFinal.data?.snapshot;
+        if (snap is Map) {
+          return ((snap['currentIssues'] as List?)?.length ??
+              (snap['issues'] as List?)?.length);
+        }
+        return null;
+      }(),
+      'bridgeStop': stop.toJson(),
       'metricsSource': 'sleuth_bridge',
-      'version': '0.5.1',
+      'version': '0.6.0',
     };
     _session = null;
     _vmWsUri = null;
-    return _ok(summary);
+    return _reply(ApiResponse.ok(summary));
   }
 
   FutureOr<CallToolResult> _tap(CallToolRequest request) async {
@@ -371,7 +378,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final wait = args['waitStableMs'] as int?;
     final forceLegacy = args['useLegacyTap'] == true;
     if (target.isEmpty) {
-      return _err({'ok': false, 'error': 'targetDesc is required'});
+      return _reply(
+        ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
+      );
     }
 
     final looksLikeNav = _looksLikeNavigationTap(target);
@@ -389,9 +398,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         waitStableMs: wait,
       ),
     );
-    return step.containsKey('error') && step['ok'] == false
-        ? _err(step)
-        : _ok(step);
+    return _stepReply(step);
   }
 
   bool _looksLikeNavigationTap(String target) {
@@ -415,10 +422,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     if ((target == null || target.isEmpty) &&
         !{'up', 'down', 'left', 'right'}.contains(direction)) {
-      return _err({
-        'ok': false,
-        'error': 'provide targetDesc and/or direction(up|down|left|right)',
-      });
+      return _reply(
+        ApiResponse.fail(
+          ApiCodes.badRequest,
+          'provide targetDesc and/or direction(up|down|left|right)',
+        ),
+      );
     }
 
     final step = await runner.run(
@@ -440,9 +449,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         return client.swipe(direction: direction, distance: distance);
       },
     );
-    return step.containsKey('error') && step['ok'] == false
-        ? _err(step)
-        : _ok(step);
+    return _stepReply(step);
   }
 
   FutureOr<CallToolResult> _inputText(CallToolRequest request) async {
@@ -454,7 +461,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final text = args['text'] as String? ?? '';
     final wait = args['waitStableMs'] as int?;
     if (target.isEmpty) {
-      return _err({'ok': false, 'error': 'targetDesc is required'});
+      return _reply(
+        ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
+      );
     }
 
     final step = await runner.run(
@@ -468,9 +477,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       },
       skillAction: (client) => client.enterText(text: text, target: target),
     );
-    return step.containsKey('error') && step['ok'] == false
-        ? _err(step)
-        : _ok(step);
+    return _stepReply(step);
   }
 
   FutureOr<CallToolResult> _getUiSnapshot(CallToolRequest request) async {
@@ -478,87 +485,100 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     if (client != null) {
       try {
         final inspected = await client.inspectInteractive();
-        return _ok({
-          'ok': true,
-          'driver': 'flutter_skill',
-          'data': inspected,
-        });
+        return _reply(
+          ApiResponse.ok({
+            'driver': 'flutter_skill',
+            'data': inspected,
+          }),
+        );
       } catch (e) {
         final ui = await _bridge.ui();
-        return _ok({
-          ...ui,
-          'driver': 'bridge_fallback',
-          'flutterSkillError': e.toString(),
-        });
+        return _reply(
+          ApiResponse.ok({
+            'driver': 'bridge_fallback',
+            'flutterSkillError': e.toString(),
+            'ui': ui.data?.toJson(),
+          }),
+        );
       }
     }
 
     final ui = await _bridge.ui();
-    if (ui['ok'] != true) return _err(ui);
-    return _ok({...ui, 'driver': 'bridge'});
+    if (!ui.isOk) return _reply(ui);
+    return _reply(
+      ApiResponse.ok({
+        'driver': 'bridge',
+        ...?ui.data?.toJson(),
+      }),
+    );
   }
 
   FutureOr<CallToolResult> _getThresholdConfig(CallToolRequest request) {
-    return _ok({
-      'configPath': config.configPath,
-      'bridge': config.bridgeBaseUrl,
-      'waitStableMs': config.waitStableMs,
-      'postActionSettleMs': config.postActionSettleMs,
-      'navigationWaitMs': config.navigationWaitMs,
-      'maxRetries': config.maxRetries,
-      'captureScreenshots': config.captureScreenshots,
-      'metricsSource': 'sleuth_bridge',
-      'uiDriver': 'flutter_skill',
-      'phase': 'sleuth_full',
-      'uiSurface': 'flutter_skill_full',
-      'version': '0.5.1',
-      'note':
-          'Full Sleuth via Bridge. Full flutter_skill via skill_* tools. '
-          'For GC/heap: flutter run --profile --no-dds. '
-          'VM used for flutter_skill UI.',
-      'thresholds': {
-        'maxFrameCostMs': config.maxFrameCostMs,
-        'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
-        'slowRequestMs': config.slowRequestMs,
-      },
-    });
+    return _reply(
+      ApiResponse.ok({
+        'configPath': config.configPath,
+        'bridge': config.bridgeBaseUrl,
+        'waitStableMs': config.waitStableMs,
+        'postActionSettleMs': config.postActionSettleMs,
+        'navigationWaitMs': config.navigationWaitMs,
+        'maxRetries': config.maxRetries,
+        'captureScreenshots': config.captureScreenshots,
+        'metricsSource': 'sleuth_bridge',
+        'uiDriver': 'flutter_skill',
+        'phase': 'sleuth_full',
+        'uiSurface': 'flutter_skill_full',
+        'envelope': 'code/data/msg',
+        'version': '0.6.0',
+        'note':
+            'Full Sleuth via Bridge. Full flutter_skill via skill_* tools. '
+            'For GC/heap: flutter run --profile --no-dds.',
+        'thresholds': {
+          'maxFrameCostMs': config.maxFrameCostMs,
+          'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
+          'slowRequestMs': config.slowRequestMs,
+        },
+      }),
+    );
   }
 
   FutureOr<CallToolResult> _getSleuthSnapshot(CallToolRequest request) async {
     final args = request.arguments ?? const <String, Object?>{};
-    final r = await _bridge.sleuthSnapshot(compact: args['compact'] == true);
-    return r['ok'] == true ? _ok(r) : _err(r);
+    return _reply(
+      await _bridge.sleuthSnapshot(compact: args['compact'] == true),
+    );
   }
 
   FutureOr<CallToolResult> _getSleuthIssues(CallToolRequest request) async {
     final args = request.arguments ?? const <String, Object?>{};
-    final r = await _bridge.sleuthIssues(
-      limit: (args['limit'] as num?)?.toInt() ?? 50,
+    return _reply(
+      await _bridge.sleuthIssues(
+        limit: (args['limit'] as num?)?.toInt() ?? 50,
+      ),
     );
-    return r['ok'] == true ? _ok(r) : _err(r);
   }
 
   FutureOr<CallToolResult> _getSleuthDiagnose(CallToolRequest request) async {
-    final r = await _bridge.sleuthDiagnose();
-    return r['ok'] == true ? _ok(r) : _err(r);
+    return _reply(await _bridge.sleuthDiagnose());
   }
 
   FutureOr<CallToolResult> _getSleuthSummary(CallToolRequest request) async {
     final args = request.arguments ?? const <String, Object?>{};
-    final r = await _bridge.sleuthSummary(
-      topN: (args['topN'] as num?)?.toInt() ?? 5,
+    return _reply(
+      await _bridge.sleuthSummary(
+        topN: (args['topN'] as num?)?.toInt() ?? 5,
+      ),
     );
-    return r['ok'] == true ? _ok(r) : _err(r);
   }
 
   FutureOr<CallToolResult> _getSleuthRouteHealth(
     CallToolRequest request,
   ) async {
     final args = request.arguments ?? const <String, Object?>{};
-    final r = await _bridge.sleuthRouteHealth(
-      routeName: args['routeName'] as String?,
+    return _reply(
+      await _bridge.sleuthRouteHealth(
+        routeName: args['routeName'] as String?,
+      ),
     );
-    return r['ok'] == true ? _ok(r) : _err(r);
   }
 
   FutureOr<CallToolResult> _exportSnapshot(CallToolRequest request) async {
@@ -568,37 +588,54 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       session: session,
       reportsDir: config.reportsDir,
     );
-    return _ok({'ok': true, 'snapshotPath': path});
+    return _reply(ApiResponse.ok({'snapshotPath': path}));
   }
 
   FutureOr<CallToolResult> _importSnapshot(CallToolRequest request) async {
     final path =
         (request.arguments ?? const {})['snapshotPath'] as String? ?? '';
     if (path.isEmpty) {
-      return _err({'ok': false, 'error': 'snapshotPath required'});
+      return _reply(
+        ApiResponse.fail(ApiCodes.badRequest, 'snapshotPath required'),
+      );
     }
-    final r = await SnapshotIo.importSession(
-      snapshotPath: path,
-      reportsDir: config.reportsDir,
+    return _reply(
+      await SnapshotIo.importSession(
+        snapshotPath: path,
+        reportsDir: config.reportsDir,
+      ),
     );
-    return r['ok'] == true ? _ok(r) : _err(r);
   }
 
-  CallToolResult _noSession() => _err({
-        'ok': false,
-        'error': 'no active session — call start_perf_test first',
-      });
-
-  CallToolResult _ok(Object data) => CallToolResult(
-        content: [
-          TextContent(text: const JsonEncoder.withIndent('  ').convert(data)),
-        ],
+  CallToolResult _noSession() => _reply(
+        ApiResponse.fail(
+          ApiCodes.noSession,
+          'no active session — call start_perf_test first',
+        ),
       );
 
-  CallToolResult _err(Object data) => CallToolResult(
-        isError: true,
-        content: [
-          TextContent(text: const JsonEncoder.withIndent('  ').convert(data)),
-        ],
+  CallToolResult _stepReply(StepResult step) {
+    final payload = step.toJson(includeScreenshotDataUri: false);
+    if (!step.ok) {
+      return _reply(
+        ApiResponse.fail(
+          ApiCodes.actionFailed,
+          step.actionResult?.error ?? 'action failed',
+          data: payload,
+        ),
       );
+    }
+    return _reply(ApiResponse.ok(payload));
+  }
+
+  CallToolResult _reply(ApiResponse<dynamic> response) {
+    return CallToolResult(
+      isError: !response.isOk,
+      content: [
+        TextContent(
+          text: const JsonEncoder.withIndent('  ').convert(response.toJson()),
+        ),
+      ],
+    );
+  }
 }

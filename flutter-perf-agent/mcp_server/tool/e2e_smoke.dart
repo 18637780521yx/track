@@ -14,15 +14,15 @@ Future<void> main(List<String> args) async {
 
   stdout.writeln('== health ==');
   final health = await bridge.health();
-  stdout.writeln(const JsonEncoder.withIndent('  ').convert(health));
-  if (health['ok'] != true) {
-    stderr.writeln('FAIL: bridge not healthy');
+  stdout.writeln(const JsonEncoder.withIndent('  ').convert(health.toJson()));
+  if (!health.isOk || health.data == null) {
+    stderr.writeln('FAIL: bridge not healthy — ${health.msg}');
     exit(2);
   }
 
   await bridge.stopSession();
 
-  final rawVm = health['vmServiceUri'] as String?;
+  final rawVm = health.data!.vmServiceUri;
   if (rawVm == null || rawVm.isEmpty) {
     stderr.writeln('FAIL: no vmServiceUri in health');
     exit(2);
@@ -34,7 +34,7 @@ Future<void> main(List<String> args) async {
     sessionId: 'smoke_${DateTime.now().millisecondsSinceEpoch}',
     testName: 'e2e_login_scroll_smoke',
     startedAt: DateTime.now(),
-    mode: health['mode'] as String?,
+    mode: health.data!.mode,
   );
 
   stdout.writeln('== start session ==');
@@ -44,12 +44,12 @@ Future<void> main(List<String> args) async {
     waitStableMs: 0,
   );
   stdout.writeln(
-    'session ok=${started['ok']} id=${started['sessionId']} '
-    'err=${started['error']}',
+    'session code=${started.code} id=${started.data?.sessionId} '
+    'msg=${started.msg}',
   );
-  if (started['ok'] != true) {
+  if (!started.isOk) {
     stderr.writeln('FAIL: start session');
-    stderr.writeln(const JsonEncoder.withIndent('  ').convert(started));
+    stderr.writeln(const JsonEncoder.withIndent('  ').convert(started.toJson()));
     exit(2);
   }
 
@@ -62,7 +62,7 @@ Future<void> main(List<String> args) async {
   await skill.connect();
 
   var step = 0;
-  Future<Map<String, dynamic>> runStep({
+  Future<StepResult> runStep({
     required String action,
     required String label,
     required Future<Map<String, dynamic>> Function(FlutterSkillVmClient c)
@@ -74,26 +74,32 @@ Future<void> main(List<String> args) async {
     final stepId = 'step_$step';
     final t0 = DateTime.now();
     final beforeRes = await bridge.snapshot();
-    final before =
-        (beforeRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
+    final before = beforeRes.data?.snapshot ??
+        const SnapshotPayload(timestampMs: 0, rssBytes: 0);
 
-    Map<String, dynamic> actionResult;
+    ActionResult actionResult;
+    var driver = 'flutter_skill';
     try {
       await skill.ensureConnected();
-      actionResult = await doAction(skill);
+      actionResult = ActionResult.fromSkillMap(await doAction(skill));
     } catch (e) {
-      actionResult = {'success': false, 'error': e.toString()};
+      actionResult = ActionResult(success: false, error: e.toString());
     }
 
-    if (!FlutterSkillVmClient.isOk(actionResult) && action == 'tap') {
+    if (!actionResult.success && action == 'tap') {
       stdout.writeln('tap flutter_skill failed, trying legacy…');
       final legacy = await bridge.tapLegacy(targetDesc: label);
-      actionResult = {
-        'success': legacy['ok'] == true,
-        'flutterSkill': actionResult,
-        'legacy': legacy['action'],
-      };
-    } else if (FlutterSkillVmClient.isOk(actionResult)) {
+      final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
+      driver = 'legacy_fallback';
+      actionResult = ActionResult(
+        success: legacyOk,
+        driver: driver,
+        detail: {
+          'flutterSkill': actionResult.toJson(),
+          'legacy': legacy.toJson(),
+        },
+      );
+    } else if (actionResult.success) {
       await bridge.waitStable(waitStableMs: config.waitStableMs);
       final settle = config.postActionSettleMs + extraSettleMs;
       if (settle > 0) {
@@ -102,14 +108,14 @@ Future<void> main(List<String> args) async {
     }
 
     final afterRes = await bridge.snapshot();
-    final after =
-        (afterRes['snapshot'] as Map?)?.cast<String, dynamic>() ?? {};
+    final after = afterRes.data?.snapshot ??
+        const SnapshotPayload(timestampMs: 0, rssBytes: 0);
     final diff = computePerfDiff(
       before: before,
       after: after,
       durationMs: DateTime.now().difference(t0).inMilliseconds,
     );
-    final ok = FlutterSkillVmClient.isOk(actionResult);
+    final ok = actionResult.success;
     final alerts = reports.evaluateDiff(
       diff,
       stepId: stepId,
@@ -138,26 +144,23 @@ Future<void> main(List<String> args) async {
       }
     }
 
-    final record = {
-      'stepId': stepId,
-      'action': action,
-      'ok': ok,
-      'driver': actionResult.containsKey('legacy')
-          ? 'legacy_fallback'
-          : 'flutter_skill',
-      'metricsSource': 'sleuth_bridge',
-      'actionResult': actionResult,
-      'diff': diff,
-      'alerts': alerts,
-      if (screenshotPath != null) 'screenshotPath': screenshotPath,
-      if (screenshotDataUri != null) 'screenshotDataUri': screenshotDataUri,
-      'at': DateTime.now().toIso8601String(),
-      ...?extra,
-    };
+    final record = StepResult(
+      stepId: stepId,
+      action: action,
+      ok: ok,
+      driver: driver,
+      actionResult: actionResult,
+      diff: diff,
+      alerts: alerts,
+      screenshotPath: screenshotPath,
+      screenshotDataUri: screenshotDataUri,
+      at: DateTime.now().toIso8601String(),
+      extra: {...?extra},
+    );
     session.addStep(record);
     stdout.writeln(
-      '[$stepId] $action ok=$ok memΔ=${diff['memoryDeltaMb']} '
-      'jankΔ=${diff['jankDelta']} alerts=${alerts.length} '
+      '[$stepId] $action ok=$ok memΔ=${diff.memoryDeltaMb} '
+      'jankΔ=${diff.jankDelta} alerts=${alerts.length} '
       'shot=${screenshotPath != null}',
     );
     return record;
@@ -201,7 +204,7 @@ Future<void> main(List<String> args) async {
   stdout.writeln('html: ${paths.htmlPath}');
   stdout.writeln('steps=${session.steps.length} alerts=${session.alerts.length}');
 
-  final okCount = session.steps.where((s) => s['ok'] == true).length;
+  final okCount = session.steps.where((s) => s.ok).length;
   if (okCount < 4) {
     stderr.writeln('FAIL: expected 4 ok steps, got $okCount');
     exit(1);

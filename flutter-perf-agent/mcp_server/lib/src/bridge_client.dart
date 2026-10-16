@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:http/http.dart' as http;
 
 import 'config.dart';
@@ -13,82 +14,122 @@ class BridgeClient {
 
   Uri _u(String path) => Uri.parse('${config.bridgeBaseUrl}$path');
 
-  Future<Map<String, dynamic>> health() => _get('/health');
+  Future<ApiResponse<HealthData>> health() => _get(
+        '/health',
+        (raw) => HealthData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> startSession({
+  Future<ApiResponse<SessionStartData>> startSession({
     required String testName,
     String? sessionId,
     int? waitStableMs,
   }) {
-    return _post('/session/start', {
-      'testName': testName,
-      if (sessionId != null) 'sessionId': sessionId,
-      'waitStableMs': waitStableMs ?? config.waitStableMs,
-    });
+    return _post(
+      '/session/start',
+      {
+        'testName': testName,
+        if (sessionId != null) 'sessionId': sessionId,
+        'waitStableMs': waitStableMs ?? config.waitStableMs,
+      },
+      (raw) => SessionStartData.fromJson(_asMap(raw)),
+    );
   }
 
-  Future<Map<String, dynamic>> stopSession() => _post('/session/stop', {});
+  Future<ApiResponse<SessionStopData>> stopSession() => _post(
+        '/session/stop',
+        {},
+        (raw) => SessionStopData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> snapshot({bool raw = false}) =>
-      _get('/snapshot${raw ? '?raw=1' : ''}');
+  Future<ApiResponse<SnapshotData>> snapshot({bool raw = false}) => _get(
+        '/snapshot${raw ? '?raw=1' : ''}',
+        (d) => SnapshotData.fromJson(_asMap(d)),
+      );
 
-  Future<Map<String, dynamic>> waitStable({int? waitStableMs}) {
-    return _post('/wait', {
-      'waitStableMs': waitStableMs ?? config.waitStableMs,
-    });
+  Future<ApiResponse<WaitData>> waitStable({int? waitStableMs}) {
+    return _post(
+      '/wait',
+      {'waitStableMs': waitStableMs ?? config.waitStableMs},
+      (raw) => WaitData.fromJson(_asMap(raw)),
+    );
   }
 
-  Future<Map<String, dynamic>> ui() => _get('/ui');
+  Future<ApiResponse<UiDumpData>> ui() => _get(
+        '/ui',
+        (raw) => UiDumpData.fromJson(_asMap(raw)),
+      );
 
-  /// Full Sleuth session snapshot (issues, frames, causal, routes…).
-  Future<Map<String, dynamic>> sleuthSnapshot({bool compact = false}) =>
-      _get('/sleuth/snapshot${compact ? '?compact=1' : ''}');
+  Future<ApiResponse<SleuthSnapshotData>> sleuthSnapshot({
+    bool compact = false,
+  }) =>
+      _get(
+        '/sleuth/snapshot${compact ? '?compact=1' : ''}',
+        (raw) => SleuthSnapshotData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> sleuthSummary({int topN = 5}) =>
-      _get('/sleuth/summary?topN=$topN');
+  Future<ApiResponse<SleuthSummaryData>> sleuthSummary({int topN = 5}) => _get(
+        '/sleuth/summary?topN=$topN',
+        (raw) => SleuthSummaryData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> sleuthDiagnose() => _get('/sleuth/diagnose');
+  Future<ApiResponse<SleuthDiagnoseData>> sleuthDiagnose() => _get(
+        '/sleuth/diagnose',
+        (raw) => SleuthDiagnoseData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> sleuthIssues({int limit = 50}) =>
-      _get('/sleuth/issues?limit=$limit');
+  Future<ApiResponse<SleuthIssuesData>> sleuthIssues({int limit = 50}) => _get(
+        '/sleuth/issues?limit=$limit',
+        (raw) => SleuthIssuesData.fromJson(_asMap(raw)),
+      );
 
-  Future<Map<String, dynamic>> sleuthRouteHealth({String? routeName}) {
+  Future<ApiResponse<SleuthRouteHealthData>> sleuthRouteHealth({
+    String? routeName,
+  }) {
     final q = (routeName == null || routeName.isEmpty)
         ? ''
         : '?route=${Uri.encodeQueryComponent(routeName)}';
-    return _get('/sleuth/route_health$q');
+    return _get(
+      '/sleuth/route_health$q',
+      (raw) => SleuthRouteHealthData.fromJson(_asMap(raw)),
+    );
   }
 
-  /// Legacy Bridge tap (in-app UiActions). Prefer flutter_skill via MCP.
-  Future<Map<String, dynamic>> tapLegacy({
+  Future<ApiResponse<TapLegacyData>> tapLegacy({
     required String targetDesc,
     int? waitStableMs,
   }) {
-    return _post('/tap', {
-      'targetDesc': targetDesc,
-      'waitStableMs': waitStableMs ?? config.waitStableMs,
-    });
+    return _post(
+      '/tap',
+      {
+        'targetDesc': targetDesc,
+        'waitStableMs': waitStableMs ?? config.waitStableMs,
+      },
+      (raw) => TapLegacyData.fromJson(_asMap(raw)),
+    );
   }
 
-  Future<Map<String, dynamic>> _get(String path) async {
+  Future<ApiResponse<T>> _get<T>(
+    String path,
+    T Function(Object? raw) decode,
+  ) async {
     try {
       final res = await _client
           .get(_u(path))
           .timeout(const Duration(seconds: 10));
-      return _decode(res);
+      return _decode(res, decode);
     } catch (e) {
-      return {
-        'ok': false,
-        'error': 'bridge unreachable: $e',
-        'hint':
-            'Start example_app with flutter run --profile, ensure PerfAgent bridge on ${config.bridgeBaseUrl}',
-      };
+      return ApiResponse.fail(
+        ApiCodes.unavailable,
+        'bridge unreachable: $e',
+        data: null,
+      );
     }
   }
 
-  Future<Map<String, dynamic>> _post(
+  Future<ApiResponse<T>> _post<T>(
     String path,
     Map<String, dynamic> body,
+    T Function(Object? raw) decode,
   ) async {
     try {
       final res = await _client
@@ -98,31 +139,37 @@ class BridgeClient {
             body: jsonEncode(body),
           )
           .timeout(const Duration(seconds: 30));
-      return _decode(res);
+      return _decode(res, decode);
     } catch (e) {
-      return {
-        'ok': false,
-        'error': 'bridge unreachable: $e',
-        'hint':
-            'Start example_app with flutter run --profile, ensure PerfAgent bridge on ${config.bridgeBaseUrl}',
-      };
+      return ApiResponse.fail(
+        ApiCodes.unavailable,
+        'bridge unreachable: $e',
+      );
     }
   }
 
-  Map<String, dynamic> _decode(http.Response res) {
+  ApiResponse<T> _decode<T>(
+    http.Response res,
+    T Function(Object? raw) decode,
+  ) {
     try {
       final decoded = jsonDecode(res.body);
-      if (decoded is Map<String, dynamic>) {
-        return decoded;
+      if (decoded is! Map<String, dynamic>) {
+        return ApiResponse.fail(ApiCodes.internal, 'unexpected response');
       }
-      return {'ok': false, 'error': 'unexpected response', 'body': res.body};
+      return ApiResponse.fromJson(decoded, decodeData: decode);
     } catch (e) {
-      return {
-        'ok': false,
-        'error': 'invalid json (${res.statusCode}): $e',
-        'body': res.body,
-      };
+      return ApiResponse.fail(
+        ApiCodes.internal,
+        'invalid json (${res.statusCode}): $e',
+      );
     }
+  }
+
+  static Map<String, dynamic> _asMap(Object? raw) {
+    if (raw is Map<String, dynamic>) return raw;
+    if (raw is Map) return Map<String, dynamic>.from(raw);
+    return <String, dynamic>{};
   }
 
   void close() => _client.close();

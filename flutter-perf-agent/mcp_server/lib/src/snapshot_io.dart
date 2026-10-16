@@ -1,14 +1,14 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
 import 'html_report.dart';
 import 'report_writer.dart';
 
-/// Export / import session snapshots (DevTools Performance I/O analogue).
+/// Export / import session snapshots.
 class SnapshotIo {
-  /// Write a portable JSON snapshot next to reports.
   static Future<String> exportSession({
     required PerfSession session,
     required String reportsDir,
@@ -19,18 +19,17 @@ class SnapshotIo {
       await dir.create(recursive: true);
     }
     final payload = {
-      'schemaVersion': 1,
+      'schemaVersion': 2,
       'kind': 'flutter-perf-agent-session-snapshot',
       'exportedAt': DateTime.now().toIso8601String(),
       'sessionId': session.sessionId,
       'testName': session.testName,
       'mode': session.mode,
       'startedAt': session.startedAt.toIso8601String(),
-      'steps': session.steps.map((s) {
-        final copy = Map<String, dynamic>.from(s)..remove('screenshotDataUri');
-        return copy;
-      }).toList(),
-      'alerts': session.alerts,
+      'steps': session.steps
+          .map((s) => s.toJson(includeScreenshotDataUri: false))
+          .toList(),
+      'alerts': session.alerts.map((a) => a.toJson()).toList(),
       ...?extra,
     };
     final path = p.join(dir.path, 'session_snapshot.json');
@@ -40,18 +39,20 @@ class SnapshotIo {
     return path;
   }
 
-  /// Import a snapshot file and regenerate an HTML report.
-  static Future<Map<String, dynamic>> importSession({
+  static Future<ApiResponse<Map<String, dynamic>>> importSession({
     required String snapshotPath,
     required String reportsDir,
   }) async {
     final file = File(snapshotPath);
     if (!await file.exists()) {
-      return {'ok': false, 'error': 'snapshot not found: $snapshotPath'};
+      return ApiResponse.fail(
+        ApiCodes.badRequest,
+        'snapshot not found: $snapshotPath',
+      );
     }
     final decoded = jsonDecode(await file.readAsString());
     if (decoded is! Map<String, dynamic>) {
-      return {'ok': false, 'error': 'invalid snapshot JSON'};
+      return ApiResponse.fail(ApiCodes.badRequest, 'invalid snapshot JSON');
     }
     final dir = Directory(reportsDir);
     if (!await dir.exists()) {
@@ -61,9 +62,9 @@ class SnapshotIo {
     final sid = decoded['sessionId']?.toString() ?? 'imported';
     final htmlPath = p.join(dir.path, '${stamp}_imported_$sid.html');
     final report = {
-      'schemaVersion': 4,
+      'schemaVersion': 6,
       'agent': 'flutter-perf-agent',
-      'phase': 'devtools',
+      'phase': 'sleuth_full',
       'imported': true,
       'sessionId': sid,
       'testName': decoded['testName'] ?? 'imported',
@@ -84,11 +85,10 @@ class SnapshotIo {
     await File(copyJson).writeAsString(
       const JsonEncoder.withIndent('  ').convert(report),
     );
-    return {
-      'ok': true,
+    return ApiResponse.ok({
       'htmlReportPath': htmlPath,
       'jsonReportPath': copyJson,
       'sessionId': sid,
-    };
+    });
   }
 }

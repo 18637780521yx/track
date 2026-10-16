@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 — ApiResponse(code/data/msg) + 模型化
+
+- 新增纯 Dart 包 `protocol/`（`flutter_perf_agent_protocol`）：统一 `{ code, data, msg }`
+- Bridge HTTP / MCP tool / SleuthFacade / UiActions / BridgeClient / ActionRunner 全部改用模型
+- 去掉散落的 `ok` / `error` Map；业务码见 `ApiCodes`（`0`=成功）
+- 报告 `schemaVersion=6`；app_sdk / mcp_server → `0.6.0`
+
 ## 0.5.1 — flutter_skill 完整能力
 
 - `FlutterSkillVmClient` 覆盖 flutter_skill 全部 VM 扩展（手势 / 检查 / 等待 / 截图 / 导航 / 日志 / HTTP / 指示器等）

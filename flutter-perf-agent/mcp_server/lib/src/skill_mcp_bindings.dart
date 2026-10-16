@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dart_mcp/server.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'action_runner.dart';
 import 'flutter_skill_client.dart';
@@ -9,6 +10,7 @@ import 'flutter_skill_client.dart';
 ///
 /// Gesture / mutation tools use [ActionRunner] when a perf session is active
 /// (Sleuth/RSS before→after). Read-only tools call the VM client directly.
+/// All replies use `{ code, data, msg }`.
 void registerFlutterSkillTools({
   required void Function(
     Tool tool,
@@ -16,20 +18,25 @@ void registerFlutterSkillTools({
   ) registerTool,
   required Future<FlutterSkillVmClient?> Function() ensureSkillClient,
   required ActionRunner? Function() runner,
-  required CallToolResult Function(Object data) ok,
-  required CallToolResult Function(Object data) err,
+  required CallToolResult Function(ApiResponse<dynamic> response) reply,
 }) {
-  CallToolResult noSkill() => err({
-        'ok': false,
-        'error':
-            'flutter_skill not connected — call start_perf_test first '
-            '(needs VM URI from PerfBridge)',
-      });
+  CallToolResult noSkill() => reply(
+        ApiResponse.fail(
+          ApiCodes.skillError,
+          'flutter_skill not connected — call start_perf_test first '
+          '(needs VM URI from PerfBridge)',
+        ),
+      );
 
-  CallToolResult noSession() => err({
-        'ok': false,
-        'error': 'no active session — call start_perf_test first',
-      });
+  CallToolResult noSession() => reply(
+        ApiResponse.fail(
+          ApiCodes.noSession,
+          'no active session — call start_perf_test first',
+        ),
+      );
+
+  CallToolResult bad(String msg) =>
+      reply(ApiResponse.fail(ApiCodes.badRequest, msg));
 
   Future<CallToolResult> onDemand(
     Future<Map<String, dynamic>> Function(FlutterSkillVmClient c) action,
@@ -39,13 +46,17 @@ void registerFlutterSkillTools({
     try {
       await client.ensureConnected();
       final data = await action(client);
-      return ok({'ok': true, 'driver': 'flutter_skill', 'data': data});
+      return reply(
+        ApiResponse.ok({'driver': 'flutter_skill', 'result': data}),
+      );
     } catch (e) {
-      return err({
-        'ok': false,
-        'error': e.toString(),
-        'driver': 'flutter_skill',
-      });
+      return reply(
+        ApiResponse.fail(
+          ApiCodes.skillError,
+          e.toString(),
+          data: {'driver': 'flutter_skill'},
+        ),
+      );
     }
   }
 
@@ -65,7 +76,17 @@ void registerFlutterSkillTools({
       extraStepFields: extra,
       skillAction: skillAction,
     );
-    return step.containsKey('error') && step['ok'] == false ? err(step) : ok(step);
+    final payload = step.toJson(includeScreenshotDataUri: false);
+    if (!step.ok) {
+      return reply(
+        ApiResponse.fail(
+          ApiCodes.actionFailed,
+          step.actionResult?.error ?? 'action failed',
+          data: payload,
+        ),
+      );
+    }
+    return reply(ApiResponse.ok(payload));
   }
 
   String? argStr(Map<String, Object?> a, String k) {
@@ -140,7 +161,7 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       return onDemand((c) => c.getWidgetProperties(key));
     },
   );
@@ -165,7 +186,7 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final type = argStr(req.arguments ?? const {}, 'type');
-      if (type == null) return err({'ok': false, 'error': 'type required'});
+      if (type == null) return bad('type required');
       return onDemand((c) => c.findByType(type));
     },
   );
@@ -192,7 +213,7 @@ void registerFlutterSkillTools({
       final text = argStr(a, 'text');
       final ref = argStr(a, 'ref');
       if (key == null && text == null && ref == null) {
-        return err({'ok': false, 'error': 'key, text, or ref required'});
+        return bad('key, text, or ref required');
       }
       return withPerf(
         action: 'long_press',
@@ -228,7 +249,7 @@ void registerFlutterSkillTools({
       final text = argStr(a, 'text');
       final ref = argStr(a, 'ref');
       if (key == null && text == null && ref == null) {
-        return err({'ok': false, 'error': 'key, text, or ref required'});
+        return bad('key, text, or ref required');
       }
       return withPerf(
         action: 'double_tap',
@@ -258,7 +279,7 @@ void registerFlutterSkillTools({
       final from = argStr(a, 'fromKey');
       final to = argStr(a, 'toKey');
       if (from == null || to == null) {
-        return err({'ok': false, 'error': 'fromKey and toKey required'});
+        return bad('fromKey and toKey required');
       }
       return withPerf(
         action: 'drag',
@@ -289,7 +310,7 @@ void registerFlutterSkillTools({
     (req) {
       final a = req.arguments ?? const <String, Object?>{};
       final key = argStr(a, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       final mods = argStr(a, 'modifiers')?.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
       return withPerf(
         action: 'press_key',
@@ -339,7 +360,7 @@ void registerFlutterSkillTools({
     (req) {
       final a = req.arguments ?? const <String, Object?>{};
       final key = argStr(a, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       return withPerf(
         action: 'focus',
         actionLabel: 'focus:$key',
@@ -389,7 +410,7 @@ void registerFlutterSkillTools({
       final key = argStr(a, 'key');
       final checked = argBool(a, 'checked');
       if (key == null || checked == null) {
-        return err({'ok': false, 'error': 'key and checked required'});
+        return bad('key and checked required');
       }
       return withPerf(
         action: 'set_checkbox',
@@ -417,7 +438,7 @@ void registerFlutterSkillTools({
       final key = argStr(a, 'key');
       final text = argStr(a, 'text');
       if (key == null && text == null) {
-        return err({'ok': false, 'error': 'key or text required'});
+        return bad('key or text required');
       }
       return withPerf(
         action: 'hover',
@@ -446,7 +467,7 @@ void registerFlutterSkillTools({
       final x = argDbl(a, 'x');
       final y = argDbl(a, 'y');
       if (x == null || y == null) {
-        return err({'ok': false, 'error': 'x and y required'});
+        return bad('x and y required');
       }
       return withPerf(
         action: 'tap_at',
@@ -476,7 +497,7 @@ void registerFlutterSkillTools({
       final x = argDbl(a, 'x');
       final y = argDbl(a, 'y');
       if (x == null || y == null) {
-        return err({'ok': false, 'error': 'x and y required'});
+        return bad('x and y required');
       }
       return withPerf(
         action: 'long_press_at',
@@ -515,7 +536,7 @@ void registerFlutterSkillTools({
       final ex = argDbl(a, 'endX');
       final ey = argDbl(a, 'endY');
       if (sx == null || sy == null || ex == null || ey == null) {
-        return err({'ok': false, 'error': 'start/end coordinates required'});
+        return bad('start/end coordinates required');
       }
       return withPerf(
         action: 'swipe_coordinates',
@@ -552,7 +573,7 @@ void registerFlutterSkillTools({
       final edge = argStr(a, 'edge');
       final direction = argStr(a, 'direction');
       if (edge == null || direction == null) {
-        return err({'ok': false, 'error': 'edge and direction required'});
+        return bad('edge and direction required');
       }
       return withPerf(
         action: 'edge_swipe',
@@ -605,7 +626,7 @@ void registerFlutterSkillTools({
       final key = argStr(a, 'key');
       final text = argStr(a, 'text');
       if (key == null && text == null) {
-        return err({'ok': false, 'error': 'key or text required'});
+        return bad('key or text required');
       }
       return onDemand(
         (c) => c.waitForElement(
@@ -634,7 +655,7 @@ void registerFlutterSkillTools({
       final key = argStr(a, 'key');
       final text = argStr(a, 'text');
       if (key == null && text == null) {
-        return err({'ok': false, 'error': 'key or text required'});
+        return bad('key or text required');
       }
       return onDemand(
         (c) => c.waitForGone(
@@ -671,7 +692,7 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       return onDemand((c) => c.getCheckboxState(key));
     },
   );
@@ -687,7 +708,7 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       return onDemand((c) => c.getSliderValue(key));
     },
   );
@@ -737,7 +758,7 @@ void registerFlutterSkillTools({
       final w = argDbl(a, 'width');
       final h = argDbl(a, 'height');
       if (x == null || y == null || w == null || h == null) {
-        return err({'ok': false, 'error': 'x,y,width,height required'});
+        return bad('x,y,width,height required');
       }
       return onDemand(
         (c) => c.screenshotRegion(x: x, y: y, width: w, height: h),
@@ -756,7 +777,7 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return err({'ok': false, 'error': 'key required'});
+      if (key == null) return bad('key required');
       return onDemand((c) => c.screenshotElement(key));
     },
   );

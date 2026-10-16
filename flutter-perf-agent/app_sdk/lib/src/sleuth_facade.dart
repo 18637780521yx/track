@@ -1,104 +1,100 @@
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:sleuth/sleuth.dart';
 
-/// Thin facade over Sleuth's public export / diagnose APIs for the HTTP bridge.
+/// Thin facade over Sleuth public APIs → [ApiResponse] envelopes.
 class SleuthFacade {
-  /// Full session snapshot (frames, issues, causal edges, heat map, routes…).
-  static Map<String, dynamic> snapshot({bool compact = false}) {
+  static ApiResponse<SleuthSnapshotData> snapshot({bool compact = false}) {
     if (kReleaseMode) {
-      return {'ok': false, 'error': 'sleuth disabled in release'};
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
     }
     try {
       if (compact) {
         final summary = Sleuth.exportSummary(topN: 10);
-        return {
-          'ok': true,
-          'kind': 'summary',
-          'markdown': summary,
-        };
+        return ApiResponse.ok(
+          SleuthSnapshotData(kind: 'summary', markdown: summary),
+        );
       }
       final jsonStr = Sleuth.exportSnapshotJson();
       if (jsonStr == null || jsonStr.isEmpty) {
-        return {
-          'ok': false,
-          'error': 'exportSnapshotJson returned null — is Sleuth.track active?',
-        };
+        return ApiResponse.fail(
+          ApiCodes.sleuthError,
+          'exportSnapshotJson returned null — is Sleuth.track active?',
+        );
       }
       final decoded = jsonDecode(jsonStr);
-      return {
-        'ok': true,
-        'kind': 'snapshot',
-        'snapshot': decoded,
-      };
+      return ApiResponse.ok(
+        SleuthSnapshotData(kind: 'snapshot', snapshot: decoded),
+      );
     } catch (e) {
-      return {'ok': false, 'error': e.toString()};
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 
-  static Map<String, dynamic> summary({int topN = 5}) {
+  static ApiResponse<SleuthSummaryData> summary({int topN = 5}) {
     if (kReleaseMode) {
-      return {'ok': false, 'error': 'sleuth disabled in release'};
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
     }
     try {
       final md = Sleuth.exportSummary(topN: topN);
-      return {
-        'ok': md != null,
-        'markdown': md,
-        if (md == null) 'error': 'exportSummary null',
-      };
+      if (md == null) {
+        return ApiResponse.fail(ApiCodes.sleuthError, 'exportSummary null');
+      }
+      return ApiResponse.ok(SleuthSummaryData(markdown: md));
     } catch (e) {
-      return {'ok': false, 'error': e.toString()};
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 
-  static Map<String, dynamic> diagnose() {
+  static ApiResponse<SleuthDiagnoseData> diagnose() {
     if (kReleaseMode) {
-      return {'ok': false, 'error': 'sleuth disabled in release'};
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
     }
     try {
       final d = Sleuth.diagnoseCaptureState();
-      return {
-        'ok': true,
-        'initialized': d.initialized,
-        'captureMode': d.captureMode,
-        'vmConnected': d.vmConnected,
-        'advisory': d.vmConnected
-            ? null
-            : 'Sleuth VM link down — GC/heap/shader/heavy_compute detectors '
-                'may be silent. Relaunch with: flutter run --profile --no-dds',
-      };
+      return ApiResponse.ok(
+        SleuthDiagnoseData(
+          initialized: d.initialized,
+          captureMode: d.captureMode.toString(),
+          vmConnected: d.vmConnected,
+          advisory: d.vmConnected
+              ? null
+              : 'Sleuth VM link down — GC/heap/shader/heavy_compute detectors '
+                  'may be silent. Relaunch with: flutter run --profile --no-dds',
+        ),
+      );
     } catch (e) {
-      return {'ok': false, 'error': e.toString()};
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 
-  /// Flatten current issues from the live snapshot for MCP / reports.
-  static Map<String, dynamic> issues({int limit = 50}) {
+  static ApiResponse<SleuthIssuesData> issues({int limit = 50}) {
     if (kReleaseMode) {
-      return {'ok': false, 'error': 'sleuth disabled in release'};
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
     }
     try {
       final snap = Sleuth.exportSnapshot();
       if (snap == null) {
-        return {'ok': false, 'error': 'no snapshot'};
+        return ApiResponse.fail(ApiCodes.sleuthError, 'no snapshot');
       }
-      final list = <Map<String, dynamic>>[];
+      final list = <SleuthIssueItem>[];
       try {
         final dynamic d = snap;
         final raw = d.currentIssues as List? ?? d.issues as List?;
         if (raw != null) {
           for (final item in raw.take(limit)) {
             if (item is Map) {
-              list.add(Map<String, dynamic>.from(item));
+              list.add(
+                SleuthIssueItem.fromJson(Map<String, dynamic>.from(item)),
+              );
             } else {
-              list.add(_issueToMap(item));
+              list.add(_issueToItem(item));
             }
           }
         }
       } catch (_) {
-        // Fall back to JSON round-trip.
         final jsonStr = Sleuth.exportSnapshotJson();
         if (jsonStr != null) {
           final decoded = jsonDecode(jsonStr);
@@ -107,78 +103,80 @@ class SleuthFacade {
             if (raw is List) {
               for (final item in raw.take(limit)) {
                 if (item is Map) {
-                  list.add(Map<String, dynamic>.from(item));
+                  list.add(
+                    SleuthIssueItem.fromJson(Map<String, dynamic>.from(item)),
+                  );
                 } else {
-                  list.add({'raw': item.toString()});
+                  list.add(SleuthIssueItem(detail: item.toString()));
                 }
               }
             }
           }
         }
       }
-      return {
-        'ok': true,
-        'count': list.length,
-        'issues': list,
-      };
+      return ApiResponse.ok(SleuthIssuesData(count: list.length, issues: list));
     } catch (e) {
-      return {'ok': false, 'error': e.toString()};
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 
-  static Map<String, dynamic> routeHealth({String? routeName}) {
+  static ApiResponse<SleuthRouteHealthData> routeHealth({String? routeName}) {
     if (kReleaseMode) {
-      return {'ok': false, 'error': 'sleuth disabled in release'};
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
     }
     try {
       if (routeName != null && routeName.isNotEmpty) {
-        return {
-          'ok': true,
-          'routeName': routeName,
-          'healthScore': Sleuth.routeHealthScore(routeName),
-        };
+        return ApiResponse.ok(
+          SleuthRouteHealthData(
+            routeName: routeName,
+            healthScore: Sleuth.routeHealthScore(routeName),
+          ),
+        );
       }
       final history = Sleuth.routeHistory;
       if (history == null) {
-        return {'ok': false, 'error': 'no route history'};
+        return ApiResponse.fail(ApiCodes.sleuthError, 'no route history');
       }
-      return {
-        'ok': true,
-        'routes': history.map((s) {
-          return {
-            'routeName': s.routeName,
-            'healthScore': s.healthScore,
-            'scaffoldHashKey': s.scaffoldHashKey,
-            'tabVisitIndex': s.tabVisitIndex,
-          };
-        }).toList(),
-      };
+      return ApiResponse.ok(
+        SleuthRouteHealthData(
+          routes: history
+              .map(
+                (s) => SleuthRouteEntry(
+                  routeName: s.routeName,
+                  healthScore: s.healthScore,
+                  scaffoldHashKey: s.scaffoldHashKey?.toString(),
+                  tabVisitIndex: s.tabVisitIndex,
+                ),
+              )
+              .toList(),
+        ),
+      );
     } catch (e) {
-      return {'ok': false, 'error': e.toString()};
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 
-  static Map<String, dynamic> _issueToMap(Object item) {
+  static SleuthIssueItem _issueToItem(Object item) {
     try {
       final dynamic d = item;
-      return {
-        'stableId': _try(() => d.stableId?.toString()),
-        'id': _try(() => d.id?.toString()),
-        'title': _try(() => d.title?.toString() ?? d.message?.toString()),
-        'severity': _try(() => d.severity?.toString()),
-        'category': _try(() => d.category?.toString()),
-        'confidenceHint': _try(() => d.fixHint?.toString()),
-        'detail': _try(() => d.detail?.toString()),
-        'confidence': item.toString(),
-      };
+      return SleuthIssueItem(
+        stableId: _try(() => d.stableId?.toString()),
+        id: _try(() => d.id?.toString()),
+        title: _try(() => d.title?.toString() ?? d.message?.toString()),
+        severity: _try(() => d.severity?.toString()),
+        category: _try(() => d.category?.toString()),
+        fixHint: _try(() => d.fixHint?.toString()),
+        detail: _try(() => d.detail?.toString()) ?? item.toString(),
+      );
     } catch (_) {
-      return {'raw': item.toString()};
+      return SleuthIssueItem(detail: item.toString());
     }
   }
 
-  static Object? _try(Object? Function() f) {
+  static String? _try(Object? Function() f) {
     try {
-      return f();
+      final v = f();
+      return v?.toString();
     } catch (_) {
       return null;
     }
