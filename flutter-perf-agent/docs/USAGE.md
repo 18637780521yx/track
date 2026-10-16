@@ -63,16 +63,17 @@ get_sleuth_route_health
 
 `code == 0` 成功；非 0 见 `ApiCodes`（400 / 503 / 1001 无会话 / 1002 skill / 1003 sleuth / 1004 动作失败）。
 
-### flutter_skill 完整能力（0.5.1+）
+### flutter_skill（skill_call）
 
-常用仍用 `tap` / `input_text` / `scroll`；其余走 `skill_*`：
+常用仍用 `tap` / `input_text` / `scroll`；其余：
 
 ```
 启动测试「skill_full」
-skill_interactive / skill_get_widget_tree
-skill_wait_for_element（text=登录）
-skill_long_press / skill_double_tap / skill_go_back
-skill_screenshot / skill_get_logs
+skill_list_methods
+skill_call method=interactive
+skill_call method=waitForElement args={text:登录}
+skill_call method=longPress args={text:登录}
+skill_screenshot
 get_sleuth_issues
 停止测试
 ```

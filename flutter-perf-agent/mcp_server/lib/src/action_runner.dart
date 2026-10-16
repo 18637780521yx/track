@@ -11,7 +11,7 @@ import 'perf_diff.dart';
 import 'report_writer.dart';
 
 typedef SkillAction = Future<Map<String, dynamic>> Function(
-  FlutterSkillVmClient client,
+  FlutterSkillClient client,
 );
 
 /// Shared before → action → settle → after → Sleuth/RSS diff (+ screenshot).
@@ -21,7 +21,7 @@ class ActionRunner {
     required this.bridge,
     required this.reports,
     required this.session,
-    required Future<FlutterSkillVmClient?> Function() ensureSkillClient,
+    required Future<FlutterSkillClient?> Function() ensureSkillClient,
     required int Function() nextStepId,
   })  : _ensureSkillClient = ensureSkillClient,
         _nextStepId = nextStepId;
@@ -30,7 +30,7 @@ class ActionRunner {
   final BridgeClient bridge;
   final ReportWriter reports;
   final PerfSession session;
-  final Future<FlutterSkillVmClient?> Function() _ensureSkillClient;
+  final Future<FlutterSkillClient?> Function() _ensureSkillClient;
   final int Function() _nextStepId;
 
   void _log(String msg) {

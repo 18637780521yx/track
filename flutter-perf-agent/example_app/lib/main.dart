@@ -1,3 +1,5 @@
+import 'package:flutter_skill/flutter_skill.dart';
+import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_perf_agent/flutter_perf_agent.dart';

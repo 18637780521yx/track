@@ -6,17 +6,19 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'action_runner.dart';
 import 'flutter_skill_client.dart';
 
-/// Registers the full flutter_skill extension surface as MCP tools.
+/// 将 flutter_skill 全量能力收成少量 MCP 工具（避免 40+ `skill_*`）。
 ///
-/// Gesture / mutation tools use [ActionRunner] when a perf session is active
-/// (Sleuth/RSS before→after). Read-only tools call the VM client directly.
-/// All replies use `{ code, data, msg }`.
+/// - [skill_call]：`method` + `args` 调度 [FlutterSkillClient]
+/// - [skill_screenshot]：截图单独暴露（载荷大）
+///
+/// 高频动作仍用 server 上的 `tap` / `input_text` / `scroll`。
+/// 手势类 method 在会话中走 [ActionRunner]（Sleuth/RSS diff）。
 void registerFlutterSkillTools({
   required void Function(
     Tool tool,
     FutureOr<CallToolResult> Function(CallToolRequest) handler,
   ) registerTool,
-  required Future<FlutterSkillVmClient?> Function() ensureSkillClient,
+  required Future<FlutterSkillClient?> Function() ensureSkillClient,
   required ActionRunner? Function() runner,
   required CallToolResult Function(ApiResponse<dynamic> response) reply,
 }) {
@@ -38,8 +40,30 @@ void registerFlutterSkillTools({
   CallToolResult bad(String msg) =>
       reply(ApiResponse.fail(ApiCodes.badRequest, msg));
 
+  /// 会改 UI、适合采性能 diff 的 method。
+  const mutating = {
+    'tap',
+    'enterText',
+    'scrollTo',
+    'swipe',
+    'longPress',
+    'doubleTap',
+    'drag',
+    'pressKey',
+    'typeText',
+    'focus',
+    'blur',
+    'setCheckbox',
+    'hover',
+    'tapAt',
+    'longPressAt',
+    'swipeCoordinates',
+    'edgeSwipe',
+    'goBack',
+  };
+
   Future<CallToolResult> onDemand(
-    Future<Map<String, dynamic>> Function(FlutterSkillVmClient c) action,
+    Future<Map<String, dynamic>> Function(FlutterSkillClient c) action,
   ) async {
     final client = await ensureSkillClient();
     if (client == null) return noSkill();
@@ -89,636 +113,77 @@ void registerFlutterSkillTools({
     return reply(ApiResponse.ok(payload));
   }
 
-  String? argStr(Map<String, Object?> a, String k) {
-    final v = a[k];
-    if (v == null) return null;
-    final s = v.toString().trim();
-    return s.isEmpty ? null : s;
+  Future<Map<String, dynamic>> dispatch(
+    FlutterSkillClient c,
+    String method,
+    Map<String, dynamic> args,
+  ) {
+    return _dispatchSkill(c, method, args);
   }
 
-  int? argInt(Map<String, Object?> a, String k) => (a[k] as num?)?.toInt();
-  double? argDbl(Map<String, Object?> a, String k) => (a[k] as num?)?.toDouble();
-  bool? argBool(Map<String, Object?> a, String k) {
-    final v = a[k];
-    if (v is bool) return v;
-    if (v is String) return v.toLowerCase() == 'true';
-    return null;
-  }
-
-  // ── Inspect / find ───────────────────────────────────────────────────
-
   registerTool(
     Tool(
-      name: 'skill_interactive',
-      description: 'flutter_skill interactive 元素列表（含位置）。',
+      name: 'skill_call',
+      description:
+          '调用任意 flutter_skill 方法（全量能力入口）。'
+          '常用仍优先 tap/input_text/scroll。'
+          'method 示例：longPress, doubleTap, waitForElement, interactive, '
+          'getWidgetTree, goBack, getLogs… '
+          '手势类在会话中会采 Sleuth/RSS diff。',
       inputSchema: Schema.object(
         properties: {
-          'includePositions': Schema.bool(description: '是否含坐标，默认 true'),
+          'method': Schema.string(
+            description: 'FlutterSkillClient 方法名，见工具说明',
+          ),
+          'args': Schema.object(
+            description: '方法参数（JSON object，键与接口命名一致）',
+            properties: {},
+          ),
+          'waitStableMs': Schema.int(
+            description: '仅手势类：操作后等待稳定毫秒',
+          ),
         },
+        required: ['method'],
       ),
     ),
-    (req) {
+    (req) async {
       final a = req.arguments ?? const <String, Object?>{};
-      return onDemand(
-        (c) => c.interactive(includePositions: argBool(a, 'includePositions') ?? true),
-      );
-    },
-  );
+      final method = (a['method'] as String?)?.trim() ?? '';
+      if (method.isEmpty) return bad('method required');
 
-  registerTool(
-    Tool(
-      name: 'skill_interactive_structured',
-      description: 'flutter_skill 结构化可交互树。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.interactiveStructured()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_widget_tree',
-      description: '获取 Widget 树。',
-      inputSchema: Schema.object(
-        properties: {
-          'maxDepth': Schema.int(description: '最大深度，默认 10'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return onDemand((c) => c.getWidgetTree(maxDepth: argInt(a, 'maxDepth') ?? 10));
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_widget_properties',
-      description: '按 Key 读取 Widget 属性。',
-      inputSchema: Schema.object(
-        properties: {'key': Schema.string(description: 'Widget Key')},
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return bad('key required');
-      return onDemand((c) => c.getWidgetProperties(key));
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_text_content',
-      description: '页面可见文本内容。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getTextContent()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_find_by_type',
-      description: '按 Widget 类型查找。',
-      inputSchema: Schema.object(
-        properties: {'type': Schema.string(description: '如 TextField / ElevatedButton')},
-        required: ['type'],
-      ),
-    ),
-    (req) {
-      final type = argStr(req.arguments ?? const {}, 'type');
-      if (type == null) return bad('type required');
-      return onDemand((c) => c.findByType(type));
-    },
-  );
-
-  // ── Gestures (perf-wrapped) ──────────────────────────────────────────
-
-  registerTool(
-    Tool(
-      name: 'skill_long_press',
-      description: '长按；会话中采 Sleuth/RSS diff。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'text': Schema.string(),
-          'ref': Schema.string(),
-          'durationMs': Schema.int(description: '默认 500'),
-          'waitStableMs': Schema.int(),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final text = argStr(a, 'text');
-      final ref = argStr(a, 'ref');
-      if (key == null && text == null && ref == null) {
-        return bad('key, text, or ref required');
+      final rawArgs = a['args'];
+      final args = <String, dynamic>{};
+      if (rawArgs is Map) {
+        args.addAll(Map<String, dynamic>.from(rawArgs));
       }
-      return withPerf(
-        action: 'long_press',
-        actionLabel: 'longPress:${key ?? text ?? ref}',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        extra: {'key': key, 'text': text, 'ref': ref},
-        skillAction: (c) => c.longPress(
-          key: key,
-          text: text,
-          ref: ref,
-          durationMs: argInt(a, 'durationMs') ?? 500,
-        ),
-      );
-    },
-  );
 
-  registerTool(
-    Tool(
-      name: 'skill_double_tap',
-      description: '双击；会话中采 Sleuth/RSS diff。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'text': Schema.string(),
-          'ref': Schema.string(),
-          'waitStableMs': Schema.int(),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final text = argStr(a, 'text');
-      final ref = argStr(a, 'ref');
-      if (key == null && text == null && ref == null) {
-        return bad('key, text, or ref required');
+      final wait = (a['waitStableMs'] as num?)?.toInt();
+
+      if (mutating.contains(method)) {
+        return withPerf(
+          action: 'skill_$method',
+          actionLabel: 'skill_call:$method',
+          waitStableMs: wait,
+          extra: {'method': method, 'args': args},
+          skillAction: (c) => dispatch(c, method, args),
+        );
       }
-      return withPerf(
-        action: 'double_tap',
-        actionLabel: 'doubleTap:${key ?? text ?? ref}',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.doubleTap(key: key, text: text, ref: ref),
-      );
+
+      return onDemand((c) async {
+        final result = await dispatch(c, method, args);
+        return {
+          'method': method,
+          ...result,
+        };
+      });
     },
   );
-
-  registerTool(
-    Tool(
-      name: 'skill_drag',
-      description: '从一个 Key 拖到另一个 Key；会话中采性能。',
-      inputSchema: Schema.object(
-        properties: {
-          'fromKey': Schema.string(),
-          'toKey': Schema.string(),
-          'holdMs': Schema.int(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['fromKey', 'toKey'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final from = argStr(a, 'fromKey');
-      final to = argStr(a, 'toKey');
-      if (from == null || to == null) {
-        return bad('fromKey and toKey required');
-      }
-      return withPerf(
-        action: 'drag',
-        actionLabel: 'drag:$from→$to',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.drag(
-          fromKey: from,
-          toKey: to,
-          holdMs: argInt(a, 'holdMs') ?? 0,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_press_key',
-      description: '按物理/逻辑键（如 Enter、Backspace）；可带 modifiers。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(description: '键名，如 Enter'),
-          'modifiers': Schema.string(description: '逗号分隔，如 shift,meta'),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      if (key == null) return bad('key required');
-      final mods = argStr(a, 'modifiers')?.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
-      return withPerf(
-        action: 'press_key',
-        actionLabel: 'pressKey:$key',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.pressKey(key, modifiers: mods),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_type_text',
-      description: '向当前焦点输入文本（不指定控件）。',
-      inputSchema: Schema.object(
-        properties: {
-          'text': Schema.string(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['text'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final text = a['text'] as String? ?? '';
-      return withPerf(
-        action: 'type_text',
-        actionLabel: 'typeText:len=${text.length}',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.typeText(text),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_focus',
-      description: '聚焦到指定 Key 的控件。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      if (key == null) return bad('key required');
-      return withPerf(
-        action: 'focus',
-        actionLabel: 'focus:$key',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.focus(key),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_blur',
-      description: '取消焦点。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(description: '可选'),
-          'waitStableMs': Schema.int(),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return withPerf(
-        action: 'blur',
-        actionLabel: 'blur',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.blur(key: argStr(a, 'key')),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_set_checkbox',
-      description: '设置 Checkbox 状态。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'checked': Schema.bool(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['key', 'checked'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final checked = argBool(a, 'checked');
-      if (key == null || checked == null) {
-        return bad('key and checked required');
-      }
-      return withPerf(
-        action: 'set_checkbox',
-        actionLabel: 'setCheckbox:$key=$checked',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.setCheckbox(key, checked),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_hover',
-      description: '悬停（桌面/Web）。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'text': Schema.string(),
-          'waitStableMs': Schema.int(),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final text = argStr(a, 'text');
-      if (key == null && text == null) {
-        return bad('key or text required');
-      }
-      return withPerf(
-        action: 'hover',
-        actionLabel: 'hover:${key ?? text}',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.hover(key: key, text: text),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_tap_at',
-      description: '按坐标点击。',
-      inputSchema: Schema.object(
-        properties: {
-          'x': Schema.num(),
-          'y': Schema.num(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['x', 'y'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final x = argDbl(a, 'x');
-      final y = argDbl(a, 'y');
-      if (x == null || y == null) {
-        return bad('x and y required');
-      }
-      return withPerf(
-        action: 'tap_at',
-        actionLabel: 'tapAt:$x,$y',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.tapAt(x: x, y: y),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_long_press_at',
-      description: '按坐标长按。',
-      inputSchema: Schema.object(
-        properties: {
-          'x': Schema.num(),
-          'y': Schema.num(),
-          'durationMs': Schema.int(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['x', 'y'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final x = argDbl(a, 'x');
-      final y = argDbl(a, 'y');
-      if (x == null || y == null) {
-        return bad('x and y required');
-      }
-      return withPerf(
-        action: 'long_press_at',
-        actionLabel: 'longPressAt:$x,$y',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.longPressAt(
-          x: x,
-          y: y,
-          durationMs: argInt(a, 'durationMs') ?? 500,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_swipe_coordinates',
-      description: '坐标滑动。',
-      inputSchema: Schema.object(
-        properties: {
-          'startX': Schema.num(),
-          'startY': Schema.num(),
-          'endX': Schema.num(),
-          'endY': Schema.num(),
-          'durationMs': Schema.int(),
-          'holdMs': Schema.int(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['startX', 'startY', 'endX', 'endY'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final sx = argDbl(a, 'startX');
-      final sy = argDbl(a, 'startY');
-      final ex = argDbl(a, 'endX');
-      final ey = argDbl(a, 'endY');
-      if (sx == null || sy == null || ex == null || ey == null) {
-        return bad('start/end coordinates required');
-      }
-      return withPerf(
-        action: 'swipe_coordinates',
-        actionLabel: 'swipeCoords',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.swipeCoordinates(
-          startX: sx,
-          startY: sy,
-          endX: ex,
-          endY: ey,
-          durationMs: argInt(a, 'durationMs') ?? 300,
-          holdMs: argInt(a, 'holdMs') ?? 0,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_edge_swipe',
-      description: '边缘滑动（如 iOS 返回手势）。',
-      inputSchema: Schema.object(
-        properties: {
-          'edge': Schema.string(description: 'left/right/top/bottom'),
-          'direction': Schema.string(description: '滑动方向'),
-          'distance': Schema.num(),
-          'waitStableMs': Schema.int(),
-        },
-        required: ['edge', 'direction'],
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final edge = argStr(a, 'edge');
-      final direction = argStr(a, 'direction');
-      if (edge == null || direction == null) {
-        return bad('edge and direction required');
-      }
-      return withPerf(
-        action: 'edge_swipe',
-        actionLabel: 'edgeSwipe:$edge:$direction',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.edgeSwipe(
-          edge: edge,
-          direction: direction,
-          distance: argDbl(a, 'distance') ?? 200,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_go_back',
-      description: '导航返回；会话中采性能。',
-      inputSchema: Schema.object(
-        properties: {'waitStableMs': Schema.int()},
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return withPerf(
-        action: 'go_back',
-        actionLabel: 'goBack',
-        waitStableMs: argInt(a, 'waitStableMs'),
-        skillAction: (c) => c.goBack(),
-      );
-    },
-  );
-
-  // ── Wait / form state ────────────────────────────────────────────────
-
-  registerTool(
-    Tool(
-      name: 'skill_wait_for_element',
-      description: '等待元素出现。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'text': Schema.string(),
-          'timeoutMs': Schema.int(description: '默认 5000'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final text = argStr(a, 'text');
-      if (key == null && text == null) {
-        return bad('key or text required');
-      }
-      return onDemand(
-        (c) => c.waitForElement(
-          key: key,
-          text: text,
-          timeoutMs: argInt(a, 'timeoutMs') ?? 5000,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_wait_for_gone',
-      description: '等待元素消失。',
-      inputSchema: Schema.object(
-        properties: {
-          'key': Schema.string(),
-          'text': Schema.string(),
-          'timeoutMs': Schema.int(description: '默认 5000'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final key = argStr(a, 'key');
-      final text = argStr(a, 'text');
-      if (key == null && text == null) {
-        return bad('key or text required');
-      }
-      return onDemand(
-        (c) => c.waitForGone(
-          key: key,
-          text: text,
-          timeoutMs: argInt(a, 'timeoutMs') ?? 5000,
-        ),
-      );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_text_value',
-      description: '读取 TextField 当前值。',
-      inputSchema: Schema.object(
-        properties: {'key': Schema.string(description: '可选；默认当前焦点')},
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return onDemand((c) => c.getTextValue(key: argStr(a, 'key')));
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_checkbox_state',
-      description: '读取 Checkbox 状态。',
-      inputSchema: Schema.object(
-        properties: {'key': Schema.string()},
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return bad('key required');
-      return onDemand((c) => c.getCheckboxState(key));
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_slider_value',
-      description: '读取 Slider 值。',
-      inputSchema: Schema.object(
-        properties: {'key': Schema.string()},
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return bad('key required');
-      return onDemand((c) => c.getSliderValue(key));
-    },
-  );
-
-  // ── Screenshot ───────────────────────────────────────────────────────
 
   registerTool(
     Tool(
       name: 'skill_screenshot',
-      description: '全屏截图（返回 base64 image 字段）。',
+      description: '全屏截图（base64 image）。区域/控件截图用 skill_call '
+          'method=screenshotRegion|screenshotElement。',
       inputSchema: Schema.object(
         properties: {
           'quality': Schema.num(description: '0–1，默认 0.65'),
@@ -728,191 +193,297 @@ void registerFlutterSkillTools({
     ),
     (req) {
       final a = req.arguments ?? const <String, Object?>{};
+      final quality = (a['quality'] as num?)?.toDouble() ?? 0.65;
+      final maxWidth = (a['maxWidth'] as num?)?.toInt() ?? 720;
       return onDemand(
-        (c) => c.screenshot(
-          quality: argDbl(a, 'quality') ?? 0.65,
-          maxWidth: argInt(a, 'maxWidth') ?? 720,
-        ),
+        (c) => c.screenshot(quality: quality, maxWidth: maxWidth),
       );
     },
   );
 
+  // 列出可用 method，方便模型/人类查阅（轻量）。
   registerTool(
     Tool(
-      name: 'skill_screenshot_region',
-      description: '区域截图。',
-      inputSchema: Schema.object(
-        properties: {
-          'x': Schema.num(),
-          'y': Schema.num(),
-          'width': Schema.num(),
-          'height': Schema.num(),
-        },
-        required: ['x', 'y', 'width', 'height'],
-      ),
+      name: 'skill_list_methods',
+      description: '列出 skill_call 可用的 method 名与分类。',
+      inputSchema: Schema.object(properties: {}),
     ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final x = argDbl(a, 'x');
-      final y = argDbl(a, 'y');
-      final w = argDbl(a, 'width');
-      final h = argDbl(a, 'height');
-      if (x == null || y == null || w == null || h == null) {
-        return bad('x,y,width,height required');
+    (_) => reply(
+      ApiResponse.ok({
+        'mutating': mutating.toList()..sort(),
+        'readonly': _readonlyMethods,
+        'note':
+            'Prefer tap/input_text/scroll for common flows; '
+            'use skill_call for the rest.',
+      }),
+    ),
+  );
+}
+
+const _readonlyMethods = [
+  'inspectInteractive',
+  'interactive',
+  'interactiveStructured',
+  'getWidgetTree',
+  'getWidgetProperties',
+  'getTextContent',
+  'findByType',
+  'waitForElement',
+  'waitForGone',
+  'getTextValue',
+  'getCheckboxState',
+  'getSliderValue',
+  'screenshot',
+  'screenshotRegion',
+  'screenshotElement',
+  'getCurrentRoute',
+  'getNavigationStack',
+  'enableIndicators',
+  'disableIndicators',
+  'getIndicatorStatus',
+  'getLogs',
+  'getErrors',
+  'clearLogs',
+  'getPerformance',
+  'getFrameStats',
+  'getHttpRequests',
+  'clearHttpRequests',
+];
+
+String? _str(Map<String, dynamic> a, String k) {
+  final v = a[k];
+  if (v == null) return null;
+  final s = v.toString().trim();
+  return s.isEmpty ? null : s;
+}
+
+int _int(Map<String, dynamic> a, String k, [int def = 0]) =>
+    (a[k] as num?)?.toInt() ?? def;
+
+double _dbl(Map<String, dynamic> a, String k, [double def = 0]) =>
+    (a[k] as num?)?.toDouble() ?? def;
+
+bool? _bool(Map<String, dynamic> a, String k) {
+  final v = a[k];
+  if (v is bool) return v;
+  if (v is String) return v.toLowerCase() == 'true';
+  return null;
+}
+
+List<String>? _strList(Map<String, dynamic> a, String k) {
+  final v = a[k];
+  if (v is List) {
+    return v.map((e) => e.toString()).where((s) => s.isNotEmpty).toList();
+  }
+  if (v is String && v.trim().isNotEmpty) {
+    return v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+  }
+  return null;
+}
+
+/// 将 method 名映射到 [FlutterSkillClient] 调用。
+Future<Map<String, dynamic>> _dispatchSkill(
+  FlutterSkillClient c,
+  String method,
+  Map<String, dynamic> args,
+) async {
+  switch (method) {
+    case 'tap':
+      return c.tap(
+        text: _str(args, 'text'),
+        key: _str(args, 'key'),
+        ref: _str(args, 'ref'),
+      );
+    case 'enterText':
+      final text = args['text']?.toString() ?? '';
+      return c.enterText(
+        text: text,
+        target: _str(args, 'target'),
+        key: _str(args, 'key'),
+        ref: _str(args, 'ref'),
+      );
+    case 'scrollTo':
+      return c.scrollTo(key: _str(args, 'key'), text: _str(args, 'text'));
+    case 'swipe':
+      return c.swipe(
+        direction: _str(args, 'direction') ?? 'down',
+        distance: _dbl(args, 'distance', 300),
+        key: _str(args, 'key'),
+      );
+    case 'inspectInteractive':
+      return c.inspectInteractive();
+    case 'screenshot':
+      return c.screenshot(
+        quality: _dbl(args, 'quality', 0.65),
+        maxWidth: _int(args, 'maxWidth', 720),
+      );
+    case 'interactive':
+      return c.interactive(
+        includePositions: _bool(args, 'includePositions') ?? true,
+      );
+    case 'interactiveStructured':
+      return c.interactiveStructured();
+    case 'getWidgetTree':
+      return c.getWidgetTree(maxDepth: _int(args, 'maxDepth', 10));
+    case 'getWidgetProperties':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.getWidgetProperties(key);
+    case 'getTextContent':
+      return c.getTextContent();
+    case 'findByType':
+      final type = _str(args, 'type');
+      if (type == null) throw ArgumentError('args.type required');
+      return c.findByType(type);
+    case 'longPress':
+      return c.longPress(
+        key: _str(args, 'key'),
+        text: _str(args, 'text'),
+        ref: _str(args, 'ref'),
+        durationMs: _int(args, 'durationMs', 500),
+      );
+    case 'doubleTap':
+      return c.doubleTap(
+        key: _str(args, 'key'),
+        text: _str(args, 'text'),
+        ref: _str(args, 'ref'),
+      );
+    case 'drag':
+      final from = _str(args, 'fromKey');
+      final to = _str(args, 'toKey');
+      if (from == null || to == null) {
+        throw ArgumentError('args.fromKey and args.toKey required');
       }
-      return onDemand(
-        (c) => c.screenshotRegion(x: x, y: y, width: w, height: h),
+      return c.drag(
+        fromKey: from,
+        toKey: to,
+        holdMs: _int(args, 'holdMs'),
       );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_screenshot_element',
-      description: '按 Key 截取控件。',
-      inputSchema: Schema.object(
-        properties: {'key': Schema.string()},
-        required: ['key'],
-      ),
-    ),
-    (req) {
-      final key = argStr(req.arguments ?? const {}, 'key');
-      if (key == null) return bad('key required');
-      return onDemand((c) => c.screenshotElement(key));
-    },
-  );
-
-  // ── Navigation ───────────────────────────────────────────────────────
-
-  registerTool(
-    Tool(
-      name: 'skill_get_current_route',
-      description: '当前路由名。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getCurrentRoute()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_navigation_stack',
-      description: '导航栈。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getNavigationStack()),
-  );
-
-  // ── Indicators / logs / skill-side perf ───────────────────────────────
-
-  registerTool(
-    Tool(
-      name: 'skill_enable_indicators',
-      description: '开启 flutter_skill 测试指示器。',
-      inputSchema: Schema.object(
-        properties: {
-          'style': Schema.string(description: '默认 standard'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return onDemand(
-        (c) => c.enableIndicators(style: argStr(a, 'style') ?? 'standard'),
+    case 'pressKey':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.pressKey(key, modifiers: _strList(args, 'modifiers'));
+    case 'typeText':
+      return c.typeText(args['text']?.toString() ?? '');
+    case 'focus':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.focus(key);
+    case 'blur':
+      return c.blur(key: _str(args, 'key'));
+    case 'setCheckbox':
+      final key = _str(args, 'key');
+      final checked = _bool(args, 'checked');
+      if (key == null || checked == null) {
+        throw ArgumentError('args.key and args.checked required');
+      }
+      return c.setCheckbox(key, checked);
+    case 'hover':
+      return c.hover(key: _str(args, 'key'), text: _str(args, 'text'));
+    case 'tapAt':
+      return c.tapAt(x: _dbl(args, 'x'), y: _dbl(args, 'y'));
+    case 'longPressAt':
+      return c.longPressAt(
+        x: _dbl(args, 'x'),
+        y: _dbl(args, 'y'),
+        durationMs: _int(args, 'durationMs', 500),
       );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_disable_indicators',
-      description: '关闭测试指示器。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.disableIndicators()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_indicator_status',
-      description: '指示器状态。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getIndicatorStatus()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_logs',
-      description: '应用侧 flutter_skill 日志。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getLogs()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_errors',
-      description: '应用侧错误列表。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getErrors()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_clear_logs',
-      description: '清空 skill 日志缓冲。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.clearLogs()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_performance',
-      description: 'flutter_skill 内置 performance 快照（非 Sleuth；主指标仍用 get_sleuth_*）。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getPerformance()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_frame_stats',
-      description: 'flutter_skill 帧统计（辅助；主指标用 Sleuth）。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.getFrameStats()),
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_get_http_requests',
-      description: '应用内手动记录的 HTTP 请求列表。',
-      inputSchema: Schema.object(
-        properties: {
-          'limit': Schema.int(description: '默认 50'),
-          'offset': Schema.int(description: '默认 0'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      return onDemand(
-        (c) => c.getHttpRequests(
-          limit: argInt(a, 'limit') ?? 50,
-          offset: argInt(a, 'offset') ?? 0,
-        ),
+    case 'swipeCoordinates':
+      return c.swipeCoordinates(
+        startX: _dbl(args, 'startX'),
+        startY: _dbl(args, 'startY'),
+        endX: _dbl(args, 'endX'),
+        endY: _dbl(args, 'endY'),
+        durationMs: _int(args, 'durationMs', 300),
+        holdMs: _int(args, 'holdMs'),
       );
-    },
-  );
-
-  registerTool(
-    Tool(
-      name: 'skill_clear_http_requests',
-      description: '清空应用内 HTTP 请求缓冲。',
-      inputSchema: Schema.object(properties: {}),
-    ),
-    (_) => onDemand((c) => c.clearHttpRequests()),
-  );
+    case 'edgeSwipe':
+      final edge = _str(args, 'edge');
+      final direction = _str(args, 'direction');
+      if (edge == null || direction == null) {
+        throw ArgumentError('args.edge and args.direction required');
+      }
+      return c.edgeSwipe(
+        edge: edge,
+        direction: direction,
+        distance: _dbl(args, 'distance', 200),
+      );
+    case 'waitForElement':
+      return c.waitForElement(
+        key: _str(args, 'key'),
+        text: _str(args, 'text'),
+        timeoutMs: _int(args, 'timeoutMs', 5000),
+      );
+    case 'waitForGone':
+      return c.waitForGone(
+        key: _str(args, 'key'),
+        text: _str(args, 'text'),
+        timeoutMs: _int(args, 'timeoutMs', 5000),
+      );
+    case 'getTextValue':
+      return c.getTextValue(key: _str(args, 'key'));
+    case 'getCheckboxState':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.getCheckboxState(key);
+    case 'getSliderValue':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.getSliderValue(key);
+    case 'screenshotRegion':
+      return c.screenshotRegion(
+        x: _dbl(args, 'x'),
+        y: _dbl(args, 'y'),
+        width: _dbl(args, 'width'),
+        height: _dbl(args, 'height'),
+      );
+    case 'screenshotElement':
+      final key = _str(args, 'key');
+      if (key == null) throw ArgumentError('args.key required');
+      return c.screenshotElement(key);
+    case 'getCurrentRoute':
+      return c.getCurrentRoute();
+    case 'goBack':
+      return c.goBack();
+    case 'getNavigationStack':
+      return c.getNavigationStack();
+    case 'enableIndicators':
+      return c.enableIndicators(style: _str(args, 'style') ?? 'standard');
+    case 'disableIndicators':
+      return c.disableIndicators();
+    case 'getIndicatorStatus':
+      return c.getIndicatorStatus();
+    case 'getLogs':
+      return c.getLogs();
+    case 'getErrors':
+      return c.getErrors();
+    case 'clearLogs':
+      return c.clearLogs();
+    case 'getPerformance':
+      return c.getPerformance();
+    case 'getFrameStats':
+      return c.getFrameStats();
+    case 'getHttpRequests':
+      return c.getHttpRequests(
+        limit: _int(args, 'limit', 50),
+        offset: _int(args, 'offset'),
+      );
+    case 'clearHttpRequests':
+      return c.clearHttpRequests();
+    case 'callExtension':
+      final ext = _str(args, 'extension') ?? _str(args, 'method');
+      if (ext == null) {
+        throw ArgumentError('args.extension (or method) required');
+      }
+      final params = <String, String>{};
+      final p = args['params'];
+      if (p is Map) {
+        p.forEach((k, v) => params[k.toString()] = v.toString());
+      }
+      return c.callExtension(ext, params);
+    default:
+      throw ArgumentError(
+        'unknown method "$method" — call skill_list_methods',
+      );
+  }
 }

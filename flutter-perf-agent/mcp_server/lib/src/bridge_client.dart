@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:http/http.dart' as http;
 
+import 'bridge_discovery.dart';
 import 'config.dart';
 
 class BridgeClient {
@@ -12,7 +13,24 @@ class BridgeClient {
   final PerfAgentConfig config;
   final http.Client _client;
 
-  Uri _u(String path) => Uri.parse('${config.bridgeBaseUrl}$path');
+  String? _resolvedBaseUrl;
+
+  /// Last successfully resolved bridge base URL (after [ensureResolved]).
+  String get bridgeBaseUrl => _resolvedBaseUrl ?? config.bridgeBaseUrl;
+
+  Uri _u(String path) => Uri.parse('$bridgeBaseUrl$path');
+
+  /// Ping configured port, then discovery file / nearby ports.
+  Future<String?> ensureResolved({bool force = false}) async {
+    if (!force && _resolvedBaseUrl != null) return _resolvedBaseUrl;
+    final found = await BridgeDiscovery.resolve(
+      preferredHost: config.bridgeHost,
+      preferredPort: config.bridgePort,
+      client: _client,
+    );
+    _resolvedBaseUrl = found;
+    return found;
+  }
 
   Future<ApiResponse<HealthData>> health() => _get(
         '/health',
@@ -112,12 +130,18 @@ class BridgeClient {
     String path,
     T Function(Object? raw) decode,
   ) async {
+    await ensureResolved();
     try {
       final res = await _client
           .get(_u(path))
           .timeout(const Duration(seconds: 10));
       return _decode(res, decode);
     } catch (e) {
+      final retried = await _retryAfterRediscover(
+        () => _client.get(_u(path)).timeout(const Duration(seconds: 10)),
+        decode,
+      );
+      if (retried != null) return retried;
       return ApiResponse.fail(
         ApiCodes.unavailable,
         'bridge unreachable: $e',
@@ -131,20 +155,36 @@ class BridgeClient {
     Map<String, dynamic> body,
     T Function(Object? raw) decode,
   ) async {
+    await ensureResolved();
+    Future<http.Response> send() => _client
+        .post(
+          _u(path),
+          headers: {'content-type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 30));
     try {
-      final res = await _client
-          .post(
-            _u(path),
-            headers: {'content-type': 'application/json'},
-            body: jsonEncode(body),
-          )
-          .timeout(const Duration(seconds: 30));
-      return _decode(res, decode);
+      return _decode(await send(), decode);
     } catch (e) {
+      final retried = await _retryAfterRediscover(send, decode);
+      if (retried != null) return retried;
       return ApiResponse.fail(
         ApiCodes.unavailable,
         'bridge unreachable: $e',
       );
+    }
+  }
+
+  Future<ApiResponse<T>?> _retryAfterRediscover<T>(
+    Future<http.Response> Function() send,
+    T Function(Object? raw) decode,
+  ) async {
+    final found = await ensureResolved(force: true);
+    if (found == null) return null;
+    try {
+      return _decode(await send(), decode);
+    } catch (_) {
+      return null;
     }
   }
 

@@ -34,6 +34,7 @@ dependencies:
   flutter_perf_agent:
     path: ../app_sdk
   sleuth: ^0.37.0
+  flutter_skill: ^0.9.37
 
 dev_dependencies:
   flutter_test:

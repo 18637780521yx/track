@@ -8,7 +8,7 @@
 
 ```
 Cursor MCP
-  ├─ flutter_skill 全量（tap/scroll/input + skill_* …）
+  ├─ flutter_skill（tap/scroll/input + skill_call / skill_screenshot）
   └─ PerfBridge + Sleuth 全量
        信封统一：{ code, data, msg }  （protocol 包）
 ```
@@ -55,7 +55,9 @@ Cursor 里配置 MCP 后可以说：
 |------|------|
 | `start_perf_test` | 开会话（清理旧会话） |
 | `input_text` / `tap` / `scroll` | 常用 UI + Sleuth/RSS diff |
-| `skill_*` | **flutter_skill 全量**（见下） |
+| `skill_call` | flutter_skill 全量入口：`method` + `args` |
+| `skill_screenshot` | 全屏截图 |
+| `skill_list_methods` | 列出可用 method |
 | `stop_perf_test` | JSON + HTML（含截图） |
 | `get_ui_snapshot` | 可交互控件（inspect） |
 | `export_session_snapshot` / `import_session_snapshot` | 会话快照 I/O |
@@ -66,17 +68,7 @@ Cursor 里配置 MCP 后可以说：
 | `get_sleuth_route_health` | 路由健康分 |
 | `get_perf_threshold_config` | 阈值与配置 |
 
-### `skill_*`（flutter_skill 全量）
-
-| 类别 | Tools |
-|------|------|
-| 检查 | `skill_interactive` / `_structured` / `skill_get_widget_tree` / `_properties` / `skill_get_text_content` / `skill_find_by_type` |
-| 手势 | `skill_long_press` / `_double_tap` / `_drag` / `_press_key` / `_type_text` / `_focus` / `_blur` / `_set_checkbox` / `_hover` / `_tap_at` / `_long_press_at` / `_swipe_coordinates` / `_edge_swipe` / `_go_back` |
-| 等待/表单 | `skill_wait_for_element` / `_gone` / `skill_get_text_value` / `_checkbox_state` / `_slider_value` |
-| 截图 | `skill_screenshot` / `_region` / `_element` |
-| 导航 | `skill_get_current_route` / `_navigation_stack` |
-| 指示器/日志 | `skill_enable/disable_indicators` / `_get_indicator_status` / `skill_get_logs` / `_errors` / `_clear_logs` |
-| 辅助指标 | `skill_get_performance` / `_frame_stats` / `_http_requests` / `_clear_http_requests`（主指标仍用 `get_sleuth_*`） |
+`skill_call` 示例：`method=longPress`，`args={ "text": "登录", "durationMs": 500 }`。手势类会采性能；只读类直接返回。
 
 > 性能走 **Sleuth 全量**（非 DevTools 外连）。flutter_skill 仍需 VM。  
 > Bridge / MCP 响应统一 **`{ "code": 0, "data": ..., "msg": "ok" }`**（`code≠0` 为失败）。

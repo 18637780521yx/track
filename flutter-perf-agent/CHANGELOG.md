@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.1 — MCP skill 工具收拢
+
+- 去掉 40+ `skill_*` 单工具；改为 `skill_call`（method+args）+ `skill_screenshot` + `skill_list_methods`
+- 手势类 method 仍走 ActionRunner（Sleuth/RSS）；`FlutterSkillClient` 接口不变
+
 ## 0.6.0 — ApiResponse(code/data/msg) + 模型化
 
 - 新增纯 Dart 包 `protocol/`（`flutter_perf_agent_protocol`）：统一 `{ code, data, msg }`

@@ -65,7 +65,7 @@ Future<void> main(List<String> args) async {
   Future<StepResult> runStep({
     required String action,
     required String label,
-    required Future<Map<String, dynamic>> Function(FlutterSkillVmClient c)
+    required Future<Map<String, dynamic>> Function(FlutterSkillClient c)
         doAction,
     Map<String, dynamic>? extra,
     int extraSettleMs = 0,

@@ -10,6 +10,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
+import 'bridge_discovery.dart';
 import 'perf_snapshot.dart';
 import 'sleuth_facade.dart';
 import 'ui_actions.dart';
@@ -22,18 +23,29 @@ class PerfBridgeServer {
     this.host = '127.0.0.1',
     this.port = 19288,
     this.waitStableMs = 500,
+    this.bindRetries = 10,
+    this.bindRetryDelay = const Duration(milliseconds: 250),
+    this.portFallbackCount = 10,
   });
 
   final String host;
+  /// Preferred listen port (may fall back if occupied).
   final int port;
   final int waitStableMs;
+  final int bindRetries;
+  final Duration bindRetryDelay;
+  final int portFallbackCount;
 
   HttpServer? _server;
+  int? _boundPort;
   String? sessionId;
   String? testName;
   DateTime? sessionStartedAt;
 
   bool get isRunning => _server != null;
+
+  /// Actual bound port after [start]; equals [port] when no fallback was needed.
+  int get boundPort => _boundPort ?? port;
 
   Future<void> start() async {
     if (_server != null) return;
@@ -42,6 +54,64 @@ class PerfBridgeServer {
       return;
     }
 
+    final handler = _buildHandler();
+    Object? lastError;
+
+    // 1) Prefer the configured port — hot restart often races the old socket.
+    for (var attempt = 1; attempt <= bindRetries; attempt++) {
+      try {
+        await _listen(handler, port);
+        return;
+      } catch (e) {
+        lastError = e;
+        if (!_isAddrInUse(e)) rethrow;
+        // true = another PerfBridge; false = foreign listener; null = race/empty.
+        final probe = await _probePort(port);
+        if (probe == true) {
+          debugPrint(
+            '[PerfBridge] port $port already served by another PerfBridge; '
+            'falling back',
+          );
+          break;
+        }
+        if (probe == false) {
+          debugPrint(
+            '[PerfBridge] port $port held by a non-bridge process; falling back',
+          );
+          break;
+        }
+        debugPrint(
+          '[PerfBridge] port $port in use '
+          '(attempt $attempt/$bindRetries), retrying…',
+        );
+        await Future<void>.delayed(bindRetryDelay);
+      }
+    }
+
+    // 2) Another live process still owns the preferred port — fall back.
+    final maxPort = port + portFallbackCount;
+    for (var candidate = port + 1; candidate <= maxPort; candidate++) {
+      try {
+        await _listen(handler, candidate);
+        debugPrint(
+          '[PerfBridge] preferred port $port busy; '
+          'listening on fallback http://$host:$candidate',
+        );
+        return;
+      } catch (e) {
+        lastError = e;
+        if (!_isAddrInUse(e)) rethrow;
+        debugPrint('[PerfBridge] port $candidate also in use, trying next…');
+      }
+    }
+
+    throw StateError(
+      'PerfBridge failed to bind $host:$port–$maxPort '
+      '(last error: $lastError)',
+    );
+  }
+
+  Handler _buildHandler() {
     final router = Router()
       ..get('/health', _health)
       ..post('/session/start', _sessionStart)
@@ -56,20 +126,76 @@ class PerfBridgeServer {
       ..get('/sleuth/issues', _sleuthIssues)
       ..get('/sleuth/route_health', _sleuthRouteHealth);
 
-    final handler = const Pipeline()
+    return const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
           if (isError) debugPrint('[PerfBridge] $msg');
         }))
         .addMiddleware(_cors)
         .addHandler(router.call);
+  }
 
-    _server = await shelf_io.serve(handler, host, port);
-    debugPrint('[PerfBridge] listening on http://$host:$port');
+  Future<void> _listen(Handler handler, int listenPort) async {
+    final server = await shelf_io.serve(handler, host, listenPort);
+    _server = server;
+    _boundPort = server.port;
+    final vmUri = await _vmServiceUri();
+    try {
+      await BridgeDiscovery.write(
+        host: host,
+        port: boundPort,
+        vmServiceUri: vmUri,
+      );
+    } catch (e) {
+      debugPrint('[PerfBridge] discovery write skipped: $e');
+    }
+    debugPrint('[PerfBridge] listening on http://$host:$boundPort');
+  }
+
+  static bool _isAddrInUse(Object e) {
+    if (e is! SocketException) return false;
+    final code = e.osError?.errorCode;
+    // macOS 48, Linux 98, Windows 10048
+    if (code == 48 || code == 98 || code == 10048) return true;
+    final msg = '${e.message} ${e.osError?.message ?? ''}'.toLowerCase();
+    return msg.contains('already in use') ||
+        msg.contains('address in use') ||
+        msg.contains('eaddrinuse');
+  }
+
+  /// `true` = our bridge, `false` = something else listening, `null` = unreachable.
+  Future<bool?> _probePort(int probePort) async {
+    HttpClient? client;
+    try {
+      client = HttpClient()
+        ..connectionTimeout = const Duration(milliseconds: 400);
+      final req =
+          await client.getUrl(Uri.parse('http://$host:$probePort/health'));
+      final res = await req.close().timeout(const Duration(milliseconds: 600));
+      final body = await res.transform(utf8.decoder).join();
+      if (res.statusCode != 200) return false;
+      final decoded = jsonDecode(body);
+      if (decoded is! Map) return false;
+      final data = decoded['data'];
+      if (data is Map && data['bridge'] == BridgeDiscovery.bridgeName) {
+        return true;
+      }
+      return false;
+    } on SocketException {
+      return null;
+    } on TimeoutException {
+      return null;
+    } catch (_) {
+      // TCP accepted but not our JSON health → foreign listener.
+      return false;
+    } finally {
+      client?.close(force: true);
+    }
   }
 
   Future<void> stop() async {
     await _server?.close(force: true);
     _server = null;
+    _boundPort = null;
   }
 
   Middleware get _cors => (inner) {

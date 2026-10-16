@@ -9,6 +9,7 @@ import 'action_runner.dart';
 import 'bridge_client.dart';
 import 'config.dart';
 import 'flutter_skill_client.dart';
+import 'flutter_skill_vm_client.dart';
 import 'report_writer.dart';
 import 'skill_mcp_bindings.dart';
 import 'snapshot_io.dart';
@@ -23,13 +24,13 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.6.0',
+            version: '0.6.1',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.6 code/data/msg + Sleuth + full flutter_skill). '
+              'Flutter-Perf-Agent V1 (0.6.1 skill_call + Sleuth). '
               'Prefer: flutter run --profile --no-dds. '
-              'Flow: start_perf_test → tap/input_text/scroll/skill_* → '
-              'get_sleuth_issues / get_sleuth_diagnose → stop_perf_test. '
+              'Flow: start_perf_test → tap/input_text/scroll → '
+              'skill_call / skill_screenshot → get_sleuth_* → stop_perf_test. '
               'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
@@ -59,7 +60,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.6.0 bridge=${config.bridgeBaseUrl} '
+        '[flutter-perf-agent-mcp] v0.6.1 bridge=${config.bridgeBaseUrl} '
         'envelope=code/data/msg retries=${config.maxRetries}',
       );
     }
@@ -71,7 +72,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   PerfSession? _session;
   String? _vmWsUri;
-  FlutterSkillVmClient? _skill;
+  FlutterSkillClient? _skill;
   int _stepCounter = 0;
 
   ActionRunner? get _runner {
@@ -87,7 +88,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     );
   }
 
-  Future<FlutterSkillVmClient?> _ensureSkillClient() async {
+  Future<FlutterSkillClient?> _ensureSkillClient() async {
     if (_vmWsUri == null) return null;
     _skill ??= FlutterSkillVmClient(
       _vmWsUri!,
@@ -299,7 +300,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'testName': testName,
         'mode': health.data!.mode,
         'baseline': started.data!.baseline?.toJson(),
-        'bridge': config.bridgeBaseUrl,
+        'bridge': _bridge.bridgeBaseUrl,
         'vmServiceUri': _vmWsUri,
         'uiDriver': 'flutter_skill',
         'metricsSource': 'sleuth_bridge',
@@ -517,7 +518,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     return _reply(
       ApiResponse.ok({
         'configPath': config.configPath,
-        'bridge': config.bridgeBaseUrl,
+        'bridge': _bridge.bridgeBaseUrl,
         'waitStableMs': config.waitStableMs,
         'postActionSettleMs': config.postActionSettleMs,
         'navigationWaitMs': config.navigationWaitMs,
@@ -530,7 +531,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'envelope': 'code/data/msg',
         'version': '0.6.0',
         'note':
-            'Full Sleuth via Bridge. Full flutter_skill via skill_* tools. '
+            'Full Sleuth via Bridge. flutter_skill via tap/scroll/input + '
+            'skill_call / skill_screenshot. '
             'For GC/heap: flutter run --profile --no-dds.',
         'thresholds': {
           'maxFrameCostMs': config.maxFrameCostMs,
