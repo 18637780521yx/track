@@ -9,6 +9,9 @@ import 'app/routes/app_routes.dart';
 import 'app/services/auth_service.dart';
 import 'demo_api.dart';
 import 'modules/main/main_controller.dart';
+import 'sleuth_demos/custom_detectors/01_simple_structural_detector.dart';
+import 'sleuth_demos/custom_detectors/02_runtime_callback_detector.dart';
+import 'sleuth_demos/custom_detectors/03_hybrid_vm_structural_detector.dart';
 
 Future<void> main() async {
   // Capture TTFF from Dart entry → first frame (before runApp).
@@ -30,17 +33,28 @@ Future<void> main() async {
     PerfNetworkCapture.routeProvider = _logicalRoute;
   }
 
+  // Capture helpers need SLEUTH_CAPTURE_MODE; deep rebuild instrumentation
+  // is off in that mode (matches Sleuth official example).
+  const captureMode = bool.fromEnvironment('SLEUTH_CAPTURE_MODE');
+
   runApp(
     Sleuth.track(
       child: const PerfDemoApp(),
-      // Full detector set (default enabledDetectors = all). For GC / heap /
-      // shader / heavy_compute: flutter run --profile --no-dds
+      // Full detector set. GC / heap / shader: flutter run --profile --no-dds
       config: SleuthConfig(
+        captureMode: captureMode,
         fpsTarget: 60,
         enableNetworkMonitoring: true,
         showOverlay: true,
         autoFrameBudget: true,
-        enableDebugCallbacks: !kReleaseMode && !kProfileMode,
+        // Rebuild Hotspot + rebuild_activity need these (Sleuth example).
+        enableDebugCallbacks: !captureMode && !kReleaseMode,
+        enableDeepDebugInstrumentation: !captureMode && !kReleaseMode,
+        customDetectors: [
+          TooltipUsageDetector(),
+          SlowFrameDetector(),
+          RasterHotSpotDetector(),
+        ],
         thresholds: const DetectorThresholds(
           memoryBudgetBytes: 512 * 1024 * 1024,
         ),
@@ -73,10 +87,11 @@ class PerfDemoApp extends StatelessWidget {
   }
 }
 
-/// `/login`, `/home#home|discover|mine` — distinguishes main tabs as pages.
+/// `/login`, `/home#home|discover|mine`, or `/demo/<slug>`.
 String _logicalRoute() {
   var r = Get.currentRoute;
   if (r.isEmpty) r = '/';
+  if (r.startsWith('/demo/')) return r;
   if (r == AppRoutes.home && Get.isRegistered<MainController>()) {
     try {
       final i = Get.find<MainController>().tabController.index;

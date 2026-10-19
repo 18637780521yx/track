@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.7 — example_app 迁入 Sleuth 官方场景页
+
+- 将 sleuth 0.37 example 的 demos / Capture Helpers / custom_detectors 迁入 `example_app/lib/sleuth_demos`
+- 「发现」Tab 改为「场景」目录，分组入口打开各 Demo；路由记为 `/demo/<slug>`
+- 开启 `enableDeepDebugInstrumentation` + cookbook `customDetectors`（与官方 example 对齐）
+
 ## 0.6.6 — 冷启动方案 A 分阶段
 
 - 从 Sleuth startup 推导阶段：Pre-Dart / Framework / 业务启动 / 首帧(vsync·build·raster) / TTFF / TTI

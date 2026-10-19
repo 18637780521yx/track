@@ -20,7 +20,7 @@ class MainPage extends GetView<MainController> {
           controller: controller.tabController,
           tabs: const [
             Tab(key: Key('tab_home'), text: '首页'),
-            Tab(key: Key('tab_discover'), text: '发现'),
+            Tab(key: Key('tab_discover'), text: '场景'),
             Tab(key: Key('tab_mine'), text: '我的'),
           ],
         ),

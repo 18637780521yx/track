@@ -1,39 +1,91 @@
 import 'package:flutter/material.dart';
 
-/// Middle tab: light content for tab-switch + scroll smoke.
+import '../../sleuth_demos/sleuth_demo_catalog.dart';
+
+/// Discover tab: Sleuth official example scenario catalog.
 class DiscoverTab extends StatelessWidget {
   const DiscoverTab({super.key});
 
-  static const _topics = <(String, String, IconData)>[
-    ('性能巡检', 'Sleuth 帧耗时 / jank 追踪', Icons.speed),
-    ('网络抓包', '请求头与 body 写入报告', Icons.cloud_sync_outlined),
-    ('列表滑动', '首页长列表压测', Icons.view_list_outlined),
-    ('个人中心', '头像上传与昵称修改', Icons.person_outline),
-    ('GetX 路由', 'Binding + Controllers', Icons.route),
-    ('Bridge', 'PerfBridge 127.0.0.1:19288', Icons.cable),
-  ];
+  @override
+  Widget build(BuildContext context) {
+    final categories = sleuthDemoCategories();
+    return Semantics(
+      label: 'Sleuth 场景目录',
+      child: ListView.builder(
+        key: const Key('discover_list'),
+        padding: const EdgeInsets.only(bottom: 24),
+        itemCount: categories.length + 1,
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text(
+                '以下为 Sleuth 官方示例场景（中文）。点进详情页可触发对应检测；'
+                'GC / Shader 等请用 flutter run --profile --no-dds。',
+                style: TextStyle(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  fontSize: 13,
+                ),
+              ),
+            );
+          }
+          final cat = categories[index - 1];
+          return _CategorySection(category: cat);
+        },
+      ),
+    );
+  }
+}
+
+class _CategorySection extends StatelessWidget {
+  const _CategorySection({required this.category});
+
+  final SleuthDemoCategory category;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      label: '发现列表',
-      child: ListView.separated(
-        key: const Key('discover_list'),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        itemCount: _topics.length,
-        separatorBuilder: (_, _) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          final (title, subtitle, icon) = _topics[index];
+    final scheme = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+          child: Row(
+            children: [
+              Icon(category.icon, size: 18, color: scheme.primary),
+              const SizedBox(width: 8),
+              Text(
+                category.title,
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                '${category.demos.length}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        ...category.demos.map((demo) {
           return ListTile(
-            key: Key('discover_item_$index'),
-            leading: CircleAvatar(child: Icon(icon, size: 20)),
-            title: Text(title),
-            subtitle: Text(subtitle),
+            key: Key('sleuth_demo_${demo.slug}'),
+            leading: CircleAvatar(
+              backgroundColor: demo.color.withValues(alpha: 0.15),
+              child: Icon(demo.icon, color: demo.color, size: 20),
+            ),
+            title: Text(demo.title),
+            subtitle: Text(demo.subtitle),
             trailing: const Icon(Icons.chevron_right),
-            onTap: () {},
+            onTap: () => pushSleuthDemo(context, demo),
           );
-        },
-      ),
+        }),
+      ],
     );
   }
 }
