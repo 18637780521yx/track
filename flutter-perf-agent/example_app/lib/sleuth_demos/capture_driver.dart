@@ -230,7 +230,8 @@ mixin CaptureScreenStateMixin<T extends StatefulWidget> on State<T> {
       mounted &&
       isCaptureScreenInFront(
         route: _captureRoute,
-        tickersEnabled: TickerMode.getValuesNotifier(context).value.enabled,
+        // Flutter 3.35.x: use of(); getValuesNotifier is newer / not in this SDK.
+        tickersEnabled: TickerMode.of(context),
       );
 
   @override

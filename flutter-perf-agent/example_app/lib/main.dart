@@ -22,6 +22,10 @@ Future<void> main() async {
       host: '127.0.0.1',
       port: 19288,
       waitStableMs: 500,
+      enableManualRecording: true,
+      autoSessionOnManual: true,
+      // Shared with mcp_server/perf_agent_config.json reportsDir when cwd is repo.
+      reportsDir: 'reports',
     );
   }
 
@@ -83,6 +87,8 @@ class PerfDemoApp extends StatelessWidget {
       initialRoute: AppPages.initial,
       getPages: AppPages.routes,
       defaultTransition: Transition.cupertino,
+      // Manual + MCP unified journal: banner to stop & write SDK report.
+      builder: (context, child) => PerfRecordingBanner(child: child),
     );
   }
 }

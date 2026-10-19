@@ -151,8 +151,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       _vmWsUri = null;
       _stepCounter = 0;
     }
-    // 清掉 App 侧残留 Bridge session，避免基线脏数据。
-    await _bridge.stopSession();
+    // 清掉 App 侧残留 Bridge session（不落报告，避免空会话脏文件）。
+    await _bridge.stopSession(writeReport: false);
 
     final health = await _bridge.health();
     if (!health.isOk || health.data == null) {
@@ -168,10 +168,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     }
 
     final sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
+    final reportsAbs = io.File(config.reportsDir).isAbsolute
+        ? config.reportsDir
+        : io.File(config.reportsDir).absolute.path;
     final started = await _bridge.startSession(
       testName: testName,
       sessionId: sessionId,
       waitStableMs: waitStableMs,
+      reportsDir: reportsAbs,
+      manualRecording: true,
     );
     if (!started.isOk || started.data == null) {
       return ApiResponse.fail(started.code, started.msg);
@@ -426,13 +431,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final args = request.arguments ?? const <String, Object?>{};
     final doExport = args['exportSnapshot'] == true;
 
-    final stop = await _bridge.stopSession();
-    // Ensure network logs land in the report even if a step-time fetch missed
-    // them (route clear / MCP timing / late HttpCapture).
+    // Ensure network logs land in the MCP-side copy even if step-time missed.
     await _backfillStepNetwork(session);
     final sleuthDiag = await _bridge.sleuthDiagnose();
     final sleuthSum = await _bridge.sleuthSummary(topN: 10);
     final sleuthFinal = await _bridge.sleuthSnapshot();
+
+    // App SDK writes the authoritative report (MCP + manual journal).
+    final stop = await _bridge.stopSession(writeReport: true);
+
     String? snapshotPath;
     if (doExport) {
       snapshotPath = await SnapshotIo.exportSession(
@@ -444,6 +451,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         },
       );
     }
+    // PC-side copy kept for route-chapter HTML; prefer SDK paths in summary.
     final paths = await _reports.writeReports(
       session,
       sleuthFinal: sleuthFinal.data,
@@ -451,14 +459,21 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       sleuthSummaryMarkdown: sleuthSum.data?.markdown,
     );
     await _disposeSkill();
+    final sdkJson = stop.data?.reportJsonPath;
+    final sdkHtml = stop.data?.reportHtmlPath;
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
-      'reportPath': paths.jsonPath,
-      'htmlReportPath': paths.htmlPath,
+      'reportPath': sdkJson ?? paths.jsonPath,
+      'htmlReportPath': sdkHtml ?? paths.htmlPath,
+      'reportOwner': sdkJson != null ? 'app_sdk' : 'mcp_server',
+      if (sdkJson != null) 'sdkReportPath': sdkJson,
+      if (sdkHtml != null) 'sdkHtmlReportPath': sdkHtml,
+      'mcpReportPath': paths.jsonPath,
+      'mcpHtmlReportPath': paths.htmlPath,
       if (snapshotPath != null) 'snapshotPath': snapshotPath,
-      'stepCount': session.steps.length,
-      'alertCount': session.alerts.length,
+      'stepCount': stop.data?.stepCount ?? session.steps.length,
+      'alertCount': stop.data?.alertCount ?? session.alerts.length,
       'alerts': session.alerts.map((a) => a.toJson()).toList(),
       'sleuthDiagnose': sleuthDiag.data?.toJson(),
       'sleuthSummaryMarkdown': sleuthSum.data?.markdown,
@@ -472,7 +487,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       }(),
       'bridgeStop': stop.toJson(),
       'metricsSource': 'sleuth_bridge',
-      'version': '0.6.3',
+      'version': '0.7.0',
     };
     _session = null;
     _vmWsUri = null;

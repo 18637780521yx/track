@@ -5,7 +5,6 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
 import 'config.dart';
-import 'html_report.dart';
 
 class PerfSession {
   PerfSession({

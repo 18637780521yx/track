@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
-import 'html_report.dart';
 import 'report_writer.dart';
 
 /// Export / import session snapshots.

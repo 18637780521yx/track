@@ -18,3 +18,8 @@ export 'src/bridge_discovery.dart';
 export 'src/bridge_server.dart';
 export 'src/network_capture.dart';
 export 'src/sleuth_facade.dart';
+export 'src/session_journal.dart';
+export 'src/manual_gesture_recorder.dart';
+export 'src/hit_target.dart';
+export 'src/sdk_report_writer.dart';
+export 'src/recording_overlay.dart';

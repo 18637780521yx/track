@@ -13,6 +13,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'bridge_discovery.dart';
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
+import 'session_journal.dart';
 import 'sleuth_facade.dart';
 import 'ui_actions.dart';
 
@@ -122,6 +123,9 @@ class PerfBridgeServer {
       ..get('/health', _health)
       ..post('/session/start', _sessionStart)
       ..post('/session/stop', _sessionStop)
+      ..post('/session/step', _sessionStep)
+      ..get('/session/journal', _sessionJournal)
+      ..post('/session/mcp_guard', _sessionMcpGuard)
       ..get('/snapshot', _snapshot)
       ..post('/wait', _wait)
       ..post('/tap', _tapLegacy)
@@ -242,9 +246,9 @@ class PerfBridgeServer {
       ApiResponse.ok(
         HealthData(
           bridge: 'flutter-perf-agent',
-          version: '0.6.0',
-          sessionId: sessionId,
-          testName: testName,
+          version: '0.7.0',
+          sessionId: sessionId ?? SessionJournal.instance.sessionId,
+          testName: testName ?? SessionJournal.instance.testName,
           vmServiceUri: vmUri,
           uiDriver: 'flutter_skill',
           sleuth: sleuth.data,
@@ -263,6 +267,18 @@ class PerfBridgeServer {
     testName = body['testName'] as String? ?? 'unnamed';
     sessionStartedAt = DateTime.now();
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
+    final reportsDir = body['reportsDir'] as String?;
+    final manualRecording = body['manualRecording'] as bool? ?? true;
+
+    SessionJournal.instance.start(
+      sessionId: sessionId!,
+      testName: testName!,
+      reportsDir: reportsDir,
+      manualRecording: manualRecording,
+      mode: kReleaseMode
+          ? 'release'
+          : (kProfileMode ? 'profile' : 'debug'),
+    );
 
     _networkArchive.clear();
     PerfNetworkStore.instance.clear();
@@ -283,20 +299,93 @@ class PerfBridgeServer {
   }
 
   Future<Response> _sessionStop(Request request) async {
+    final body = await _readJson(request);
+    final writeReport = body['writeReport'] as bool? ?? true;
     final ended = DateTime.now();
     _ingestNetwork();
     _stopNetworkIngest();
+
+    final journalSnap = SessionJournal.instance.toJson();
+    final stepCount = SessionJournal.instance.steps.length;
+    final alertCount = SessionJournal.instance.alerts.length;
+    final paths = await SessionJournal.instance.stopAndWriteReport(
+      writeReport: writeReport,
+    );
+
     final data = SessionStopData(
       sessionId: sessionId,
       testName: testName,
       startedAt: sessionStartedAt?.toIso8601String(),
       endedAt: ended.toIso8601String(),
       finalSnapshot: PerfSnapshot.capture(sleuth: false).toPayload(),
+      stepCount: stepCount,
+      alertCount: alertCount,
+      reportJsonPath: paths?.jsonPath,
+      reportHtmlPath: paths?.htmlPath,
+      journal: journalSnap,
     );
     sessionId = null;
     testName = null;
     sessionStartedAt = null;
     return _envelope(ApiResponse.ok(data));
+  }
+
+  Future<Response> _sessionStep(Request request) async {
+    final body = await _readJson(request);
+    final journal = SessionJournal.instance;
+    if (!journal.isActive) {
+      // Accept MCP step even if only MCP side thought session was open.
+      final sid = body['sessionId'] as String? ??
+          sessionId ??
+          'sess_${DateTime.now().millisecondsSinceEpoch}';
+      journal.start(
+        sessionId: sid,
+        testName: body['testName'] as String? ?? testName ?? 'unnamed',
+      );
+      sessionId ??= sid;
+    }
+    final stepJson = body['step'];
+    if (stepJson is! Map) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.badRequest, 'step object required'),
+        httpStatus: 400,
+      );
+    }
+    final map = Map<String, dynamic>.from(stepJson);
+    final extra = map['extra'] is Map
+        ? Map<String, dynamic>.from(map['extra'] as Map)
+        : <String, dynamic>{};
+    extra.putIfAbsent('source', () => 'mcp');
+    map['extra'] = extra;
+    journal.addStepFromJson(map);
+    return _envelope(
+      ApiResponse.ok({
+        'ok': true,
+        'stepCount': journal.steps.length,
+        'sessionId': journal.sessionId,
+      }),
+    );
+  }
+
+  FutureOr<Response> _sessionJournal(Request request) {
+    return _envelope(ApiResponse.ok(SessionJournal.instance.toJson()));
+  }
+
+  Future<Response> _sessionMcpGuard(Request request) async {
+    final body = await _readJson(request);
+    final active = body['active'] == true;
+    final journal = SessionJournal.instance;
+    if (active) {
+      journal.beginMcpGuard();
+    } else {
+      journal.endMcpGuard();
+    }
+    return _envelope(
+      ApiResponse.ok({
+        'mcpGuardDepth': journal.mcpGuardDepth,
+        'active': active,
+      }),
+    );
   }
 
   void _startNetworkIngest() {

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 
@@ -6,7 +7,6 @@ import 'package:path/path.dart' as p;
 
 import 'bridge_client.dart';
 import 'cold_start.dart';
-import 'cold_start_phases.dart';
 import 'config.dart';
 import 'flutter_skill_client.dart';
 import 'perf_diff.dart';
@@ -301,39 +301,45 @@ class ActionRunner {
     var driver = 'flutter_skill';
 
     if (client != null) {
+      await bridge.mcpGuard(active: true);
       try {
-        await client.ensureConnected();
-        final raw = await skillAction(client);
-        actionResult = ActionResult.fromSkillMap(raw);
-      } catch (e) {
-        actionResult = ActionResult(
-          success: false,
-          driver: 'flutter_skill',
-          error: 'flutter_skill $action failed: $e',
-          detail: {'vmServiceUri': client.wsUri},
-        );
-      }
-
-      if (!actionResult.success && legacyFallback != null) {
-        _log('$actionLabel flutter_skill failed, trying legacy');
-        driver = 'legacy_fallback';
-        final legacy = await legacyFallback();
-        final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
-        actionResult = ActionResult(
-          success: legacyOk,
-          driver: driver,
-          detail: {
-            'flutterSkill': actionResult.toJson(),
-            'legacy': legacy.toJson(),
-          },
-          error: legacyOk ? null : (legacy.msg),
-        );
-      } else if (actionResult.success) {
-        await bridge.waitStable(waitStableMs: wait);
-        final settle = (extraSettleMs ?? 0) + config.postActionSettleMs;
-        if (settle > 0) {
-          await Future<void>.delayed(Duration(milliseconds: settle));
+        try {
+          await client.ensureConnected();
+          final raw = await skillAction(client);
+          actionResult = ActionResult.fromSkillMap(raw);
+        } catch (e) {
+          actionResult = ActionResult(
+            success: false,
+            driver: 'flutter_skill',
+            error: 'flutter_skill $action failed: $e',
+            detail: {'vmServiceUri': client.wsUri},
+          );
         }
+
+        if (!actionResult.success && legacyFallback != null) {
+          _log('$actionLabel flutter_skill failed, trying legacy');
+          driver = 'legacy_fallback';
+          final legacy = await legacyFallback();
+          final legacyOk =
+              legacy.isOk && (legacy.data?.action.success ?? false);
+          actionResult = ActionResult(
+            success: legacyOk,
+            driver: driver,
+            detail: {
+              'flutterSkill': actionResult.toJson(),
+              'legacy': legacy.toJson(),
+            },
+            error: legacyOk ? null : (legacy.msg),
+          );
+        } else if (actionResult.success) {
+          await bridge.waitStable(waitStableMs: wait);
+          final settle = (extraSettleMs ?? 0) + config.postActionSettleMs;
+          if (settle > 0) {
+            await Future<void>.delayed(Duration(milliseconds: settle));
+          }
+        }
+      } finally {
+        await bridge.mcpGuard(active: false);
       }
     } else if (legacyFallback != null) {
       driver = 'legacy';
@@ -518,6 +524,18 @@ class ActionRunner {
       'net=${sourceNet.length} nav=$routeChanged',
     );
 
+    // Mirror this action into App SDK unified journal (MCP + manual share).
+    unawaited(_mirrorToSdkJournal(
+      action: action,
+      actionLabel: actionLabel,
+      ok: ok,
+      driver: driver,
+      route: routeBefore,
+      diff: diff,
+      actionResult: actionResult,
+      alerts: alerts,
+    ));
+
     if (!routeChanged) {
       return updated;
     }
@@ -685,6 +703,58 @@ class ActionRunner {
     final path = p.join(dir.path, '$name.png');
     await io.File(path).writeAsBytes(base64Decode(base64));
     return path;
+  }
+
+  Future<void> _mirrorToSdkJournal({
+    required String action,
+    required String actionLabel,
+    required bool ok,
+    required String driver,
+    required String route,
+    required PerfDiffData diff,
+    required ActionResult actionResult,
+    required List<AlertItem> alerts,
+  }) async {
+    try {
+      final at = DateTime.now().toIso8601String();
+      final step = StepResult(
+        stepId: 'mcp_${DateTime.now().millisecondsSinceEpoch}',
+        action: 'route:$route',
+        route: route,
+        ok: ok,
+        driver: driver,
+        actionResult: actionResult,
+        diff: diff,
+        alerts: alerts,
+        events: [
+          StepEvent(
+            type: 'action',
+            at: at,
+            label: actionLabel,
+            ok: ok,
+            detail: {
+              'source': 'mcp',
+              'kind': action,
+              if (actionResult.error != null) 'error': actionResult.error,
+            },
+          ),
+        ],
+        at: at,
+        extra: {
+          'source': 'mcp',
+          'kind': action,
+          'cause': actionLabel,
+          'actions': [actionLabel],
+        },
+      );
+      await bridge.appendStep(
+        step: step.toJson(includeScreenshotDataUri: false),
+        sessionId: session.sessionId,
+        testName: session.testName,
+      );
+    } catch (e) {
+      _log('mirror to sdk journal failed: $e');
+    }
   }
 
   static bool _routeMatches(String? reqRoute, String? stepRoute) {

@@ -17,3 +17,5 @@ export 'src/models/step_event.dart';
 export 'src/models/step_result.dart';
 export 'src/models/ui_element.dart';
 export 'src/models/wait_data.dart';
+export 'src/report/cold_start_phases.dart';
+export 'src/report/html_report.dart';

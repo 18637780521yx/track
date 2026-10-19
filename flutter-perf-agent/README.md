@@ -2,15 +2,15 @@
 
 自然语言驱动 Flutter App：**UI 自动化 + 性能打点 + JSON/HTML 报告**。
 
-**当前版本：V1（0.6.0 code/data/msg + Sleuth + flutter_skill 全量）**
+**当前版本：V1（0.7.0 统一账本：MCP + 手动 → App SDK 报告）**
 
 ## 一句话架构
 
 ```
-Cursor MCP
-  ├─ flutter_skill（tap/scroll/input + skill_call / skill_screenshot）
-  └─ PerfBridge + Sleuth 全量
-       信封统一：{ code, data, msg }  （protocol 包）
+Cursor MCP ──编排──► flutter_skill（VM）
+                 └─► App SDK SessionJournal ← 手动 hitTest
+                          └─ stop → JSON/HTML（权威报告）
+信封：{ code, data, msg }（protocol 包）
 ```
 
 > GC / 堆 / shader 等 VM 型 detector：请用 `flutter run --profile --no-dds`  

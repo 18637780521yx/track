@@ -82,10 +82,16 @@ class ProfileController extends GetxController {
   }
 
   Future<void> pickAndUploadAvatar() async {
-    final file = await FilePicker.pickFile(type: FileType.image);
+    // file_picker 11.x API（13.x 的 pickFile 在本 SDK 不可用）
+    final result = await FilePicker.pickFiles(
+      type: FileType.image,
+      withData: true,
+      allowMultiple: false,
+    );
+    final file = result?.files.isNotEmpty == true ? result!.files.first : null;
     if (file == null) return;
-    final bytes = await file.readAsBytes();
-    if (bytes.isEmpty) {
+    final bytes = file.bytes;
+    if (bytes == null || bytes.isEmpty) {
       Get.snackbar('失败', '无法读取图片', snackPosition: SnackPosition.BOTTOM);
       return;
     }

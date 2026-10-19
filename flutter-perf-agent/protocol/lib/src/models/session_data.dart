@@ -46,6 +46,11 @@ class SessionStopData {
     this.startedAt,
     this.endedAt,
     this.finalSnapshot,
+    this.stepCount,
+    this.alertCount,
+    this.reportJsonPath,
+    this.reportHtmlPath,
+    this.journal,
   });
 
   final String? sessionId;
@@ -54,12 +59,29 @@ class SessionStopData {
   final String? endedAt;
   final SnapshotPayload? finalSnapshot;
 
+  /// Steps recorded in App SDK unified journal (MCP + manual).
+  final int? stepCount;
+  final int? alertCount;
+
+  /// Authoritative report paths written by App SDK.
+  final String? reportJsonPath;
+  final String? reportHtmlPath;
+
+  /// Optional journal snapshot (steps) before clear.
+  final Map<String, dynamic>? journal;
+
   Map<String, dynamic> toJson() => {
         'sessionId': sessionId,
         'testName': testName,
         'startedAt': startedAt,
         'endedAt': endedAt,
         if (finalSnapshot != null) 'finalSnapshot': finalSnapshot!.toJson(),
+        if (stepCount != null) 'stepCount': stepCount,
+        if (alertCount != null) 'alertCount': alertCount,
+        if (reportJsonPath != null) 'reportJsonPath': reportJsonPath,
+        if (reportHtmlPath != null) 'reportHtmlPath': reportHtmlPath,
+        if (journal != null) 'journal': journal,
+        'reportOwner': 'app_sdk',
       };
 
   factory SessionStopData.fromJson(Map<String, dynamic> json) {
@@ -68,12 +90,21 @@ class SessionStopData {
     if (raw is Map) {
       snap = SnapshotPayload.fromJson(Map<String, dynamic>.from(raw));
     }
+    Map<String, dynamic>? journal;
+    if (json['journal'] is Map) {
+      journal = Map<String, dynamic>.from(json['journal'] as Map);
+    }
     return SessionStopData(
       sessionId: json['sessionId'] as String?,
       testName: json['testName'] as String?,
       startedAt: json['startedAt'] as String?,
       endedAt: json['endedAt'] as String?,
       finalSnapshot: snap,
+      stepCount: json['stepCount'] as int?,
+      alertCount: json['alertCount'] as int?,
+      reportJsonPath: json['reportJsonPath'] as String?,
+      reportHtmlPath: json['reportHtmlPath'] as String?,
+      journal: journal,
     );
   }
 }

@@ -16,6 +16,7 @@
 - 在每一次UI操作前后自动采集性能指标（FPS、卡顿Jank、内存、慢网络、Widget反模式告警）
 - MCP协议接入Cursor，用户一句话发起测试，AI自主完成流程+性能采集+结果汇总
 - 输出结构化测试报告：操作步骤、截图、性能指标、性能告警、指标对比
+- **统一操作账本（App SDK）**：无论 MCP 驱动还是用户手动操作，操作日志与性能测试报告均由 App SDK 生成；MCP 只负责编排与触发，不独占报告所有权
 
 ### 1.3 非目标（V1不做）
 1. 不支持Release包（仅Debug / Profile）
@@ -37,25 +38,27 @@
 ## 3. 核心架构
 ```
 Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
-                                                ↓指令下发
-                                  flutter-skill App SDK（App内，负责点击/滑动）
-                                                ↓动作打点
-                                  Sleuth SDK（App内嵌，性能采集：FPS/Jank/内存/网络）
-                                                ↓指标回传
-                                  MCP Server汇总：操作日志 + 截图 + 性能数据 → 生成报告
+                                                ↓ 编排 UI（VM / flutter_skill）
+                                  App SDK：SessionJournal（统一账本）+ SdkReportWriter
+                                     ↑ 手动点击 hitTest 记账          ↑ MCP POST /session/step
+                                  Sleuth（FPS/Jank/内存/网络）
+                                     ↓ session/stop
+                                  App 内生成 JSON/HTML 报告（权威产物）
 ```
 
 ### 模块清单
 1. **MCP Server模块（PC端，dart）**
     - 对外暴露MCP工具给Cursor
     - 管理和App端flutter-skill SDK的通信
-    - 接收App上报的操作日志、截图、Sleuth性能指标
-    - 报告生成、JSON持久化
+    - 将 MCP 动作步骤写入 App SDK 统一账本；触发 session stop
+    - 可读回 SDK 生成的报告路径（可选在 PC 侧再落一份副本）
 2. **App SDK模块（嵌入被测Flutter App，dev依赖）**
     - flutter-skill：语义树读取、Pointer手势注入（点击/滑动/输入）
     - Sleuth：帧时序、卡顿、内存、网络、Widget反模式采集
-    - 打点增强层：在tap/scroll/input动作**执行前、执行后**采集Sleuth指标，计算指标差值
-3. **报告模块**：生成JSON/HTML报告
+    - **SessionJournal（统一操作账本）**：记录 MCP / 手动 两类步骤与性能 diff
+    - **ManualGestureRecorder**：手动点击时 hitTest 解析控件并记账
+    - **SdkReportWriter**：会话结束时在 App 侧生成 JSON/HTML 报告
+3. **报告模块**：以 App SDK 为权威产出；MCP 与手动共用同一套产物
 
 ## 4. 功能需求（V1.0）
 ### 4.1 MCP工具集（暴露给Cursor）
@@ -99,15 +102,23 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 - 每条指标附带时间戳，绑定对应的操作步骤
 
 ### 4.3 测试报告输出
-输出2种产物：
+输出2种产物（**由 App SDK 生成**，MCP / 手动共用）：
 1. JSON原始报告：机器可读，用于CI对比回归
     - 测试元信息：测试名称、开始结束时间、profile/debug模式
-    - 操作步骤数组：每一步动作描述、前后性能快照、指标差值、截图路径
+    - 操作步骤数组：每一步动作描述、`source=mcp|manual`、前后性能快照、指标差值、截图路径
     - 告警列表：超过阈值的性能问题
 2. HTML可视化报告（可读）
     - 步骤时序图，每一步附带性能卡片
     - 告警标红展示
     - 截图嵌入报告
+
+### 4.3.1 统一操作账本（MCP + 手动）
+- **权威账本在 App SDK**（`SessionJournal`），不在 MCP 进程内独占
+- **MCP 路径**：每次 `tap`/`scroll`/`input_text`/手势类 `skill_call` 完成后，经 Bridge `POST /session/step` 写入账本；动作期间开启 `mcp_guard`，避免手动录制把合成指针再记一遍
+- **手动路径**：会话开启后（含首次手动点击自动开会话），`ManualGestureRecorder` 监听指针抬起 → hitTest 解析控件 → 采前后 Sleuth/RSS → 写入同账本
+- **结束**：`POST /session/stop`（或 App 内「结束录制」）由 SDK 写出 JSON/HTML，返回报告路径
+- **区分多控件**：优先 `ValueKey`，其次 label/hint/可见文案，再次坐标；与 flutter_skill 定位策略对齐
+- **非目标（本迭代）**：完整手动手势回放、精确区分所有自定义手势；极简控件无 Key/文案时可能记为 `tap@x,y`
 
 ### 4.4 配置能力
 支持配置文件 `perf_agent_config.json`
@@ -168,6 +179,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 3. 超过阈值自动生成告警，写入报告
 4. 生成JSON+HTML报告，包含操作步骤、截图、性能指标
 5. 示例流程：登录 -> 进入列表页 -> 滑动列表，完整跑完，无崩溃，指标正常采集
+6. **统一账本**：仅手动操作（不经 MCP）也能开会话、记录点击目标、停止后得到 JSON/HTML；MCP 与手动步骤可出现在同一份报告，步骤带 `source`
 
 ## 9. 未来迭代路线（V2规划，本次不实现）
 1. 性能指标回归对比：对比上一版本测试指标，自动判断性能退化

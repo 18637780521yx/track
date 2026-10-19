@@ -74,6 +74,17 @@ get_sleuth_route_health
 
 不必再先手动 `start_perf_test`（仍可显式调用）。
 
+### 统一账本：MCP + 手动（0.7.0）
+
+报告权威在 **App SDK**（`SessionJournal`），MCP 与手动共用：
+
+| 来源 | 怎么记步骤 | 怎么出报告 |
+|------|------------|------------|
+| MCP | 每步 `POST /session/step`（自动） | `stop_perf_test` → `sdkReportPath` |
+| 手动 | 点击 hitTest（key/文案/hint） | App 顶栏「结束」或 Bridge `POST /session/stop` |
+
+手动用法：跑 `example_app`（debug/profile）→ 直接点界面（首次点击可自动开会话）→ 点顶栏 **结束** → 看 `reports/sdk_*.json` / `.html`。步骤带 `source=mcp|manual`。
+
 ### flutter_skill（skill_call）
 
 常用仍用 `tap` / `input_text` / `scroll`；其余：

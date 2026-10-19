@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.1 — SDK 报告与 MCP 同款 HTML/JSON
+
+- `buildHtmlReport` / 冷启动分阶段迁入 `protocol`，MCP 与 App SDK 共用
+- `SdkReportWriter` 使用与 MCP `ReportWriter` 相同 schema 与 HTML（路由章、时间线、指标卡）
+- 手动步骤补 `events[]`，HTML 时间线可展示
+
+## 0.7.0 — 统一操作账本（MCP + 手动）
+
+- **App SDK** 成为报告权威：`SessionJournal` + `SdkReportWriter` + `ManualGestureRecorder`
+- 手动点击：指针 hitTest 解析 key/文案/hint，写入同账本；可自动开会话；顶部「结束」出 JSON/HTML
+- MCP：`POST /session/step` 镜像步骤；`mcp_guard` 避免合成指针被手动录制；`stop` 返回 `sdkReportPath`
+- Bridge：`/session/journal`、`/session/mcp_guard`；`stop` 支持 `writeReport=false` 清理空会话
+- PRD：补充「统一操作账本」需求与验收项
+
 ## 0.6.7 — example_app 迁入 Sleuth 官方场景页
 
 - 将 sleuth 0.37 example 的 demos / Capture Helpers / custom_detectors 迁入 `example_app/lib/sleuth_demos`

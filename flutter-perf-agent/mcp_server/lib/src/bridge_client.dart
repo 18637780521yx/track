@@ -41,6 +41,8 @@ class BridgeClient {
     required String testName,
     String? sessionId,
     int? waitStableMs,
+    String? reportsDir,
+    bool manualRecording = true,
   }) {
     return _post(
       '/session/start',
@@ -48,15 +50,51 @@ class BridgeClient {
         'testName': testName,
         if (sessionId != null) 'sessionId': sessionId,
         'waitStableMs': waitStableMs ?? config.waitStableMs,
+        if (reportsDir != null) 'reportsDir': reportsDir,
+        'manualRecording': manualRecording,
       },
       (raw) => SessionStartData.fromJson(_asMap(raw)),
     );
   }
 
-  Future<ApiResponse<SessionStopData>> stopSession() => _post(
+  Future<ApiResponse<SessionStopData>> stopSession({
+    bool writeReport = true,
+  }) =>
+      _post(
         '/session/stop',
-        {},
+        {'writeReport': writeReport},
         (raw) => SessionStopData.fromJson(_asMap(raw)),
+      );
+
+  /// Append a step into App SDK unified journal (source defaults to mcp).
+  Future<ApiResponse<Map<String, dynamic>>> appendStep({
+    required Map<String, dynamic> step,
+    String? sessionId,
+    String? testName,
+  }) {
+    return _post(
+      '/session/step',
+      {
+        'step': step,
+        if (sessionId != null) 'sessionId': sessionId,
+        if (testName != null) 'testName': testName,
+      },
+      (raw) => _asMap(raw),
+    );
+  }
+
+  /// Suppress manual gesture recording while MCP drives UI.
+  Future<ApiResponse<Map<String, dynamic>>> mcpGuard({required bool active}) {
+    return _post(
+      '/session/mcp_guard',
+      {'active': active},
+      (raw) => _asMap(raw),
+    );
+  }
+
+  Future<ApiResponse<Map<String, dynamic>>> journal() => _get(
+        '/session/journal',
+        (raw) => _asMap(raw),
       );
 
   Future<ApiResponse<SnapshotData>> snapshot({bool raw = false}) => _get(
