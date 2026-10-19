@@ -26,6 +26,13 @@
     "maxFrameCostMs": 16,
     "memoryIncreaseWarningMB": 5,
     "heapIncreaseWarningMB": 8,
-    "slowRequestMs": 300
+    "slowRequestMs": 300,
+    "ttffWarningMs": 1500
+  },
+  "coldStart": {
+    "relaunch": false,
+    "appPath": "example_app/build/macos/Build/Products/Debug/example_app.app",
+    "maxWaitMs": 45000,
+    "ttffWarningMs": 1500
   }
 }

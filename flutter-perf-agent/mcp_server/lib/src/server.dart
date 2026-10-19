@@ -24,13 +24,15 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.6.1',
+            version: '0.6.2',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.6.1 skill_call + Sleuth). '
+              'Flutter-Perf-Agent V1 (0.6.2 auto perf). '
               'Prefer: flutter run --profile --no-dds. '
-              'Flow: start_perf_test → tap/input_text/scroll → '
-              'skill_call / skill_screenshot → get_sleuth_* → stop_perf_test. '
+              'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
+              'session: each action samples Sleuth/RSS, updates live report. '
+              'Call stop_perf_test for final HTML/JSON. '
+              'Optional explicit start_perf_test. '
               'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
@@ -54,14 +56,17 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     registerFlutterSkillTools(
       registerTool: registerTool,
       ensureSkillClient: _ensureSkillClient,
+      ensureSession: _ensureSessionForAction,
       runner: () => _runner,
+      afterStep: _afterStep,
       reply: _reply,
     );
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.6.1 bridge=${config.bridgeBaseUrl} '
-        'envelope=code/data/msg retries=${config.maxRetries}',
+        '[flutter-perf-agent-mcp] v0.6.2 bridge=${config.bridgeBaseUrl} '
+        'autoSession=true envelope=code/data/msg '
+        'retries=${config.maxRetries}',
       );
     }
   }
@@ -89,6 +94,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }
 
   Future<FlutterSkillClient?> _ensureSkillClient() async {
+    if (_vmWsUri == null) {
+      await _warmVmFromBridge();
+    }
     if (_vmWsUri == null) return null;
     _skill ??= FlutterSkillVmClient(
       _vmWsUri!,
@@ -100,15 +108,146 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     return _skill;
   }
 
+  Future<void> _warmVmFromBridge() async {
+    final health = await _bridge.health();
+    final rawVm = health.data?.vmServiceUri;
+    if (rawVm != null && rawVm.isNotEmpty) {
+      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
+    }
+  }
+
   Future<void> _disposeSkill() async {
     await _skill?.disconnect();
     _skill = null;
   }
 
+  /// UI 动作前：无会话则自动开会话（采点 + live 报告）。
+  Future<ApiResponse<void>> _ensureSessionForAction({
+    String? testName,
+  }) async {
+    if (_session != null) return ApiResponse.ok(null);
+    final name = testName ??
+        'auto_${DateTime.now().toIso8601String().replaceAll(':', '-')}';
+    final err = await _beginSession(testName: name);
+    if (err != null) return err;
+    if (config.debugLog) {
+      io.stderr.writeln(
+        '[flutter-perf-agent-mcp] auto-started session '
+        '${_session?.sessionId} ($name)',
+      );
+    }
+    return ApiResponse.ok(null);
+  }
+
+  /// 返回失败信封；成功返回 null。
+  Future<ApiResponse<void>?> _beginSession({
+    required String testName,
+    int? waitStableMs,
+    bool resetExisting = false,
+  }) async {
+    if (resetExisting || _session != null) {
+      await _disposeSkill();
+      _session = null;
+      _vmWsUri = null;
+      _stepCounter = 0;
+    }
+    // 清掉 App 侧残留 Bridge session，避免基线脏数据。
+    await _bridge.stopSession();
+
+    final health = await _bridge.health();
+    if (!health.isOk || health.data == null) {
+      return ApiResponse.fail(
+        health.code == ApiCodes.ok ? ApiCodes.unavailable : health.code,
+        health.msg,
+      );
+    }
+
+    final rawVm = health.data!.vmServiceUri;
+    if (rawVm != null && rawVm.isNotEmpty) {
+      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
+    }
+
+    final sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
+    final started = await _bridge.startSession(
+      testName: testName,
+      sessionId: sessionId,
+      waitStableMs: waitStableMs,
+    );
+    if (!started.isOk || started.data == null) {
+      return ApiResponse.fail(started.code, started.msg);
+    }
+
+    final startedVm = started.data!.vmServiceUri;
+    if (startedVm != null && startedVm.isNotEmpty) {
+      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(startedVm);
+    }
+
+    _session = PerfSession(
+      sessionId: started.data!.sessionId.isNotEmpty
+          ? started.data!.sessionId
+          : sessionId,
+      testName: testName,
+      startedAt: DateTime.now(),
+      mode: health.data!.mode,
+    );
+    _stepCounter = 0;
+
+    try {
+      await _ensureSkillClient();
+    } catch (e) {
+      if (config.debugLog) {
+        io.stderr.writeln('[flutter-perf-agent-mcp] skill warm failed: $e');
+      }
+    }
+
+    // Cold-start step first (TTFF + first route shot); never merges with login.
+    try {
+      final runner = _runner;
+      if (runner != null) {
+        final land = await runner.recordColdStart(
+          onAfterRelaunch: () async {
+            await _disposeSkill();
+            _vmWsUri = null;
+            await _warmVmFromBridge();
+          },
+        );
+        await _afterStep(land);
+      }
+    } catch (e) {
+      if (config.debugLog) {
+        io.stderr.writeln(
+          '[flutter-perf-agent-mcp] cold_start step failed: $e',
+        );
+      }
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>> _afterStep(StepResult step) async {
+    final session = _session;
+    if (session == null) return {};
+    try {
+      final live = await _reports.writeLiveReports(session);
+      return {
+        'liveReportPath': live.jsonPath,
+        'liveHtmlReportPath': live.htmlPath,
+        'sessionId': session.sessionId,
+        'stepCount': session.steps.length,
+        'alertCount': session.alerts.length,
+      };
+    } catch (e) {
+      if (config.debugLog) {
+        io.stderr.writeln('[flutter-perf-agent-mcp] live report failed: $e');
+      }
+      return {'liveReportError': e.toString()};
+    }
+  }
+
   final _startTool = Tool(
     name: 'start_perf_test',
     description:
-        '启动性能测试会话：清理旧会话，连接 PerfBridge，记录 VM URI（仅供 flutter_skill）。',
+        '显式启动性能测试会话（可选）。tap/input_text/scroll/skill_call '
+        '在无会话时会自动开会话并逐步更新 live 报告。',
     inputSchema: Schema.object(
       properties: {
         'testName': Schema.string(description: '测试名称'),
@@ -120,7 +259,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _stopTool = Tool(
     name: 'stop_perf_test',
-    description: '停止测试，写出 JSON + HTML（Sleuth/RSS 指标 + 截图）。',
+    description:
+        '结束会话并写出最终 JSON + HTML（含步骤/告警/截图）。'
+        '过程中已有 live_*.json/html。',
     inputSchema: Schema.object(
       properties: {
         'sessionId': Schema.string(description: '会话 ID（可选）'),
@@ -131,7 +272,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _tapTool = Tool(
     name: 'tap',
-    description: 'flutter_skill 点击；前后采 Sleuth/RSS 性能 diff。',
+    description:
+        'flutter_skill 点击；无会话时自动开会话；前后采 Sleuth/RSS，并更新 live 报告。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '文本或 Key'),
@@ -144,7 +286,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _scrollTool = Tool(
     name: 'scroll',
-    description: '滑动或滚到目标；前后采 Sleuth/RSS。',
+    description: '滑动或滚到目标；自动会话 + Sleuth/RSS 采样 + live 报告。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '滚到该控件，可选'),
@@ -157,7 +299,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _inputTool = Tool(
     name: 'input_text',
-    description: '输入文字；前后采 Sleuth/RSS。',
+    description: '输入文字；自动会话 + Sleuth/RSS 采样 + live 报告。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '输入框 Key 或标签'),
@@ -248,67 +390,31 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final testName = args['testName'] as String? ?? 'unnamed';
     final wait = args['waitStableMs'] as int?;
 
-    await _bridge.stopSession();
-    await _disposeSkill();
+    final err = await _beginSession(
+      testName: testName,
+      waitStableMs: wait,
+      resetExisting: true,
+    );
+    if (err != null) return _reply(err);
 
     final health = await _bridge.health();
-    if (!health.isOk || health.data == null) {
-      return _reply(health);
-    }
-
-    final rawVm = health.data!.vmServiceUri;
-    if (rawVm != null && rawVm.isNotEmpty) {
-      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
-    }
-
-    final sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
-    final started = await _bridge.startSession(
-      testName: testName,
-      sessionId: sessionId,
-      waitStableMs: wait,
-    );
-    if (!started.isOk || started.data == null) {
-      return _reply(started);
-    }
-
-    final startedVm = started.data!.vmServiceUri;
-    if (startedVm != null && startedVm.isNotEmpty) {
-      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(startedVm);
-    }
-
-    _session = PerfSession(
-      sessionId: started.data!.sessionId.isNotEmpty
-          ? started.data!.sessionId
-          : sessionId,
-      testName: testName,
-      startedAt: DateTime.now(),
-      mode: health.data!.mode,
-    );
-    _stepCounter = 0;
-
-    try {
-      await _ensureSkillClient();
-    } catch (e) {
-      if (config.debugLog) {
-        io.stderr.writeln('[flutter-perf-agent-mcp] skill warm failed: $e');
-      }
-    }
-
     return _reply(
       ApiResponse.ok({
         'sessionId': _session!.sessionId,
         'testName': testName,
-        'mode': health.data!.mode,
-        'baseline': started.data!.baseline?.toJson(),
+        'mode': _session!.mode ?? health.data?.mode,
         'bridge': _bridge.bridgeBaseUrl,
         'vmServiceUri': _vmWsUri,
         'uiDriver': 'flutter_skill',
         'metricsSource': 'sleuth_bridge',
-        'sleuth': health.data!.sleuth?.toJson(),
-        'phase': 'sleuth_full',
-        'uiSurface': 'flutter_skill_full',
+        'sleuth': health.data?.sleuth?.toJson(),
+        'autoPerf': true,
+        'note':
+            'Steps are route visits (same-route actions merge). '
+            'tap/input/scroll/skill_call update live report; '
+            'call stop_perf_test for final report.',
         'envelope': 'code/data/msg',
-        'version': '0.6.0',
+        'version': '0.6.3',
       }),
     );
   }
@@ -321,6 +427,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final doExport = args['exportSnapshot'] == true;
 
     final stop = await _bridge.stopSession();
+    // Ensure network logs land in the report even if a step-time fetch missed
+    // them (route clear / MCP timing / late HttpCapture).
+    await _backfillStepNetwork(session);
     final sleuthDiag = await _bridge.sleuthDiagnose();
     final sleuthSum = await _bridge.sleuthSummary(topN: 10);
     final sleuthFinal = await _bridge.sleuthSnapshot();
@@ -363,7 +472,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       }(),
       'bridgeStop': stop.toJson(),
       'metricsSource': 'sleuth_bridge',
-      'version': '0.6.0',
+      'version': '0.6.3',
     };
     _session = null;
     _vmWsUri = null;
@@ -371,9 +480,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }
 
   FutureOr<CallToolResult> _tap(CallToolRequest request) async {
-    final runner = _runner;
-    if (runner == null) return _noSession();
-
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String? ?? '').trim();
     final wait = args['waitStableMs'] as int?;
@@ -384,12 +490,18 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       );
     }
 
+    final ready = await _ensureSessionForAction(testName: 'tap_flow');
+    if (!ready.isOk) return _reply(ready);
+    final runner = _runner;
+    if (runner == null) return _noSession();
+
     final looksLikeNav = _looksLikeNavigationTap(target);
     final step = await runner.run(
       action: 'tap',
       actionLabel: 'tap:$target',
       waitStableMs: wait,
       extraSettleMs: looksLikeNav ? config.navigationWaitMs : 0,
+      expectNavigation: looksLikeNav,
       extraStepFields: {'targetDesc': target},
       skillAction: forceLegacy
           ? (client) async => {'success': false, 'error': 'forced legacy'}
@@ -406,15 +518,19 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final t = target.toLowerCase();
     return t.contains('登录') ||
         t.contains('login') ||
+        t.contains('logout') ||
+        t.contains('退出') ||
+        t.contains('profile') ||
+        t.contains('tab_') ||
+        t.contains('我的') ||
+        t.contains('首页') ||
+        t.contains('发现') ||
         t.contains('submit') ||
         t.contains('下一步') ||
         t.contains('确认');
   }
 
   FutureOr<CallToolResult> _scroll(CallToolRequest request) async {
-    final runner = _runner;
-    if (runner == null) return _noSession();
-
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String?)?.trim();
     final direction = (args['direction'] as String? ?? 'down').toLowerCase();
@@ -430,6 +546,11 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         ),
       );
     }
+
+    final ready = await _ensureSessionForAction(testName: 'scroll_flow');
+    if (!ready.isOk) return _reply(ready);
+    final runner = _runner;
+    if (runner == null) return _noSession();
 
     final step = await runner.run(
       action: 'scroll',
@@ -454,9 +575,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }
 
   FutureOr<CallToolResult> _inputText(CallToolRequest request) async {
-    final runner = _runner;
-    if (runner == null) return _noSession();
-
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String? ?? '').trim();
     final text = args['text'] as String? ?? '';
@@ -466,6 +584,11 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
       );
     }
+
+    final ready = await _ensureSessionForAction(testName: 'input_flow');
+    if (!ready.isOk) return _reply(ready);
+    final runner = _runner;
+    if (runner == null) return _noSession();
 
     final step = await runner.run(
       action: 'input_text',
@@ -609,6 +732,76 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     );
   }
 
+  /// Attribute Bridge network records onto route steps that missed them.
+  Future<void> _backfillStepNetwork(PerfSession session) async {
+    if (session.steps.isEmpty) return;
+    try {
+      final netRes = await _bridge.networkRequests(
+        sinceIso: session.startedAt.toIso8601String(),
+        limit: 200,
+      );
+      if (!netRes.isOk || netRes.data == null || netRes.data!.requests.isEmpty) {
+        return;
+      }
+      final all = netRes.data!.requests;
+      String netKey(NetworkRequest r) =>
+          '${r.startedAt}|${r.method}|${r.url}|${r.statusCode}';
+      final assigned = <String>{
+        for (final s in session.steps)
+          for (final r in s.networkRequests) netKey(r),
+      };
+
+      bool routeMatches(String? reqRoute, String? stepRoute) {
+        if (reqRoute == null || stepRoute == null) return false;
+        final a = reqRoute.trim();
+        final b = stepRoute.trim();
+        if (a.isEmpty || b.isEmpty) return false;
+        if (a == b) return true;
+        // Request stamped `/home` can belong to `/home#mine` in the same window.
+        if (!a.contains('#') && b.startsWith('$a#')) return true;
+        return false;
+      }
+
+      final replaced = <StepResult>[];
+      for (var i = 0; i < session.steps.length; i++) {
+        final step = session.steps[i];
+        final end = DateTime.tryParse(step.at ?? '') ?? DateTime.now();
+        final begin = i == 0
+            ? session.startedAt
+            : (DateTime.tryParse(session.steps[i - 1].at ?? '') ??
+                session.startedAt);
+
+        final extra = <NetworkRequest>[];
+        for (final r in all) {
+          if (assigned.contains(netKey(r))) continue;
+          final t = DateTime.tryParse(r.startedAt);
+          final byTime = t != null &&
+              !t.isBefore(begin) &&
+              !t.isAfter(end.add(const Duration(seconds: 2)));
+          final byRoute = byTime && routeMatches(r.route, step.route);
+          if (byRoute || (step.networkRequests.isEmpty && byTime)) {
+            extra.add(r);
+            assigned.add(netKey(r));
+          }
+        }
+        if (extra.isEmpty) {
+          replaced.add(step);
+        } else {
+          replaced.add(
+            step.copyWith(
+              networkRequests: [...step.networkRequests, ...extra],
+            ),
+          );
+        }
+      }
+      session.steps
+        ..clear()
+        ..addAll(replaced);
+    } catch (_) {
+      // Non-fatal: report still writes without backfill.
+    }
+  }
+
   CallToolResult _noSession() => _reply(
         ApiResponse.fail(
           ApiCodes.noSession,
@@ -616,8 +809,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         ),
       );
 
-  CallToolResult _stepReply(StepResult step) {
-    final payload = step.toJson(includeScreenshotDataUri: false);
+  Future<CallToolResult> _stepReply(StepResult step) async {
+    final live = await _afterStep(step);
+    final payload = {
+      ...step.toJson(includeScreenshotDataUri: false),
+      ...live,
+    };
     if (!step.ok) {
       return _reply(
         ApiResponse.fail(

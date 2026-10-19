@@ -73,6 +73,7 @@ Future<void> main(List<String> args) async {
     step += 1;
     final stepId = 'step_$step';
     final t0 = DateTime.now();
+    final networkSince = t0.toIso8601String();
     final beforeRes = await bridge.snapshot();
     final before = beforeRes.data?.snapshot ??
         const SnapshotPayload(timestampMs: 0, rssBytes: 0);
@@ -125,6 +126,16 @@ Future<void> main(List<String> args) async {
       session.addAlert(a);
     }
 
+    var networkRequests = <NetworkRequest>[];
+    try {
+      final netRes = await bridge.networkRequests(sinceIso: networkSince);
+      if (netRes.isOk && netRes.data != null) {
+        networkRequests = netRes.data!.requests;
+      }
+    } catch (e) {
+      stdout.writeln('network fetch skipped: $e');
+    }
+
     String? screenshotPath;
     String? screenshotDataUri;
     if (config.captureScreenshots) {
@@ -151,6 +162,7 @@ Future<void> main(List<String> args) async {
       driver: driver,
       actionResult: actionResult,
       diff: diff,
+      networkRequests: networkRequests,
       alerts: alerts,
       screenshotPath: screenshotPath,
       screenshotDataUri: screenshotDataUri,
@@ -161,7 +173,7 @@ Future<void> main(List<String> args) async {
     stdout.writeln(
       '[$stepId] $action ok=$ok memΔ=${diff.memoryDeltaMb} '
       'jankΔ=${diff.jankDelta} alerts=${alerts.length} '
-      'shot=${screenshotPath != null}',
+      'net=${networkRequests.length} shot=${screenshotPath != null}',
     );
     return record;
   }

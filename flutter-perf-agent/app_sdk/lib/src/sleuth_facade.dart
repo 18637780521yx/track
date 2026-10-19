@@ -120,6 +120,22 @@ class SleuthFacade {
     }
   }
 
+  /// Time-to-first-frame and related startup metrics (needs [Sleuth.init]).
+  static ApiResponse<StartupMetricsData> startup() {
+    if (kReleaseMode) {
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
+    }
+    try {
+      final m = Sleuth.startupMetrics;
+      if (m == null) {
+        return ApiResponse.ok(const StartupMetricsData());
+      }
+      return ApiResponse.ok(StartupMetricsData(metrics: m.toJson()));
+    } catch (e) {
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
+    }
+  }
+
   static ApiResponse<SleuthRouteHealthData> routeHealth({String? routeName}) {
     if (kReleaseMode) {
       return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
@@ -170,6 +186,55 @@ class SleuthFacade {
       );
     } catch (_) {
       return SleuthIssueItem(detail: item.toString());
+    }
+  }
+
+  /// HTTP requests from Sleuth [NetworkMonitorDetector] ring buffer.
+  ///
+  /// When [sinceIso] is set, only records with `startedAt >= since` are returned
+  /// (used to attribute requests to a single UI action window).
+  static ApiResponse<NetworkRequestsData> networkRequests({
+    String? sinceIso,
+    int limit = 100,
+  }) {
+    if (kReleaseMode) {
+      return ApiResponse.fail(ApiCodes.sleuthError, 'sleuth disabled in release');
+    }
+    try {
+      final monitor = Sleuth.networkMonitor;
+      if (monitor == null) {
+        return ApiResponse.fail(
+          ApiCodes.sleuthError,
+          'networkMonitor unavailable — enableNetworkMonitoring?',
+        );
+      }
+      DateTime? since;
+      if (sinceIso != null && sinceIso.isNotEmpty) {
+        since = DateTime.tryParse(sinceIso);
+      }
+      final out = <NetworkRequest>[];
+      for (final r in monitor.records) {
+        if (since != null && r.startedAt.isBefore(since)) continue;
+        out.add(
+          NetworkRequest(
+            url: r.url,
+            method: r.method,
+            statusCode: r.statusCode,
+            durationMs: r.durationMs,
+            responseBytes: r.responseBytes,
+            startedAt: r.startedAt.toIso8601String(),
+            cancelled: r.cancelled,
+            contentType: r.contentType,
+          ),
+        );
+      }
+      // Newest last in ring; keep last [limit] for the window.
+      final clipped = out.length > limit ? out.sublist(out.length - limit) : out;
+      return ApiResponse.ok(
+        NetworkRequestsData(requests: clipped, since: sinceIso),
+      );
+    } catch (e) {
+      return ApiResponse.fail(ApiCodes.sleuthError, e.toString());
     }
   }
 

@@ -11,6 +11,7 @@ import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'bridge_discovery.dart';
+import 'network_capture.dart';
 import 'perf_snapshot.dart';
 import 'sleuth_facade.dart';
 import 'ui_actions.dart';
@@ -41,6 +42,11 @@ class PerfBridgeServer {
   String? sessionId;
   String? testName;
   DateTime? sessionStartedAt;
+
+  /// Survives Sleuth route-transition `clearRecords` so login/list APIs
+  /// still appear in step reports after navigation.
+  final Map<String, NetworkRequest> _networkArchive = {};
+  Timer? _networkIngestTimer;
 
   bool get isRunning => _server != null;
 
@@ -124,7 +130,10 @@ class PerfBridgeServer {
       ..get('/sleuth/summary', _sleuthSummary)
       ..get('/sleuth/diagnose', _sleuthDiagnose)
       ..get('/sleuth/issues', _sleuthIssues)
-      ..get('/sleuth/route_health', _sleuthRouteHealth);
+      ..get('/sleuth/route_health', _sleuthRouteHealth)
+      ..get('/sleuth/startup', _sleuthStartup)
+      ..get('/network', _network)
+      ..get('/app/route', _appRoute);
 
     return const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
@@ -255,6 +264,9 @@ class PerfBridgeServer {
     sessionStartedAt = DateTime.now();
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
 
+    _networkArchive.clear();
+    PerfNetworkStore.instance.clear();
+    _startNetworkIngest();
     await _waitStable(wait);
 
     return _envelope(
@@ -272,6 +284,8 @@ class PerfBridgeServer {
 
   Future<Response> _sessionStop(Request request) async {
     final ended = DateTime.now();
+    _ingestNetwork();
+    _stopNetworkIngest();
     final data = SessionStopData(
       sessionId: sessionId,
       testName: testName,
@@ -283,6 +297,63 @@ class PerfBridgeServer {
     testName = null;
     sessionStartedAt = null;
     return _envelope(ApiResponse.ok(data));
+  }
+
+  void _startNetworkIngest() {
+    _networkIngestTimer?.cancel();
+    _ingestNetwork();
+    _networkIngestTimer = Timer.periodic(
+      const Duration(milliseconds: 200),
+      (_) => _ingestNetwork(),
+    );
+  }
+
+  void _stopNetworkIngest() {
+    _networkIngestTimer?.cancel();
+    _networkIngestTimer = null;
+  }
+
+  void _ingestNetwork() {
+    // Prefer full HttpCapture (headers + bodies); keep Sleuth as fallback.
+    for (final r in PerfNetworkStore.instance.records) {
+      final key = _networkDedupeKey(r);
+      final existing = _networkArchive[key];
+      if (existing == null || (!existing.hasPayload && r.hasPayload)) {
+        _networkArchive[key] = r;
+      }
+    }
+    final live = SleuthFacade.networkRequests(limit: 200);
+    if (!live.isOk || live.data == null) return;
+    for (final r in live.data!.requests) {
+      final key = _networkDedupeKey(r);
+      if (_networkArchive.containsKey(key)) continue;
+      if (_hasNearbyFull(r)) continue;
+      _networkArchive.putIfAbsent(key, () => r);
+    }
+  }
+
+  String _networkDedupeKey(NetworkRequest r) {
+    // Bucket startedAt to 1s to collapse double-emit / sleuth+full twins.
+    final at = DateTime.tryParse(r.startedAt);
+    final bucket = at == null
+        ? r.startedAt
+        : at.toUtc().toIso8601String().substring(0, 19);
+    return '$bucket|${r.method.toUpperCase()}|${r.url}|${r.statusCode}';
+  }
+
+  bool _hasNearbyFull(NetworkRequest thin) {
+    final thinAt = DateTime.tryParse(thin.startedAt);
+    if (thinAt == null) return false;
+    for (final full in _networkArchive.values) {
+      if (!full.hasPayload) continue;
+      if (full.method.toUpperCase() != thin.method.toUpperCase()) continue;
+      if (full.url != thin.url) continue;
+      if (full.statusCode != thin.statusCode) continue;
+      final fullAt = DateTime.tryParse(full.startedAt);
+      if (fullAt == null) continue;
+      if (fullAt.difference(thinAt).inMilliseconds.abs() <= 3000) return true;
+    }
+    return false;
   }
 
   FutureOr<Response> _snapshot(Request request) {
@@ -341,6 +412,44 @@ class PerfBridgeServer {
   FutureOr<Response> _sleuthRouteHealth(Request request) {
     final route = request.url.queryParameters['route'];
     return _envelope(SleuthFacade.routeHealth(routeName: route));
+  }
+
+  FutureOr<Response> _sleuthStartup(Request request) {
+    return _envelope(SleuthFacade.startup());
+  }
+
+  FutureOr<Response> _network(Request request) {
+    final since = request.url.queryParameters['since'];
+    final limit =
+        int.tryParse(request.url.queryParameters['limit'] ?? '') ?? 100;
+    _ingestNetwork();
+    DateTime? sinceAt;
+    if (since != null && since.isNotEmpty) {
+      sinceAt = DateTime.tryParse(since);
+    }
+    final all = _networkArchive.values.toList()
+      ..sort((a, b) => a.startedAt.compareTo(b.startedAt));
+    final filtered = <NetworkRequest>[];
+    for (final r in all) {
+      if (sinceAt != null) {
+        final at = DateTime.tryParse(r.startedAt);
+        if (at != null && at.isBefore(sinceAt)) continue;
+      }
+      filtered.add(r);
+    }
+    final clipped = filtered.length > limit
+        ? filtered.sublist(filtered.length - limit)
+        : filtered;
+    return _envelope(
+      ApiResponse.ok(
+        NetworkRequestsData(requests: clipped, since: since),
+      ),
+    );
+  }
+
+  FutureOr<Response> _appRoute(Request request) {
+    final route = PerfNetworkCapture.currentRoute() ?? '';
+    return _envelope(ApiResponse.ok(AppRouteData(route: route)));
   }
 
   Future<Response> _tapLegacy(Request request) async {

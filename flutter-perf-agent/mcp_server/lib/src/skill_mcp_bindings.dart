@@ -12,28 +12,23 @@ import 'flutter_skill_client.dart';
 /// - [skill_screenshot]：截图单独暴露（载荷大）
 ///
 /// 高频动作仍用 server 上的 `tap` / `input_text` / `scroll`。
-/// 手势类 method 在会话中走 [ActionRunner]（Sleuth/RSS diff）。
+/// 手势类 method 自动开会话并走 [ActionRunner]（Sleuth/RSS + live 报告）。
 void registerFlutterSkillTools({
   required void Function(
     Tool tool,
     FutureOr<CallToolResult> Function(CallToolRequest) handler,
   ) registerTool,
   required Future<FlutterSkillClient?> Function() ensureSkillClient,
+  required Future<ApiResponse<void>> Function({String? testName}) ensureSession,
   required ActionRunner? Function() runner,
+  required Future<Map<String, dynamic>> Function(StepResult step) afterStep,
   required CallToolResult Function(ApiResponse<dynamic> response) reply,
 }) {
   CallToolResult noSkill() => reply(
         ApiResponse.fail(
           ApiCodes.skillError,
-          'flutter_skill not connected — call start_perf_test first '
-          '(needs VM URI from PerfBridge)',
-        ),
-      );
-
-  CallToolResult noSession() => reply(
-        ApiResponse.fail(
-          ApiCodes.noSession,
-          'no active session — call start_perf_test first',
+          'flutter_skill not connected — ensure App Bridge is up '
+          '(PerfAgent on :19288 with VM URI)',
         ),
       );
 
@@ -91,8 +86,14 @@ void registerFlutterSkillTools({
     Map<String, dynamic>? extra,
     int? waitStableMs,
   }) async {
+    final ready = await ensureSession(testName: 'skill_$action');
+    if (!ready.isOk) return reply(ready);
     final r = runner();
-    if (r == null) return noSession();
+    if (r == null) {
+      return reply(
+        ApiResponse.fail(ApiCodes.noSession, 'failed to create perf session'),
+      );
+    }
     final step = await r.run(
       action: action,
       actionLabel: actionLabel,
@@ -100,7 +101,11 @@ void registerFlutterSkillTools({
       extraStepFields: extra,
       skillAction: skillAction,
     );
-    final payload = step.toJson(includeScreenshotDataUri: false);
+    final live = await afterStep(step);
+    final payload = {
+      ...step.toJson(includeScreenshotDataUri: false),
+      ...live,
+    };
     if (!step.ok) {
       return reply(
         ApiResponse.fail(
@@ -129,7 +134,7 @@ void registerFlutterSkillTools({
           '常用仍优先 tap/input_text/scroll。'
           'method 示例：longPress, doubleTap, waitForElement, interactive, '
           'getWidgetTree, goBack, getLogs… '
-          '手势类在会话中会采 Sleuth/RSS diff。',
+          '手势类：自动开会话、采 Sleuth/RSS、更新 live 报告。',
       inputSchema: Schema.object(
         properties: {
           'method': Schema.string(

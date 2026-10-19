@@ -24,6 +24,14 @@ class PerfSession {
 
   void addStep(StepResult step) => steps.add(step);
 
+  void replaceLastStep(StepResult step) {
+    if (steps.isEmpty) {
+      steps.add(step);
+    } else {
+      steps[steps.length - 1] = step;
+    }
+  }
+
   void addAlert(AlertItem alert) => alerts.add(alert);
 }
 
@@ -52,10 +60,10 @@ class ReportWriter {
 
     final endedAt = DateTime.now();
     final htmlReport = {
-      'schemaVersion': 6,
+      'schemaVersion': 7,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.6.0',
+      'version': '0.6.6',
       'metricsSource': 'sleuth_bridge',
       'envelope': 'code/data/msg',
       'sessionId': session.sessionId,
@@ -68,6 +76,7 @@ class ReportWriter {
         'maxFrameCostMs': config.maxFrameCostMs,
         'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
         'slowRequestMs': config.slowRequestMs,
+        'ttffWarningMs': config.ttffWarningMs,
       },
       'steps': session.steps.map((s) => s.toJson()).toList(),
       'alerts': session.alerts.map((a) => a.toJson()).toList(),
@@ -79,10 +88,14 @@ class ReportWriter {
         'stepCount': session.steps.length,
         'alertCount': session.alerts.length,
         'okSteps': session.steps.where((s) => s.ok).length,
+        'networkRequestCount': session.steps
+            .fold<int>(0, (n, s) => n + s.networkRequests.length),
       },
       'note':
-          '完整 Sleuth 快照经 PerfBridge。UI 仍用 flutter_skill（VM）。'
-          'GC/堆等需 Sleuth 连上 VM：flutter run --profile --no-dds。',
+          '路由章 + 章内线性 events（截图/操作/请求/跳转）；首步 cold_start。'
+          '完整 Sleuth 快照经 PerfBridge；UI 用 flutter_skill（VM）。'
+          '步骤含 networkRequests（完整抓包：URL/头/体）。'
+          'GC/堆等需：flutter run --profile --no-dds。',
     };
 
     final jsonSteps = session.steps
@@ -106,6 +119,58 @@ class ReportWriter {
     );
     await File(htmlPath).writeAsString(buildHtmlReport(htmlReport));
 
+    return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
+  }
+
+  /// 会话进行中覆盖写入 live 报告（每步 UI 动作后调用）。
+  Future<ReportPaths> writeLiveReports(PerfSession session) async {
+    final dir = Directory(config.reportsDir);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    final now = DateTime.now();
+    final report = {
+      'schemaVersion': 7,
+      'agent': 'flutter-perf-agent',
+      'phase': 'sleuth_full',
+      'version': '0.6.6',
+      'live': true,
+      'metricsSource': 'sleuth_bridge',
+      'envelope': 'code/data/msg',
+      'sessionId': session.sessionId,
+      'testName': session.testName,
+      'mode': session.mode,
+      'startedAt': session.startedAt.toIso8601String(),
+      'updatedAt': now.toIso8601String(),
+      'durationMs': now.difference(session.startedAt).inMilliseconds,
+      'thresholds': {
+        'maxFrameCostMs': config.maxFrameCostMs,
+        'memoryIncreaseWarningMB': config.memoryIncreaseWarningMB,
+        'slowRequestMs': config.slowRequestMs,
+        'ttffWarningMs': config.ttffWarningMs,
+      },
+      'steps': session.steps
+          .map((s) => s.toJson(includeScreenshotDataUri: false))
+          .toList(),
+      'alerts': session.alerts.map((a) => a.toJson()).toList(),
+      'summary': {
+        'stepCount': session.steps.length,
+        'alertCount': session.alerts.length,
+        'okSteps': session.steps.where((s) => s.ok).length,
+        'networkRequestCount': session.steps
+            .fold<int>(0, (n, s) => n + s.networkRequests.length),
+      },
+      'note':
+          'Live report — 路由章 + events 时间线；'
+          'stop_perf_test 写出最终报告。',
+    };
+    final base = 'live_${session.sessionId}';
+    final jsonPath = p.join(dir.path, '$base.json');
+    final htmlPath = p.join(dir.path, '$base.html');
+    await File(jsonPath).writeAsString(
+      const JsonEncoder.withIndent('  ').convert(report),
+    );
+    await File(htmlPath).writeAsString(buildHtmlReport(report));
     return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }
 

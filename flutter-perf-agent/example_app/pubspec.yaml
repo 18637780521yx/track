@@ -35,6 +35,8 @@ dependencies:
     path: ../app_sdk
   sleuth: ^0.37.0
   flutter_skill: ^0.9.37
+  get: ^4.7.3
+  file_picker: ^13.1.0
 
 dev_dependencies:
   flutter_test:

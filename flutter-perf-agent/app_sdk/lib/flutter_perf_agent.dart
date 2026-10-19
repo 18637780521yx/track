@@ -16,4 +16,5 @@ export 'src/perf_agent.dart';
 export 'src/perf_snapshot.dart';
 export 'src/bridge_discovery.dart';
 export 'src/bridge_server.dart';
+export 'src/network_capture.dart';
 export 'src/sleuth_facade.dart';

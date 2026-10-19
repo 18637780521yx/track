@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.6 — 冷启动方案 A 分阶段
+
+- 从 Sleuth startup 推导阶段：Pre-Dart / Framework / 业务启动 / 首帧(vsync·build·raster) / TTFF / TTI
+- HTML 冷启动章展示分阶段表 + 占比条；主指标以 TTFF 为准（方案 A）
+
+## 0.6.5 — 路由章内线性事件时间线
+
+- 同路由操作写入 `events[]`：screenshot → action → network → navigate
+- 切路由时：源章保留操作/请求/跳转事件；目标章单独落页截图
+- HTML 以时间线展示章内事件（含内嵌截图）
+
+## 0.6.4 — 冷启动步骤
+
+- 报告首步固定为 `cold_start`（不与后续同路由操作合并）：Sleuth TTFF/TTI + 首屏截图
+- example_app 调用 `Sleuth.init()` / `markInteractive`；Bridge `GET /sleuth/startup`
+- 可选 `coldStart.relaunch`：kill + 打开 macOS `.app` 并统计进程就绪耗时
+- HTML 冷启动卡片展示 TTFF / TTI / processLaunchMs
+
+## 0.6.3 — 按路由记录步骤
+
+- 报告步骤改为**路由落页**：同路由上的多次操作合并进一个 step；切路由则新开 step（避免登录后立刻进「我的」时漏掉首页截图）
+- Bridge `GET /app/route`；example_app 逻辑路由含 Tab（`/home#home|discover|mine`）
+- `start_perf_test` 先拍一张起始路由基线；切路由后额外 settle + 截图重试
+- 报告 `schemaVersion=7`；HTML 标题展示路由与合并后的操作链
+
+## 0.6.2 — 操作即采样
+
+- UI 工具（`tap` / `input_text` / `scroll` / `skill_call` 手势）无会话时**自动开会话**
+- 每步自动 Sleuth/RSS diff，并覆盖写入 `reports/live_<sessionId>.{json,html}`
+- `stop_perf_test` 仍写出最终报告；`start_perf_test` 改为可选
+
 ## 0.6.1 — MCP skill 工具收拢
 
 - 去掉 40+ `skill_*` 单工具；改为 `skill_call`（method+args）+ `skill_screenshot` + `skill_list_methods`

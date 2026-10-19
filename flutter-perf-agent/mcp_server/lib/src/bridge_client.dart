@@ -112,6 +112,35 @@ class BridgeClient {
     );
   }
 
+  /// Current app route (`/login`, `/home#mine`, …) from PerfBridge.
+  Future<ApiResponse<AppRouteData>> appRoute() => _get(
+        '/app/route',
+        (raw) => AppRouteData.fromJson(_asMap(raw)),
+      );
+
+  /// Sleuth cold-start metrics (TTFF / TTI). Empty [StartupMetricsData.metrics]
+  /// until first frame after [Sleuth.init].
+  Future<ApiResponse<StartupMetricsData>> sleuthStartup() => _get(
+        '/sleuth/startup',
+        (raw) => StartupMetricsData.fromJson(_asMap(raw)),
+      );
+
+  /// HTTP requests observed by Sleuth since [sinceIso] (ISO-8601).
+  Future<ApiResponse<NetworkRequestsData>> networkRequests({
+    String? sinceIso,
+    int limit = 100,
+  }) {
+    final parts = <String>[];
+    if (sinceIso != null && sinceIso.isNotEmpty) {
+      parts.add('since=${Uri.encodeQueryComponent(sinceIso)}');
+    }
+    parts.add('limit=$limit');
+    return _get(
+      '/network?${parts.join('&')}',
+      (raw) => NetworkRequestsData.fromJson(_asMap(raw)),
+    );
+  }
+
   Future<ApiResponse<TapLegacyData>> tapLegacy({
     required String targetDesc,
     int? waitStableMs,

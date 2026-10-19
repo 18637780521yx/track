@@ -54,7 +54,7 @@ Cursor 里配置 MCP 后可以说：
 | Tool | 说明 |
 |------|------|
 | `start_perf_test` | 开会话（清理旧会话） |
-| `input_text` / `tap` / `scroll` | 常用 UI + Sleuth/RSS diff |
+| `input_text` / `tap` / `scroll` | 常用 UI；**自动开会话** + Sleuth/RSS + live 报告 |
 | `skill_call` | flutter_skill 全量入口：`method` + `args` |
 | `skill_screenshot` | 全屏截图 |
 | `skill_list_methods` | 列出可用 method |

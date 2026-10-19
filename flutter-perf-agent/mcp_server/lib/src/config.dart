@@ -27,6 +27,11 @@ class PerfAgentConfig {
     required this.devtoolsArtifactRawTraces,
     required this.debuggerPauseAllowed,
     required this.heapIncreaseWarningMB,
+    required this.coldStartRelaunch,
+    required this.coldStartAppPath,
+    required this.coldStartMaxWaitMs,
+    required this.ttffWarningMs,
+    this.repoRoot,
   });
 
   final String bridgeHost;
@@ -53,7 +58,25 @@ class PerfAgentConfig {
   final bool debuggerPauseAllowed;
   final double heapIncreaseWarningMB;
 
+  /// Kill + relaunch the macOS `.app` before recording the cold_start step.
+  final bool coldStartRelaunch;
+
+  /// Absolute or repo-relative path to `example_app.app` (or similar).
+  final String? coldStartAppPath;
+
+  final int coldStartMaxWaitMs;
+  final double ttffWarningMs;
+  final String? repoRoot;
+
   String get bridgeBaseUrl => 'http://$bridgeHost:$bridgePort';
+
+  String? resolveColdStartAppPath() {
+    final raw = coldStartAppPath;
+    if (raw == null || raw.trim().isEmpty) return null;
+    if (p.isAbsolute(raw)) return raw;
+    if (repoRoot != null) return p.normalize(p.join(repoRoot!, raw));
+    return p.normalize(p.absolute(raw));
+  }
 
   static Future<PerfAgentConfig> load(
     String configPath, {
@@ -72,6 +95,8 @@ class PerfAgentConfig {
         (json['devtoolsSampling'] as Map?)?.cast<String, dynamic>() ?? {};
     final debugger =
         (json['debugger'] as Map?)?.cast<String, dynamic>() ?? {};
+    final coldStart =
+        (json['coldStart'] as Map?)?.cast<String, dynamic>() ?? {};
 
     var reportsDir = reportsDirOverride ??
         json['reportsDir'] as String? ??
@@ -107,6 +132,15 @@ class PerfAgentConfig {
       debuggerPauseAllowed: debugger['pauseAllowed'] as bool? ?? false,
       heapIncreaseWarningMB:
           (thresholds['heapIncreaseWarningMB'] as num?)?.toDouble() ?? 8,
+      coldStartRelaunch: coldStart['relaunch'] as bool? ?? false,
+      coldStartAppPath: coldStart['appPath'] as String? ??
+          'example_app/build/macos/Build/Products/Debug/example_app.app',
+      coldStartMaxWaitMs:
+          (coldStart['maxWaitMs'] as num?)?.toInt() ?? 45000,
+      ttffWarningMs: (coldStart['ttffWarningMs'] as num?)?.toDouble() ??
+          (thresholds['ttffWarningMs'] as num?)?.toDouble() ??
+          1500,
+      repoRoot: repoRoot,
     );
   }
 }

@@ -63,6 +63,17 @@ get_sleuth_route_health
 
 `code == 0` 成功；非 0 见 `ApiCodes`（400 / 503 / 1001 无会话 / 1002 skill / 1003 sleuth / 1004 动作失败）。
 
+### 自动性能（0.6.2）
+
+直接 `tap` / `input_text` / `scroll` / `skill_call`（手势）即可：
+
+1. 无会话时自动 `start`
+2. 每步前后采 Sleuth/RSS，写告警
+3. 覆盖更新 `reports/live_<sessionId>.json` / `.html`
+4. 测完调用 `stop_perf_test` 拿最终报告
+
+不必再先手动 `start_perf_test`（仍可显式调用）。
+
 ### flutter_skill（skill_call）
 
 常用仍用 `tap` / `input_text` / `scroll`；其余：
