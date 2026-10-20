@@ -73,6 +73,16 @@ class PerfAgent {
     double leakRssRetainMb = 5,
     /// Bind Sleuth heap_growing / stream_resource_growth to transition windows.
     bool sleuthBindEnabled = true,
+    /// Gate: WeakRef alive → main leak alert.
+    bool alertOnWeakRef = true,
+    /// Gate: only alert WeakRef when multi-round confirmed.
+    bool requireMultiRound = false,
+    /// Gate: Sleuth-only hits → main leak alert.
+    bool alertOnSleuthOnly = true,
+    /// Gate: RSS retain auxiliary alert.
+    bool alertOnRssRetain = true,
+    /// Opt-in VM deep probe (MCP lab; ignored in release).
+    bool leakVmDeepProbe = false,
     /// Allow lightweight leak sampling in release (no Bridge / Sleuth).
     bool leakOnlineEnabled = false,
     /// Session sample probability 0..1 (`0` off, `1` always).
@@ -122,6 +132,11 @@ class PerfAgent {
       leakConfirmRounds: leakConfirmRounds,
       rssRetainMb: leakRssRetainMb,
       sleuthBindEnabled: sleuthBindEnabled,
+      alertOnWeakRef: alertOnWeakRef,
+      requireMultiRound: requireMultiRound,
+      alertOnSleuthOnly: alertOnSleuthOnly,
+      alertOnRssRetain: alertOnRssRetain,
+      leakVmDeepProbe: leakVmDeepProbe,
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 

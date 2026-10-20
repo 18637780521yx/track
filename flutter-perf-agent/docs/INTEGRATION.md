@@ -123,6 +123,14 @@ await PerfAgent.ensureInitialized(
 
 不启 Bridge / Sleuth / 截图。事件类型：`route_breadcrumb`、`transition_leak`。
 
+## 6.2 V3 门禁与 VM（0.9.0）
+
+MCP `perf_agent_config.json` → `transition`（开会话下推）：
+
+- CI 可开 `requireMultiRound: true`
+- 实验室可开 `leakVmDeepProbe: true`（报告 `vmDeep`，不作唯一门禁）
+- Dialog 泄漏演示：保证 `navigatorObservers: PerfAgent.navigatorObservers`
+
 ## 7. 可信性能数据
 
 ```bash

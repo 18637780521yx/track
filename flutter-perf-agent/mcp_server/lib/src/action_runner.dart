@@ -9,6 +9,7 @@ import 'bridge_client.dart';
 import 'cold_start.dart';
 import 'config.dart';
 import 'flutter_skill_client.dart';
+import 'flutter_skill_vm_client.dart';
 import 'perf_diff.dart';
 import 'report_writer.dart';
 
@@ -482,19 +483,32 @@ class ActionRunner {
         }
       } catch (_) {}
 
-      if (kind == 'pop' || kind == 'remove') {
+      if (_isClosingTransition(kind, routeBefore)) {
         try {
           final probe = await bridge.transitionLeakProbe(
             route: routeBefore,
             settleMs: config.transitionSettleMs,
           );
           if (probe.isOk && probe.data != null) {
-            leakJson = probe.data;
-            final alive = (leakJson!['alive'] as List?) ?? const [];
+            leakJson = Map<String, dynamic>.from(probe.data!);
+            final alive = (leakJson['alive'] as List?) ?? const [];
             final sleuthHits =
                 (leakJson['sleuthHits'] as List?) ?? const [];
-            final hasLeak = alive.isNotEmpty || sleuthHits.isNotEmpty;
-            if (hasLeak) {
+            final multi = leakJson['multiRoundConfirmed'] == true;
+            final hasWeak = alive.isNotEmpty;
+            final hasSleuth = sleuthHits.isNotEmpty;
+
+            if (config.leakVmDeepProbe && hasWeak) {
+              leakJson = await _attachVmDeep(leakJson);
+            }
+
+            final shouldAlert = _shouldAlertLeak(
+              hasWeak: hasWeak,
+              hasSleuth: hasSleuth,
+              multiRoundConfirmed: multi,
+            );
+
+            if (shouldAlert) {
               final parts = <String>[];
               if (alive.isNotEmpty) {
                 final names = alive
@@ -510,13 +524,19 @@ class ActionRunner {
                     .join(', ');
                 parts.add('Sleuth: $titles');
               }
-              final multi = leakJson['multiRoundConfirmed'] == true;
               final counts = (leakJson['aliveCounts'] as List?) ?? const [];
               final multiNote = multi && counts.isNotEmpty
                   ? '；多轮确认：同路由 ${counts.length} 次进出存活数 '
                       '[${counts.join('→')}]'
                   : '';
-              final evidence = leakJson['evidence']?.toString() ?? '';
+              var evidence = leakJson['evidence']?.toString() ?? '';
+              if (leakJson['vmDeep'] is Map &&
+                  (leakJson['vmDeep'] as Map)['ok'] == true) {
+                evidence = evidence.isEmpty || evidence == 'none'
+                    ? 'vm_deep'
+                    : '$evidence+vm_deep';
+                leakJson['evidence'] = evidence;
+              }
               final leakAlert = AlertItem(
                 type: 'transition_memory_leak',
                 stepId: chapter.stepId,
@@ -530,7 +550,9 @@ class ActionRunner {
               session.addAlert(leakAlert);
             }
             final rssDelta = (leakJson['rssDeltaMb'] as num?)?.toDouble();
-            if (rssDelta != null && rssDelta >= config.leakRssRetainMb) {
+            if (config.alertOnRssRetain &&
+                rssDelta != null &&
+                rssDelta >= config.leakRssRetainMb) {
               final rssAlert = AlertItem(
                 type: 'transition_memory_retain_rss',
                 stepId: chapter.stepId,
@@ -719,6 +741,52 @@ class ActionRunner {
     if (last.route != route) return null;
     // Already navigated away marker — still same route means stay open.
     return last;
+  }
+
+  static bool _isClosingTransition(String kind, String routeBefore) {
+    if (kind == 'pop' || kind == 'remove') return true;
+    if (!kind.startsWith('modal_')) return false;
+    return routeBefore.startsWith('#modal/') ||
+        routeBefore.contains('#modal/');
+  }
+
+  bool _shouldAlertLeak({
+    required bool hasWeak,
+    required bool hasSleuth,
+    required bool multiRoundConfirmed,
+  }) {
+    if (hasWeak) {
+      if (!config.alertOnWeakRef) return false;
+      if (config.requireMultiRound && !multiRoundConfirmed) return false;
+      return true;
+    }
+    if (hasSleuth) return config.alertOnSleuthOnly;
+    return false;
+  }
+
+  Future<Map<String, dynamic>> _attachVmDeep(
+    Map<String, dynamic> leakJson,
+  ) async {
+    try {
+      final client = await _ensureSkillClient();
+      if (client is! FlutterSkillVmClient) {
+        leakJson['vmDeep'] = {
+          'skipped': true,
+          'reason': 'no_vm_client',
+        };
+        return leakJson;
+      }
+      final note = await client.collectLeakVmDeepNote();
+      leakJson['vmDeep'] = note;
+      if (note['ok'] == true) {
+        final ev = leakJson['evidence']?.toString() ?? '';
+        leakJson['evidence'] =
+            (ev.isEmpty || ev == 'none') ? 'vm_deep' : '$ev+vm_deep';
+      }
+    } catch (e) {
+      leakJson['vmDeep'] = {'skipped': true, 'reason': '$e'};
+    }
+    return leakJson;
   }
 
   Future<StepResult> _failChapter(

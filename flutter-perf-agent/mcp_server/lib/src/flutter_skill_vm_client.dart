@@ -758,4 +758,49 @@ class FlutterSkillVmClient implements FlutterSkillClient {
     if (json == null) return {'success': false, 'error': 'empty response'};
     return Map<String, dynamic>.from(json);
   }
+
+  /// Opt-in lab note: GC + allocation profile snapshot (never a sole CI gate).
+  Future<Map<String, dynamic>> collectLeakVmDeepNote() async {
+    try {
+      await ensureConnected();
+      final service = _service;
+      final isolateId = _isolateId;
+      if (service == null || isolateId == null) {
+        return {
+          'skipped': true,
+          'reason': 'not_connected',
+        };
+      }
+      final profile = await service.getAllocationProfile(
+        isolateId,
+        gc: true,
+      );
+      final mem = profile.memoryUsage;
+      final classes = profile.members ?? const [];
+      final top = classes.take(8).map((c) {
+        return <String, dynamic>{
+          'class': c.classRef?.name,
+          'instances': c.instancesCurrent,
+          'bytes': c.bytesCurrent,
+        };
+      }).toList();
+      return {
+        'ok': true,
+        'gc': true,
+        'dateLastServiceGC': profile.dateLastServiceGC,
+        'memoryUsage': {
+          'heapUsage': mem?.heapUsage,
+          'heapCapacity': mem?.heapCapacity,
+          'externalUsage': mem?.externalUsage,
+        },
+        'topClasses': top,
+        'note': 'lab evidence only — not a CI gate',
+      };
+    } catch (e) {
+      return {
+        'skipped': true,
+        'reason': e.toString(),
+      };
+    }
+  }
 }

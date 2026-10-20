@@ -296,6 +296,11 @@ class PerfBridgeServer {
         leakConfirmRounds: (transition['leakConfirmRounds'] as num?)?.toInt(),
         rssRetainMb: (transition['leakRssRetainMb'] as num?)?.toDouble(),
         sleuthBindEnabled: transition['sleuthBindEnabled'] as bool?,
+        alertOnWeakRef: transition['alertOnWeakRef'] as bool?,
+        requireMultiRound: transition['requireMultiRound'] as bool?,
+        alertOnSleuthOnly: transition['alertOnSleuthOnly'] as bool?,
+        alertOnRssRetain: transition['alertOnRssRetain'] as bool?,
+        leakVmDeepProbe: transition['leakVmDeepProbe'] as bool?,
       );
       final settle = (transition['transitionSettleMs'] as num?)?.toInt();
       if (settle != null && settle >= 0) {

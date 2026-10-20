@@ -13,7 +13,8 @@ class TransitionRecord {
     required this.at,
   });
 
-  /// `push` | `pop` | `replace` | `remove` | `route_change`
+  /// `push` | `pop` | `replace` | `remove` | `route_change` |
+  /// `modal_dialog` | `modal_sheet` | `modal_page`
   final String kind;
   final String? from;
   final String? to;
@@ -27,6 +28,32 @@ class TransitionRecord {
       };
 }
 
+/// Classify [route] into a modal_* kind, or null for normal page routes.
+String? classifyModalKind(Route<dynamic> route) {
+  final typeName = route.runtimeType.toString();
+  if (typeName.contains('BottomSheet')) return 'modal_sheet';
+  if (route is PopupRoute) {
+    if (typeName.contains('Dialog') || typeName.contains('RawDialog')) {
+      return 'modal_dialog';
+    }
+    // Generic popup (menu, etc.) — treat as dialog for leak pairing.
+    return 'modal_dialog';
+  }
+  if (route is PageRoute && route.fullscreenDialog) {
+    return 'modal_page';
+  }
+  return null;
+}
+
+/// True when [kind] indicates a closing transition that should run leak probe.
+bool isClosingTransitionKind(String kind, {String? fromRoute}) {
+  if (kind == 'pop' || kind == 'remove') return true;
+  if (!kind.startsWith('modal_')) return false;
+  // Opening a modal uses the same kind; only probe when leaving a modal route.
+  final from = fromRoute ?? '';
+  return from.startsWith('#modal/') || from.contains('#modal/');
+}
+
 /// Stack-aware ledger of route transitions (no VM / no forced GC).
 class TransitionLedger {
   TransitionLedger._();
@@ -35,12 +62,18 @@ class TransitionLedger {
   final List<String> _stack = [];
   TransitionRecord? last;
   int settleMs = 1500;
+  int _modalSeq = 0;
+
+  /// identityHashCode(route) → synthetic `#modal/N` for nameless popups.
+  final Map<int, String> _syntheticNames = {};
 
   List<String> get stack => List.unmodifiable(_stack);
 
   void reset() {
     _stack.clear();
     last = null;
+    _syntheticNames.clear();
+    _modalSeq = 0;
   }
 
   String? get currentLogical {
@@ -51,12 +84,26 @@ class TransitionLedger {
     }
   }
 
-  void onPush(String? name) {
+  /// Resolve display/track name for [route] (settings.name or synthetic).
+  String? nameForRoute(Route<dynamic>? route) {
+    if (route == null) return null;
+    final n = route.settings.name;
+    if (n != null && n.trim().isNotEmpty) return n.trim();
+    final modal = classifyModalKind(route);
+    if (modal == null) return null;
+    final id = identityHashCode(route);
+    return _syntheticNames.putIfAbsent(id, () {
+      _modalSeq += 1;
+      return '#modal/$_modalSeq';
+    });
+  }
+
+  void onPush(String? name, {String kind = 'push'}) {
     final to = _name(name);
     final from = _stack.isEmpty ? currentLogical : _stack.last;
     if (to != null) _stack.add(to);
     last = TransitionRecord(
-      kind: 'push',
+      kind: kind,
       from: from,
       to: to ?? from,
       at: DateTime.now(),
@@ -65,14 +112,14 @@ class TransitionLedger {
       TransitionLeakTracker.instance.markPush(to);
     }
     LeakOnline.instance.emitBreadcrumb(
-      kind: 'push',
+      kind: kind,
       from: last!.from,
       to: last!.to,
     );
-    debugPrint('[TransitionLedger] push ${last!.from} → ${last!.to}');
+    debugPrint('[TransitionLedger] $kind ${last!.from} → ${last!.to}');
   }
 
-  void onPop(String? name) {
+  void onPop(String? name, {String kind = 'pop'}) {
     final popped = _name(name);
     String? from = popped;
     if (_stack.isNotEmpty) {
@@ -80,14 +127,14 @@ class TransitionLedger {
     }
     final to = _stack.isNotEmpty ? _stack.last : currentLogical;
     last = TransitionRecord(
-      kind: 'pop',
+      kind: kind,
       from: from ?? popped,
       to: to,
       at: DateTime.now(),
     );
     final route = last!.from;
     LeakOnline.instance.emitBreadcrumb(
-      kind: 'pop',
+      kind: kind,
       from: last!.from,
       to: last!.to,
     );
@@ -95,7 +142,7 @@ class TransitionLedger {
       // ignore: unawaited_futures
       _onlineProbeAfterPop(route);
     }
-    debugPrint('[TransitionLedger] pop ${last!.from} → ${last!.to}');
+    debugPrint('[TransitionLedger] $kind ${last!.from} → ${last!.to}');
   }
 
   Future<void> _onlineProbeAfterPop(String route) async {
@@ -159,11 +206,13 @@ class TransitionLedger {
         DateTime.now().difference(rec.at).inSeconds < 5) {
       return rec.kind;
     }
-    // Heuristic without observer: deeper stack → push; shallower → pop.
     if (from != null && to != null && from != to) {
-      if (rec != null && DateTime.now().difference(rec.at).inMilliseconds < 800) {
+      if (rec != null &&
+          DateTime.now().difference(rec.at).inMilliseconds < 800) {
         return rec.kind;
       }
+      // Closing a synthetic modal without a matching last record.
+      if (from.startsWith('#modal/')) return 'modal_dialog';
       return 'route_change';
     }
     return 'route_change';
@@ -189,32 +238,32 @@ class TransitionObserver extends NavigatorObserver {
 
   final TransitionLedger _ledger;
 
-  String? _routeName(Route<dynamic>? route) {
-    final n = route?.settings.name;
-    if (n != null && n.isNotEmpty) return n;
-    return null;
-  }
-
   @override
   void didPush(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    _ledger.onPush(_routeName(route) ?? _ledger.currentLogical);
+    final modal = classifyModalKind(route);
+    final name = _ledger.nameForRoute(route) ?? _ledger.currentLogical;
+    _ledger.onPush(name, kind: modal ?? 'push');
   }
 
   @override
   void didPop(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    _ledger.onPop(_routeName(route) ?? _ledger.currentLogical);
+    final modal = classifyModalKind(route);
+    final name = _ledger.nameForRoute(route) ?? _ledger.currentLogical;
+    // Keep modal_* on close so reports show dialog/sheet/page; probe via
+    // [isClosingTransitionKind] (fromRoute starts with #modal/).
+    _ledger.onPop(name, kind: modal ?? 'pop');
   }
 
   @override
   void didReplace({Route<dynamic>? newRoute, Route<dynamic>? oldRoute}) {
     _ledger.onReplace(
-      oldName: _routeName(oldRoute),
-      newName: _routeName(newRoute) ?? _ledger.currentLogical,
+      oldName: _ledger.nameForRoute(oldRoute),
+      newName: _ledger.nameForRoute(newRoute) ?? _ledger.currentLogical,
     );
   }
 
   @override
   void didRemove(Route<dynamic> route, Route<dynamic>? previousRoute) {
-    _ledger.onRemove(_routeName(route));
+    _ledger.onRemove(_ledger.nameForRoute(route));
   }
 }

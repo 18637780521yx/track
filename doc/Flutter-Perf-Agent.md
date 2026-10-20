@@ -227,7 +227,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
 #### C. 转场窗口与种类
 
-1. **`transitionKind`**：`push` / `pop` / `replace` / `modal_*`；否则 `route_change`  
+1. **`transitionKind`**：`push` / `pop` / `replace` / `modal_dialog`|`modal_sheet`|`modal_page`（0.9.0）；否则 `route_change`  
 2. **时间窗**：T0→T1→（pop）T2 settle；采 FPS/jank/P90、截图（线上可关截图）；泄漏看登记对象存活  
 3. **push↔pop 配对账本**：泄漏挂在 **pop 段**
 
@@ -237,14 +237,15 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 |------|------|------|
 | **V1** | push/pop；资源 track/WeakRef；pop 后仍可达 → `transition_memory_leak`；转场 jank；RSS 辅证；**默认不做强制 GC** | 已实现（0.8.0） |
 | **V2** | **多轮确认**（0.8.2）+ **GetX/Navigator 自动 hook**（0.8.3）+ **Sleuth 转场窗绑定**（0.8.6）+ **线上采样首刀**（本机事件+采样率，0.8.7） | **首刀已实现**；多会话聚合仍规划 |
-| **V3** | opt-in VM 深挖；modal/Hero；门禁策略 | 规划 |
+| **V3** | opt-in VM 深挖；modal_\* 种类；门禁策略（0.9.0） | **已实现**；Hero flight 归因仍规划 |
 
 #### E. 配置扩展
 
 - `transitionSettleMs`（`PerfAgent.ensureInitialized`，已接）  
 - `leakConfirmRounds`（已接，默认 2）  
 - `leakTrackEnabled`（已接） / `leakOnlineEnabled` + `leakSampleRate`（0.8.7 首刀：本机事件+回调）  
-- `leakVmDeepProbe`（默认 `false`，规划）  
+- `leakVmDeepProbe`（0.9.0，默认 `false`；MCP lab 注记，不作唯一门禁）  
+- 门禁：`alertOnWeakRef` / `requireMultiRound` / `alertOnSleuthOnly` / `alertOnRssRetain`（0.9.0）  
 - 沿用 `maxFrameCostMs` 判转场卡顿
 
 ### 4.4 配置能力
@@ -254,8 +255,8 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
   - memoryIncreaseWarningMB：单次内存上涨告警阈值（默认5MB）
   - slowRequestMs：慢接口阈值（默认300ms）
   - App SDK + MCP JSON `transition`：`transitionSettleMs` / `leakConfirmRounds` / `leakTrackEnabled` / `leakRssRetainMb`（开会话下推到 Bridge，0.8.5 已对齐）
+  - 门禁 / VM（0.9.0）：`alertOnWeakRef` / `requireMultiRound` / `alertOnSleuthOnly` / `alertOnRssRetain` / `leakVmDeepProbe`
   - App SDK 线上：`leakOnlineEnabled` / `leakSampleRate` / `onLeakOnlineEvent`（0.8.7；多会话聚合仍规划）
-  - （规划）leakVmDeepProbe
 - 页面等待稳定默认时长
 - 是否开启网络采集开关
 - 是否开启Widget反模式检测开关
@@ -321,7 +322,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 5. 增加录制回放功能
 6. 支持WebView页面测试
 7. 增加AI自动性能根因分析（基于采集指标，给出优化代码建议）
-8. 转场 V2 剩余 / V3：多会话聚合、动画窗精确帧、modal/Hero（线上采样首刀 0.8.7、GetX hook 0.8.3、Sleuth 绑定 0.8.6；详见 4.3.3）
+8. 转场后续：多会话聚合、动画窗精确帧、Hero flight（V3 modal/门禁/VM 0.9.0 已落地；详见 4.3.3）
 
 ## 10. 目录结构建议（项目仓库）
 ```

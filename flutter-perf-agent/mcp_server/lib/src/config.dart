@@ -36,6 +36,11 @@ class PerfAgentConfig {
     required this.leakConfirmRounds,
     required this.leakRssRetainMb,
     required this.sleuthBindEnabled,
+    required this.alertOnWeakRef,
+    required this.requireMultiRound,
+    required this.alertOnSleuthOnly,
+    required this.alertOnRssRetain,
+    required this.leakVmDeepProbe,
     this.repoRoot,
   });
 
@@ -78,6 +83,11 @@ class PerfAgentConfig {
   final int leakConfirmRounds;
   final double leakRssRetainMb;
   final bool sleuthBindEnabled;
+  final bool alertOnWeakRef;
+  final bool requireMultiRound;
+  final bool alertOnSleuthOnly;
+  final bool alertOnRssRetain;
+  final bool leakVmDeepProbe;
 
   final String? repoRoot;
 
@@ -90,6 +100,11 @@ class PerfAgentConfig {
         'leakConfirmRounds': leakConfirmRounds,
         'leakRssRetainMb': leakRssRetainMb,
         'sleuthBindEnabled': sleuthBindEnabled,
+        'alertOnWeakRef': alertOnWeakRef,
+        'requireMultiRound': requireMultiRound,
+        'alertOnSleuthOnly': alertOnSleuthOnly,
+        'alertOnRssRetain': alertOnRssRetain,
+        'leakVmDeepProbe': leakVmDeepProbe,
       };
 
   String? resolveColdStartAppPath() {
@@ -172,6 +187,11 @@ class PerfAgentConfig {
       leakRssRetainMb:
           (transition['leakRssRetainMb'] as num?)?.toDouble() ?? 5,
       sleuthBindEnabled: transition['sleuthBindEnabled'] as bool? ?? true,
+      alertOnWeakRef: transition['alertOnWeakRef'] as bool? ?? true,
+      requireMultiRound: transition['requireMultiRound'] as bool? ?? false,
+      alertOnSleuthOnly: transition['alertOnSleuthOnly'] as bool? ?? true,
+      alertOnRssRetain: transition['alertOnRssRetain'] as bool? ?? true,
+      leakVmDeepProbe: transition['leakVmDeepProbe'] as bool? ?? false,
       repoRoot: repoRoot,
     );
   }

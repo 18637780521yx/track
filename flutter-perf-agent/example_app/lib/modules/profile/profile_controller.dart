@@ -1,6 +1,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
 import '../../app/services/auth_service.dart';
@@ -18,6 +19,12 @@ class ProfilePushController extends GetxController {
       demoRetain.add(this);
     }
   }
+}
+
+/// V3 modal 泄漏演示：Dialog 关闭后仍被静态列表握住。
+class DialogLeakDemo {
+  static final List<Object> retain = [];
+  static const routeName = '#modal/leak_demo';
 }
 
 class ProfileController extends GetxController {
@@ -39,6 +46,39 @@ class ProfileController extends GetxController {
   }
 
   Future<void> logout() => auth.logout();
+
+  /// Open a named dialog, track a retained holder @ [DialogLeakDemo.routeName].
+  Future<void> openLeakDialog(BuildContext context) async {
+    if (!kReleaseMode) {
+      final holder = Object();
+      DialogLeakDemo.retain.add(holder);
+      TransitionLeakTracker.instance.track(
+        holder,
+        name: 'DialogLeakHolder',
+        route: DialogLeakDemo.routeName,
+      );
+    }
+    await showDialog<void>(
+      context: context,
+      routeSettings: const RouteSettings(name: DialogLeakDemo.routeName),
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('泄漏 Dialog 演示', key: Key('leak_dialog_title')),
+          content: Text(
+            '关闭后 DialogLeakHolder 仍被静态列表握住'
+            '（retain=${DialogLeakDemo.retain.length}）',
+          ),
+          actions: [
+            TextButton(
+              key: const Key('leak_dialog_close'),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   Future<void> editNickname(BuildContext context) async {
     final input = TextEditingController(text: auth.displayName.value);

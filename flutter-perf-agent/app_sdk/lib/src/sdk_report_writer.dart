@@ -62,7 +62,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.7',
+      'version': '0.9.0',
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
       'envelope': 'code/data/msg',
@@ -177,7 +177,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.7',
+      'version': '0.9.0',
       'live': true,
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
@@ -221,6 +221,11 @@ class SdkReportWriter {
       'leakConfirmRounds': t.leakConfirmRounds,
       'leakRssRetainMb': t.rssRetainMb,
       'sleuthBindEnabled': SleuthTransitionBinder.instance.enabled,
+      'alertOnWeakRef': t.alertOnWeakRef,
+      'requireMultiRound': t.requireMultiRound,
+      'alertOnSleuthOnly': t.alertOnSleuthOnly,
+      'alertOnRssRetain': t.alertOnRssRetain,
+      'leakVmDeepProbe': t.leakVmDeepProbe,
     };
   }
 }

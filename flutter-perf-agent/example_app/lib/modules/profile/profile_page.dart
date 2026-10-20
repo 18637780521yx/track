@@ -153,6 +153,19 @@ class ProfilePage extends GetView<ProfileController> {
                       label: const Text('打开独立个人页（泄漏多轮演示）'),
                     ),
                   ),
+                  const SizedBox(height: 8),
+                  Semantics(
+                    label: '打开泄漏Dialog',
+                    button: true,
+                    child: OutlinedButton.icon(
+                      key: const Key('open_leak_dialog_button'),
+                      onPressed: uploading
+                          ? null
+                          : () => controller.openLeakDialog(context),
+                      icon: const Icon(Icons.warning_amber_outlined),
+                      label: const Text('打开泄漏 Dialog（modal 演示）'),
+                    ),
+                  ),
                 ],
                 const Spacer(),
                 Semantics(

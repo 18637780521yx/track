@@ -34,7 +34,12 @@
     "transitionSettleMs": 1500,
     "leakConfirmRounds": 2,
     "leakRssRetainMb": 5,
-    "sleuthBindEnabled": true
+    "sleuthBindEnabled": true,
+    "alertOnWeakRef": true,
+    "requireMultiRound": false,
+    "alertOnSleuthOnly": true,
+    "alertOnRssRetain": true,
+    "leakVmDeepProbe": false
   },
   "coldStart": {
     "relaunch": false,

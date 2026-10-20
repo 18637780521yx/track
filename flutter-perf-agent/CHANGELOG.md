@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0 — V3：modal + 门禁 + VM 深挖
+
+- **modal_\***：`TransitionObserver` 识别 Dialog / BottomSheet / `fullscreenDialog`；无名弹层合成 `#modal/N`
+- example：我的 Tab「打开泄漏 Dialog」→ 关闭后 WeakRef 仍可达
+- **门禁**：`alertOnWeakRef` / `requireMultiRound` / `alertOnSleuthOnly` / `alertOnRssRetain`（默认与 0.8.x 一致；开会话下推）
+- **`leakVmDeepProbe`**（默认 false）：MCP 在 WeakRef 泄漏时可选 GC + allocation 注记 `vmDeep` / `evidence+=vm_deep`；**不作唯一 CI 门禁**；release 强制忽略
+- **本轮不做**：Hero flight 归因、多会话聚合、动画窗精确帧
+
 ## 0.8.7 — 线上采样首刀
 
 - `leakOnlineEnabled` / `leakSampleRate` / `onLeakOnlineEvent`：Release 可按会话采样开启轻量 WeakRef 转场观测

@@ -324,7 +324,7 @@ class ManualGestureRecorder {
 
     TransitionLeakProbe? probe;
     var alerts = <AlertItem>[];
-    if (kind == 'pop' || kind == 'remove') {
+    if (isClosingTransitionKind(kind, fromRoute: prev)) {
       probe = await TransitionLeakTracker.instance.probeAfterPop(
         poppedRoute: prev,
       );

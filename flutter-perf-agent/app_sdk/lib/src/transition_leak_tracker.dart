@@ -118,6 +118,21 @@ class TransitionLeakTracker {
   /// RSS retain (MB) for auxiliary alert only.
   double rssRetainMb = 5;
 
+  /// Gate: emit main leak alert when WeakRef alive (unless [requireMultiRound]).
+  bool alertOnWeakRef = true;
+
+  /// Gate: only alert WeakRef when [multiRoundConfirmed].
+  bool requireMultiRound = false;
+
+  /// Gate: Sleuth-only hits still emit main leak alert.
+  bool alertOnSleuthOnly = true;
+
+  /// Gate: RSS retain auxiliary alert.
+  bool alertOnRssRetain = true;
+
+  /// Opt-in VM deep probe flag (MCP performs GC/profile; ignored in release).
+  bool leakVmDeepProbe = false;
+
   final List<_Tracked> _tracked = [];
   final Map<String, double> _rssAtPush = {};
 
@@ -137,6 +152,11 @@ class TransitionLeakTracker {
     int? leakConfirmRounds,
     double? rssRetainMb,
     bool? sleuthBindEnabled,
+    bool? alertOnWeakRef,
+    bool? requireMultiRound,
+    bool? alertOnSleuthOnly,
+    bool? alertOnRssRetain,
+    bool? leakVmDeepProbe,
   }) {
     if (enabled != null) this.enabled = enabled;
     if (settleMs != null && settleMs >= 0) this.settleMs = settleMs;
@@ -149,6 +169,25 @@ class TransitionLeakTracker {
     if (sleuthBindEnabled != null) {
       SleuthTransitionBinder.instance.enabled = sleuthBindEnabled;
     }
+    if (alertOnWeakRef != null) this.alertOnWeakRef = alertOnWeakRef;
+    if (requireMultiRound != null) this.requireMultiRound = requireMultiRound;
+    if (alertOnSleuthOnly != null) this.alertOnSleuthOnly = alertOnSleuthOnly;
+    if (alertOnRssRetain != null) this.alertOnRssRetain = alertOnRssRetain;
+    if (leakVmDeepProbe != null) {
+      // Never enable VM deep probe on the device release path.
+      this.leakVmDeepProbe = kReleaseMode ? false : leakVmDeepProbe;
+    }
+  }
+
+  /// Whether the gate policy allows a main `transition_memory_leak` alert.
+  bool shouldAlertLeak(TransitionLeakProbe probe) {
+    if (probe.hasWeakRefLeak) {
+      if (!alertOnWeakRef) return false;
+      if (requireMultiRound && !probe.multiRoundConfirmed) return false;
+      return true;
+    }
+    if (probe.hasSleuthLeak) return alertOnSleuthOnly;
+    return false;
   }
 
   /// Release tracks only when [LeakOnline.active]; debug/profile when [enabled].
@@ -269,7 +308,7 @@ class TransitionLeakTracker {
     double maxFrameCostMs = 16,
   }) {
     final out = <AlertItem>[];
-    if (probe.hasLeak) {
+    if (shouldAlertLeak(probe)) {
       final parts = <String>[];
       if (probe.hasWeakRefLeak) {
         final names = probe.alive.map((e) => e['name']).join(', ');
@@ -297,7 +336,7 @@ class TransitionLeakTracker {
       );
     }
     final delta = probe.rssDeltaMb;
-    if (delta != null && delta >= rssRetainMb) {
+    if (alertOnRssRetain && delta != null && delta >= rssRetainMb) {
       out.add(
         AlertItem(
           type: 'transition_memory_retain_rss',

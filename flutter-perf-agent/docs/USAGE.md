@@ -160,6 +160,11 @@ HTML 结构（schemaVersion 9）：
 | `leakOnlineEnabled` | Release 轻量线上采样总开关 | `false` |
 | `leakSampleRate` | 会话采样概率 `0`～`1`（`0` 关，`1` 全开） | `0.0` |
 | `onLeakOnlineEvent` | 线上事件回调（面包屑 / `transition_leak`） | `null` |
+| `alertOnWeakRef` | WeakRef 存活出主告警 | `true` |
+| `requireMultiRound` | 仅多轮确认后出 WeakRef 主告警（CI 友好） | `false` |
+| `alertOnSleuthOnly` | 仅 Sleuth hit 也出主告警 | `true` |
+| `alertOnRssRetain` | RSS 辅证告警 | `true` |
+| `leakVmDeepProbe` | MCP opt-in VM GC/allocation 注记（不作唯一门禁） | `false` |
 
 ```json
 "transition": {
@@ -167,9 +172,22 @@ HTML 结构（schemaVersion 9）：
   "transitionSettleMs": 1500,
   "leakConfirmRounds": 2,
   "leakRssRetainMb": 5,
-  "sleuthBindEnabled": true
+  "sleuthBindEnabled": true,
+  "alertOnWeakRef": true,
+  "requireMultiRound": false,
+  "alertOnSleuthOnly": true,
+  "alertOnRssRetain": true,
+  "leakVmDeepProbe": false
 }
 ```
+
+### V3 modal / 门禁 / VM（0.9.0）
+
+- Dialog / BottomSheet / `fullscreenDialog` → `transitionKind`=`modal_dialog`|`modal_sheet`|`modal_page`；无名弹层合成 `#modal/N`
+- 关闭弹层（`from` 为 `#modal/…`）才会跑泄漏探针（与打开弹层区分）
+- example：我的 →「打开泄漏 Dialog」→ 关闭 → 应出现 `transition_memory_leak`（`DialogLeakHolder`）
+- `requireMultiRound: true`：单轮 pop 不出主告警，二轮确认后出
+- `leakVmDeepProbe: true`：WeakRef 泄漏时探针附带 `vmDeep`（无 VM 则 `skipped`）；**不得**单独作 CI 红线
 
 Sleuth 转场绑定（0.8.6）：push 时记录 issue 指纹，pop 后若新增 `heap_growing` / `stream_resource_growth` / `native_memory_growing`，写入探针 `sleuthHits`，`evidence` 可为 `sleuth` 或与 WeakRef 组合。需探测器实际 hit（常要 `--profile`）才会非空。
 
