@@ -26,6 +26,9 @@ class TransitionLeakProbe {
     required this.rssBeforeMb,
     required this.rssAfterMb,
     required this.settleMs,
+    required this.roundIndex,
+    required this.aliveCounts,
+    required this.multiRoundConfirmed,
   });
 
   final String route;
@@ -34,11 +37,26 @@ class TransitionLeakProbe {
   final double? rssAfterMb;
   final int settleMs;
 
+  /// 1-based pop round for this route in the current session.
+  final int roundIndex;
+
+  /// Historical aliveCount after each pop of this route (oldest → newest).
+  final List<int> aliveCounts;
+
+  /// True when last [leakConfirmRounds] counts are all > 0 and non-decreasing.
+  final bool multiRoundConfirmed;
+
   bool get hasLeak => alive.isNotEmpty;
 
   double? get rssDeltaMb {
     if (rssBeforeMb == null || rssAfterMb == null) return null;
     return double.parse((rssAfterMb! - rssBeforeMb!).toStringAsFixed(3));
+  }
+
+  String get multiRoundSummary {
+    if (aliveCounts.isEmpty) return '';
+    final series = aliveCounts.join('→');
+    return '同路由 ${aliveCounts.length} 次进出存活数 [$series]';
   }
 
   Map<String, dynamic> toJson() => {
@@ -49,28 +67,60 @@ class TransitionLeakProbe {
         'rssAfterMb': rssAfterMb,
         'rssDeltaMb': rssDeltaMb,
         'settleMs': settleMs,
-        'evidence': 'weak_ref',
+        'roundIndex': roundIndex,
+        'aliveCounts': aliveCounts,
+        'multiRoundConfirmed': multiRoundConfirmed,
+        'evidence': multiRoundConfirmed ? 'weak_ref_multi' : 'weak_ref',
       };
 }
 
 /// Registers objects per route and checks WeakRef liveness after pop.
 ///
 /// Does **not** call VM forced GC — still-reachable objects are leaks.
+/// V2: keeps per-route [aliveCounts] history for multi-round confirmation.
 class TransitionLeakTracker {
   TransitionLeakTracker._();
   static final TransitionLeakTracker instance = TransitionLeakTracker._();
 
+  /// Master switch (= PRD `leakTrackEnabled`).
   bool enabled = true;
+
+  /// Wait after pop before WeakRef check (= PRD `transitionSettleMs`).
   int settleMs = 1500;
+
+  /// Consecutive pops needed for stair / hold confirmation (PRD default 2).
+  int leakConfirmRounds = 2;
+
   /// RSS retain (MB) for auxiliary alert only.
   double rssRetainMb = 5;
 
   final List<_Tracked> _tracked = [];
   final Map<String, double> _rssAtPush = {};
 
+  /// routeKey → aliveCount after each pop (session-scoped).
+  final Map<String, List<int>> _aliveHistory = {};
+
   void clear() {
     _tracked.clear();
     _rssAtPush.clear();
+    _aliveHistory.clear();
+  }
+
+  /// Apply config from [PerfAgent.ensureInitialized].
+  void configure({
+    bool? enabled,
+    int? settleMs,
+    int? leakConfirmRounds,
+    double? rssRetainMb,
+  }) {
+    if (enabled != null) this.enabled = enabled;
+    if (settleMs != null && settleMs >= 0) this.settleMs = settleMs;
+    if (leakConfirmRounds != null && leakConfirmRounds >= 1) {
+      this.leakConfirmRounds = leakConfirmRounds;
+    }
+    if (rssRetainMb != null && rssRetainMb >= 0) {
+      this.rssRetainMb = rssRetainMb;
+    }
   }
 
   /// Register [resource] as owned by [route] (defaults to current route).
@@ -78,9 +128,8 @@ class TransitionLeakTracker {
     if (!enabled || kReleaseMode) return;
     final r = route ?? PerfNetworkCapture.currentRoute() ?? '(unknown)';
     final n = name ?? resource.runtimeType.toString();
-    _tracked.removeWhere(
-      (t) => identical(t.ref.target, resource) || (t.name == n && t.route == r),
-    );
+    // Only dedupe the same instance — keep multiple same-type leaks for stair counts.
+    _tracked.removeWhere((t) => identical(t.ref.target, resource));
     _tracked.add(
       _Tracked(
         name: n,
@@ -111,7 +160,7 @@ class TransitionLeakTracker {
   }
 
   /// After pop: wait [settleMs], then list registrations for [poppedRoute]
-  /// whose WeakRef is still alive.
+  /// whose WeakRef is still alive; append to multi-round history.
   Future<TransitionLeakProbe> probeAfterPop({
     required String poppedRoute,
     int? settleOverrideMs,
@@ -136,6 +185,15 @@ class TransitionLeakTracker {
       });
     }
 
+    final key = _historyKey(poppedRoute);
+    final history = _aliveHistory.putIfAbsent(key, () => <int>[]);
+    history.add(alive.length);
+    while (history.length > 20) {
+      history.removeAt(0);
+    }
+
+    final multi = _isMultiRoundConfirmed(history);
+
     double? rssAfter;
     try {
       final snap = PerfSnapshot.capture(sleuth: false);
@@ -148,10 +206,25 @@ class TransitionLeakTracker {
       rssBeforeMb: rssBefore,
       rssAfterMb: rssAfter,
       settleMs: wait,
+      roundIndex: history.length,
+      aliveCounts: List<int>.from(history),
+      multiRoundConfirmed: multi,
     );
   }
 
-  /// Build alerts for a pop transition (leak + optional RSS retain).
+  /// Last [leakConfirmRounds] counts are all > 0 and non-decreasing (stair/hold).
+  bool _isMultiRoundConfirmed(List<int> history) {
+    final n = leakConfirmRounds;
+    if (history.length < n) return false;
+    final window = history.sublist(history.length - n);
+    if (window.any((c) => c <= 0)) return false;
+    for (var i = 1; i < window.length; i++) {
+      if (window[i] < window[i - 1]) return false;
+    }
+    return true;
+  }
+
+  /// Build alerts for a pop transition (leak + optional RSS retain / jank).
   List<AlertItem> alertsForProbe({
     required TransitionLeakProbe probe,
     required String stepId,
@@ -163,13 +236,16 @@ class TransitionLeakTracker {
     final out = <AlertItem>[];
     if (probe.hasLeak) {
       final names = probe.alive.map((e) => e['name']).join(', ');
+      final multiNote = probe.multiRoundConfirmed
+          ? '；多轮确认：${probe.multiRoundSummary}'
+          : '';
       out.add(
         AlertItem(
           type: 'transition_memory_leak',
           stepId: stepId,
           action: action,
           message:
-              'pop ${probe.route} 后仍可达: $names（WeakRef，未强制 GC）',
+              'pop ${probe.route} 后仍可达: $names（WeakRef，未强制 GC）$multiNote',
           value: probe.toJson(),
         ),
       );
@@ -215,9 +291,10 @@ class TransitionLeakTracker {
     return out;
   }
 
+  static String _historyKey(String route) => route.split('#').first;
+
   static bool _routeMatch(String a, String b) {
     if (a == b) return true;
-    // Match base path ignoring tab hash: /home#mine vs /home
     return a.split('#').first == b.split('#').first;
   }
 }

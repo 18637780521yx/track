@@ -5,6 +5,7 @@ import 'profile_controller.dart';
 class ProfileBinding extends Bindings {
   @override
   void dependencies() {
-    Get.lazyPut(ProfileController.new);
+    // 每次 push 新建，pop 后仍被 [ProfilePushController.demoRetain] 握住。
+    Get.lazyPut(ProfilePushController.new, fenix: true);
   }
 }

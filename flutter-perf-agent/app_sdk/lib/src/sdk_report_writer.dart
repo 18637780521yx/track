@@ -58,7 +58,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.1',
+      'version': '0.8.2',
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
       'envelope': 'code/data/msg',
@@ -137,6 +137,73 @@ class SdkReportWriter {
     await File(liveHtml).writeAsString(buildHtmlReport(liveReport));
 
     debugPrint('[SdkReportWriter] wrote $jsonPath (MCP-compatible HTML)');
+    return SdkReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
+  }
+
+  /// Mid-session live overlay (same HTML as final / manual).
+  static Future<SdkReportPaths> writeLive({
+    required String sessionId,
+    required String testName,
+    required DateTime startedAt,
+    required String reportsDir,
+    required List<StepResult> steps,
+    required List<AlertItem> alerts,
+    String? mode,
+    Map<String, dynamic>? thresholds,
+  }) async {
+    final dir = Directory(reportsDir);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    final now = DateTime.now();
+    final thr = thresholds ??
+        const {
+          'maxFrameCostMs': 16,
+          'memoryIncreaseWarningMB': 5,
+          'slowRequestMs': 300,
+          'ttffWarningMs': 1500,
+        };
+    final mcpSteps = steps.where((s) => s.extra['source'] == 'mcp').length;
+    final manualSteps =
+        steps.where((s) => s.extra['source'] == 'manual').length;
+    final stepsJson =
+        steps.map((s) => s.toJson(includeScreenshotDataUri: false)).toList();
+    final body = <String, dynamic>{
+      'schemaVersion': 9,
+      'agent': 'flutter-perf-agent',
+      'phase': 'sleuth_full',
+      'version': '0.8.2',
+      'live': true,
+      'metricsSource': 'sleuth_bridge',
+      'reportOwner': 'app_sdk',
+      'envelope': 'code/data/msg',
+      'sessionId': sessionId,
+      'testName': testName,
+      'mode': mode,
+      'startedAt': startedAt.toIso8601String(),
+      'updatedAt': now.toIso8601String(),
+      'durationMs': now.difference(startedAt).inMilliseconds,
+      'thresholds': thr,
+      'steps': stepsJson,
+      'alerts': alerts.map((a) => a.toJson()).toList(),
+      'summary': {
+        'stepCount': steps.length,
+        'alertCount': alerts.length,
+        'okSteps': steps.where((s) => s.ok).length,
+        'networkRequestCount':
+            steps.fold<int>(0, (n, s) => n + s.networkRequests.length),
+        'mcpSteps': mcpSteps,
+        'manualSteps': manualSteps,
+      },
+      'note': 'Live — App SDK 账本（与手动同款 HTML）；stop 写出最终报告。',
+    };
+    final report = {...body, 'view': buildReportView(body)};
+    final jsonPath = p.join(reportsDir, 'live_$sessionId.json');
+    final htmlPath = p.join(reportsDir, 'live_$sessionId.html');
+    await File(jsonPath).writeAsString(
+      const JsonEncoder.withIndent('  ').convert(report),
+    );
+    await File(htmlPath).writeAsString(buildHtmlReport(report));
     return SdkReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }
 }

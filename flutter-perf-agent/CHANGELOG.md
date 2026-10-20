@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.2 — 转场 V2：多轮泄漏确认 + MCP/手动报告统一
+
+- `TransitionLeakTracker`：按路由记录每次 pop 后 `aliveCount`；`leakConfirmRounds`（默认 2）连续非递减且均 >0 → `evidence=weak_ref_multi`
+- `PerfAgent.ensureInitialized`：`leakTrackEnabled` / `transitionSettleMs` / `leakConfirmRounds` / `leakRssRetainMb`
+- 探针 JSON：`roundIndex`、`aliveCounts`、`multiRoundConfirmed`；HTML 转场段展示多轮摘要
+- example：`ProfilePushController` +「打开独立个人页」按钮，故意 `demoRetain` 握持，便于多轮告警验收
+- **报告统一**：MCP 全量 upsert 路由章到 App SDK 账本；`stop_perf_test` / live 以 SDK HTML 为准（与手动同款），不再双份 MCP 大报告
+- **本轮不做**：GetX/Navigator 全局自动 hook、Sleuth stream 绑定、线上采样、§9
+
 ## 0.8.1 — 全量抓包对齐 Sleuth 代理模型
 
 - 关闭 example 的 `enableNetworkMonitoring`，由 PerfAgent 独占 `HttpOverrides`

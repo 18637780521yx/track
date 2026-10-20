@@ -203,6 +203,7 @@ class ActionRunner {
       },
     );
     session.addStep(step);
+    await _mirrorToSdkJournal(step);
     return step;
   }
 
@@ -480,12 +481,18 @@ class ActionRunner {
               final names = alive
                   .map((e) => e is Map ? e['name'] : e)
                   .join(', ');
+              final multi = leakJson['multiRoundConfirmed'] == true;
+              final counts = (leakJson['aliveCounts'] as List?) ?? const [];
+              final multiNote = multi && counts.isNotEmpty
+                  ? '；多轮确认：同路由 ${counts.length} 次进出存活数 '
+                      '[${counts.join('→')}]'
+                  : '';
               final leakAlert = AlertItem(
                 type: 'transition_memory_leak',
                 stepId: chapter.stepId,
                 action: actionLabel,
                 message:
-                    'pop $routeBefore 后仍可达: $names（WeakRef，未强制 GC）',
+                    'pop $routeBefore 后仍可达: $names（WeakRef，未强制 GC）$multiNote',
                 value: leakJson,
               );
               alerts.add(leakAlert);
@@ -612,17 +619,8 @@ class ActionRunner {
       'net=${sourceNet.length} nav=$routeChanged',
     );
 
-    // Mirror this action into App SDK unified journal (MCP + manual share).
-    unawaited(_mirrorToSdkJournal(
-      action: action,
-      actionLabel: actionLabel,
-      ok: ok,
-      driver: driver,
-      route: routeBefore,
-      diff: diff,
-      actionResult: actionResult,
-      alerts: alerts,
-    ));
+    // Mirror full chapter into App SDK journal (same schema as manual).
+    await _mirrorToSdkJournal(updated);
 
     if (!routeChanged) {
       return updated;
@@ -668,6 +666,7 @@ class ActionRunner {
       },
     );
     session.addStep(land);
+    await _mirrorToSdkJournal(land);
     _log('land chapter $routeAfter ($landId) net=${destNet.length}');
     return land;
   }
@@ -793,50 +792,16 @@ class ActionRunner {
     return path;
   }
 
-  Future<void> _mirrorToSdkJournal({
-    required String action,
-    required String actionLabel,
-    required bool ok,
-    required String driver,
-    required String route,
-    required PerfDiffData diff,
-    required ActionResult actionResult,
-    required List<AlertItem> alerts,
-  }) async {
+  /// Upsert full route-chapter into App SDK journal (paths only, no data URI).
+  Future<void> _mirrorToSdkJournal(StepResult step) async {
     try {
-      final at = DateTime.now().toIso8601String();
-      final step = StepResult(
-        stepId: 'mcp_${DateTime.now().millisecondsSinceEpoch}',
-        action: 'route:$route',
-        route: route,
-        ok: ok,
-        driver: driver,
-        actionResult: actionResult,
-        diff: diff,
-        alerts: alerts,
-        events: [
-          StepEvent(
-            type: 'action',
-            at: at,
-            label: actionLabel,
-            ok: ok,
-            detail: {
-              'source': 'mcp',
-              'kind': action,
-              if (actionResult.error != null) 'error': actionResult.error,
-            },
-          ),
-        ],
-        at: at,
-        extra: {
-          'source': 'mcp',
-          'kind': action,
-          'cause': actionLabel,
-          'actions': [actionLabel],
-        },
-      );
+      final extra = Map<String, dynamic>.from(step.extra);
+      extra.putIfAbsent('source', () => 'mcp');
+      final payload = step
+          .copyWith(extra: extra)
+          .toJson(includeScreenshotDataUri: false);
       await bridge.appendStep(
-        step: step.toJson(includeScreenshotDataUri: false),
+        step: payload,
         sessionId: session.sessionId,
         testName: session.testName,
       );

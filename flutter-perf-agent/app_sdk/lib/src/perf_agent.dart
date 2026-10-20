@@ -5,6 +5,8 @@ import 'bridge_server.dart';
 import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
 import 'session_journal.dart';
+import 'transition_leak_tracker.dart';
+import 'transition_ledger.dart';
 
 /// Entry point for embedding Flutter-Perf-Agent into a Flutter app.
 class PerfAgent {
@@ -38,6 +40,14 @@ class PerfAgent {
     bool enableManualRecording = true,
     bool autoSessionOnManual = true,
     String reportsDir = 'reports',
+    /// PRD `leakTrackEnabled` — WeakRef transition leak probes.
+    bool leakTrackEnabled = true,
+    /// PRD `transitionSettleMs` — wait after pop before WeakRef check.
+    int transitionSettleMs = 1500,
+    /// PRD `leakConfirmRounds` — consecutive pops for stair/hold confirm.
+    int leakConfirmRounds = 2,
+    /// RSS retain (MB) auxiliary alert threshold.
+    double leakRssRetainMb = 5,
   }) async {
     if (_initialized) return;
     _initialized = true;
@@ -50,6 +60,14 @@ class PerfAgent {
     SessionJournal.instance.manualRecording = enableManualRecording;
     SessionJournal.instance.autoSessionOnManual = autoSessionOnManual;
     SessionJournal.instance.reportsDir = reportsDir;
+
+    TransitionLeakTracker.instance.configure(
+      enabled: leakTrackEnabled,
+      settleMs: transitionSettleMs,
+      leakConfirmRounds: leakConfirmRounds,
+      rssRetainMb: leakRssRetainMb,
+    );
+    TransitionLedger.instance.settleMs = transitionSettleMs;
 
     if (enableFlutterSkill) {
       FlutterSkillBinding.ensureInitialized();

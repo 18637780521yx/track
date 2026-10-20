@@ -93,13 +93,47 @@ class SessionJournal {
   void addStep(StepResult step) {
     if (!isActive) return;
     steps.add(step);
-    for (final a in step.alerts) {
-      alerts.add(a);
+    _rebuildAlerts();
+  }
+
+  /// MCP 路由章会多次 upsert 同一 [stepId]；手动仍用 [addStep] 追加。
+  void upsertStep(StepResult step) {
+    if (!isActive) return;
+    final i = steps.indexWhere((s) => s.stepId == step.stepId);
+    if (i >= 0) {
+      steps[i] = step;
+    } else {
+      steps.add(step);
     }
+    _rebuildAlerts();
   }
 
   void addStepFromJson(Map<String, dynamic> json) {
-    addStep(StepResult.fromJson(json));
+    upsertStep(StepResult.fromJson(json));
+  }
+
+  void upsertStepFromJson(Map<String, dynamic> json) {
+    upsertStep(StepResult.fromJson(json));
+  }
+
+  void _rebuildAlerts() {
+    alerts
+      ..clear()
+      ..addAll([for (final s in steps) ...s.alerts]);
+  }
+
+  /// Refresh `live_<sessionId>.{json,html}` from the current journal.
+  Future<SdkReportPaths?> writeLiveReport() async {
+    if (!isActive || startedAt == null || steps.isEmpty) return null;
+    return SdkReportWriter.writeLive(
+      sessionId: sessionId!,
+      testName: testName ?? 'unnamed',
+      startedAt: startedAt!,
+      mode: mode,
+      reportsDir: reportsDir,
+      steps: List<StepResult>.from(steps),
+      alerts: List<AlertItem>.from(alerts),
+    );
   }
 
   Future<SdkReportPaths?> stopAndWriteReport({

@@ -236,15 +236,15 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **V1** | push/pop；资源 track/WeakRef；pop 后仍可达 → `transition_memory_leak`；转场 jank；RSS 辅证；**默认不做强制 GC** | 已实现（0.8.0） |
-| **V2** | 多轮确认；GetX/Navigator 自动 hook；Sleuth 绑定；线上采样率与上报契约 | 规划 |
+| **V2** | **多轮确认**（`leakConfirmRounds` + `aliveCounts` / `weak_ref_multi`）；配置透传 | **部分已实现（0.8.2）**；GetX/Navigator 自动 hook、Sleuth 绑定、线上采样仍规划 |
 | **V3** | opt-in VM 深挖；modal/Hero；门禁策略 | 规划 |
 
 #### E. 配置扩展
 
-- `transitionSettleMs`  
-- `leakConfirmRounds`  
-- `leakTrackEnabled` / 采样率（线上）  
-- `leakVmDeepProbe`（默认 `false`）  
+- `transitionSettleMs`（`PerfAgent.ensureInitialized`，已接）  
+- `leakConfirmRounds`（已接，默认 2）  
+- `leakTrackEnabled`（已接） / 采样率（线上，规划）  
+- `leakVmDeepProbe`（默认 `false`，规划）  
 - 沿用 `maxFrameCostMs` 判转场卡顿
 
 ### 4.4 配置能力
@@ -253,7 +253,8 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
   - maxFrameCostMs：单帧最大耗时阈值（默认16ms）
   - memoryIncreaseWarningMB：单次内存上涨告警阈值（默认5MB）
   - slowRequestMs：慢接口阈值（默认300ms）
-  - （规划）transitionSettleMs / leakConfirmRounds / leakTrackEnabled / leakVmDeepProbe — 见 4.3.3
+  - App SDK：`transitionSettleMs` / `leakConfirmRounds` / `leakTrackEnabled`（见 4.3.3；MCP JSON 配置待对齐）
+  - （规划）leakVmDeepProbe / 线上采样率
 - 页面等待稳定默认时长
 - 是否开启网络采集开关
 - 是否开启Widget反模式检测开关
@@ -309,9 +310,9 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 5. 示例流程：登录 -> 进入列表页 -> 滑动列表，完整跑完，无崩溃，指标正常采集
 6. **统一账本**：仅手动操作（不经 MCP）也能开会话、记录点击目标、停止后得到 JSON/HTML；MCP 与手动步骤可出现在同一份报告，步骤带 `source`
 7. **报告信息架构**：HTML 主视图为全会话时间线；模块（启动/页面/转场/告警）作为时间线内的段，段内嵌事件；无时间线外独立「模块大区」堆叠；JSON 含派生 `view.timeline`
-8. **转场真泄漏（随 4.3.3 V1 落地验收）**：pop 后基于资源 track/WeakRef（仍可达）或可复现的多轮阶梯产出 `transition_memory_leak`，**不依赖强制 GC**；RSS 仅辅证；VM 深挖为 opt-in；另有 `transition_jank`
+8. **转场真泄漏（4.3.3 V1 + V2 多轮）**：pop 后基于资源 track/WeakRef（仍可达）产出 `transition_memory_leak`；同路由 ≥`leakConfirmRounds` 次进出存活数非递减 → `evidence=weak_ref_multi`；**不依赖强制 GC**；RSS 仅辅证；VM 深挖为 opt-in；另有 `transition_jank`
 
-## 9. 未来迭代路线（V2规划，本次不实现）
+## 9. 未来迭代路线（大项规划；转场多轮确认已在 0.8.2 / §4.3.3 V2 部分落地）
 1. 性能指标回归对比：对比上一版本测试指标，自动判断性能退化
 2. 导出DevTools完整trace文件，和操作标记对齐
 3. 支持批量用例、CI流水线集成
@@ -319,7 +320,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 5. 增加录制回放功能
 6. 支持WebView页面测试
 7. 增加AI自动性能根因分析（基于采集指标，给出优化代码建议）
-8. 转场 V2/V3：动画窗精确帧采样、push↔pop 配对账本、routeHealth、modal/Hero 细分（详见 4.3.3）
+8. 转场 V2 剩余 / V3：GetX/Navigator 自动 hook、Sleuth 绑定、线上采样、动画窗精确帧、modal/Hero（详见 4.3.3）
 
 ## 10. 目录结构建议（项目仓库）
 ```

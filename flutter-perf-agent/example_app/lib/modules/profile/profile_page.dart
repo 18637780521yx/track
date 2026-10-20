@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
+import '../../app/routes/app_routes.dart';
+import '../../app/services/auth_service.dart';
 import 'profile_controller.dart';
 
 class ProfilePage extends GetView<ProfileController> {
@@ -11,17 +13,13 @@ class ProfilePage extends GetView<ProfileController> {
 
   @override
   Widget build(BuildContext context) {
-    final body = _buildBody(context);
-    if (embedded) return body;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('个人中心', key: Key('profile_title')),
-      ),
-      body: body,
-    );
+    if (!embedded) {
+      return const _ProfilePushPage();
+    }
+    return _buildBody(context, controller);
   }
 
-  Widget _buildBody(BuildContext context) {
+  Widget _buildBody(BuildContext context, ProfileController controller) {
     final auth = controller.auth;
     return Obx(() {
       final uploading = controller.busy.value;
@@ -143,6 +141,19 @@ class ProfilePage extends GetView<ProfileController> {
                     label: const Text('修改昵称'),
                   ),
                 ),
+                if (embedded) ...[
+                  const SizedBox(height: 12),
+                  Semantics(
+                    label: '打开独立个人页',
+                    button: true,
+                    child: FilledButton.tonalIcon(
+                      key: const Key('open_profile_push_button'),
+                      onPressed: () => Get.toNamed(AppRoutes.profile),
+                      icon: const Icon(Icons.open_in_new),
+                      label: const Text('打开独立个人页（泄漏多轮演示）'),
+                    ),
+                  ),
+                ],
                 const Spacer(),
                 Semantics(
                   label: '退出登录按钮',
@@ -173,5 +184,55 @@ class ProfilePage extends GetView<ProfileController> {
         ],
       );
     });
+  }
+}
+
+/// Full-screen `/profile` push：每次进出登记一次，配合 demoRetain 出多轮泄漏。
+class _ProfilePushPage extends GetView<ProfilePushController> {
+  const _ProfilePushPage();
+
+  @override
+  Widget build(BuildContext context) {
+    // 必须触达 controller，lazyPut 才会 onInit → track + demoRetain。
+    final _ = controller;
+    final auth = Get.find<AuthService>();
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('个人中心', key: Key('profile_title')),
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Obx(
+              () => Text(
+                auth.displayName.value.isNotEmpty
+                    ? auth.displayName.value
+                    : '未命名用户',
+                key: const Key('profile_name'),
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              '泄漏多轮演示页：返回后再进一次，报告应出现 weak_ref_multi',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
+            const Spacer(),
+            Text(
+              '已保留实例数：${ProfilePushController.demoRetain.length}',
+              key: const Key('profile_leak_retain_count'),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
+    );
   }
 }

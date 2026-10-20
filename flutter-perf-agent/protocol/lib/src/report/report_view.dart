@@ -288,27 +288,51 @@ DateTime? _navigateAtInStep(List rawEvents) {
   return null;
 }
 
-/// If navigate.to == some event.route and navigate.at is later, pull it back.
+/// If navigate was stamped after dest activity of **this** transition
+/// (e.g. network on landing fired before navigate was recorded), pull it back.
+///
+/// Lower bound is the previous navigate (by original time). Never clamp against
+/// earlier visits to the same route — that created orphan leading transitions.
 void _clampNavigateBeforeDestination(List<Map<String, dynamic>> events) {
-  for (final nav in events) {
-    if (nav['type']?.toString() != 'navigate') continue;
+  final navs = <Map<String, dynamic>>[
+    for (final e in events)
+      if (e['type']?.toString() == 'navigate') e,
+  ];
+  final origAt = <Map<String, dynamic>, DateTime>{};
+  for (final nav in navs) {
+    final t = DateTime.tryParse(nav['at']?.toString() ?? '');
+    if (t != null) origAt[nav] = t;
+  }
+  navs.retainWhere(origAt.containsKey);
+  navs.sort((a, b) => origAt[a]!.compareTo(origAt[b]!));
+
+  for (var i = 0; i < navs.length; i++) {
+    final nav = navs[i];
+    final navAt = origAt[nav]!;
     final detail =
         (nav['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
     final to = detail['to']?.toString();
     if (to == null || to.isEmpty) continue;
+
+    final lower = i > 0
+        ? origAt[navs[i - 1]]!
+        : navAt.subtract(const Duration(seconds: 5));
+
     DateTime? earliestOnDest;
     for (final e in events) {
       if (identical(e, nav)) continue;
+      final et = e['type']?.toString();
+      if (et == 'navigate' || et == 'alert') continue;
       if (e['route']?.toString() != to) continue;
       final t = DateTime.tryParse(e['at']?.toString() ?? '');
       if (t == null) continue;
+      if (!t.isAfter(lower)) continue;
+      if (!t.isBefore(navAt)) continue;
       if (earliestOnDest == null || t.isBefore(earliestOnDest)) {
         earliestOnDest = t;
       }
     }
     if (earliestOnDest == null) continue;
-    final navAt = DateTime.tryParse(nav['at']?.toString() ?? '');
-    if (navAt != null && navAt.isBefore(earliestOnDest)) continue;
     nav['at'] = earliestOnDest
         .subtract(const Duration(milliseconds: 1))
         .toIso8601String();

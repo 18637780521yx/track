@@ -1,3 +1,5 @@
+import 'package:flutter_skill/flutter_skill.dart';
+import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_perf_agent/flutter_perf_agent.dart';
@@ -26,6 +28,9 @@ Future<void> main() async {
       autoSessionOnManual: true,
       // Shared with mcp_server/perf_agent_config.json reportsDir when cwd is repo.
       reportsDir: 'reports',
+      leakTrackEnabled: true,
+      transitionSettleMs: 1500,
+      leakConfirmRounds: 2,
     );
   }
 

@@ -124,7 +124,7 @@ packages:
       path: "../app_sdk"
       relative: true
     source: path
-    version: "0.8.0"
+    version: "0.8.2"
   flutter_perf_agent_protocol:
     dependency: transitive
     description:

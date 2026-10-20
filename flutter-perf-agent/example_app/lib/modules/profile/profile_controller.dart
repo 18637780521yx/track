@@ -4,8 +4,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
+import '../../app/routes/app_routes.dart';
 import '../../app/services/auth_service.dart';
 import '../../demo_api.dart';
+
+/// Push `/profile` 专用：故意保留强引用，便于 V2 多轮 WeakRef 演示。
+class ProfilePushController extends GetxController with PerfLeakTrackMixin {
+  static final List<ProfilePushController> demoRetain = [];
+
+  @override
+  void onInit() {
+    super.onInit();
+    if (!kReleaseMode) {
+      demoRetain.add(this);
+      perfTrackLeak(route: AppRoutes.profile);
+    }
+  }
+}
 
 class ProfileController extends GetxController with PerfLeakTrackMixin {
   AuthService get auth => Get.find<AuthService>();
@@ -15,6 +30,7 @@ class ProfileController extends GetxController with PerfLeakTrackMixin {
   @override
   void onInit() {
     super.onInit();
+    // Tab 内嵌：正确登记 + untrack（多轮演示走 [ProfilePushController]）。
     if (!kReleaseMode) perfTrackLeak();
     refreshProfile();
   }

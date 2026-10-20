@@ -343,11 +343,26 @@ String _transitionExtrasHtml(Map<String, dynamic> seg) {
     final names = alive
         .map((e) => e is Map ? e['name']?.toString() ?? '?' : e.toString())
         .join(', ');
+    final evidence = leak['evidence']?.toString() ?? 'weak_ref';
     buf.writeln(
-      '<p class="badge bad">泄漏 WeakRef ×$aliveCount：${_esc(names)}</p>',
+      '<p class="badge bad">泄漏 WeakRef ×$aliveCount：${_esc(names)}'
+      ' · <code>${_esc(evidence)}</code></p>',
     );
   } else {
     buf.writeln('<p class="muted">WeakRef 探针：无仍可达对象</p>');
+  }
+  final counts = (leak['aliveCounts'] as List?) ?? const [];
+  if (counts.length >= 2) {
+    final series = counts.map((e) => e.toString()).join('→');
+    final multi = leak['multiRoundConfirmed'] == true;
+    final round = leak['roundIndex'];
+    buf.writeln(
+      multi
+          ? '<p class="badge bad">多轮确认：同路由 ${counts.length} 次进出 '
+              '存活数 [$series]（round $round）</p>'
+          : '<p class="muted">多轮：同路由 ${counts.length} 次进出 '
+              '存活数 [$series]（round $round）</p>',
+    );
   }
   if (rssDelta != null) {
     buf.writeln(

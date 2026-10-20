@@ -83,6 +83,13 @@ class BridgeClient {
     );
   }
 
+  /// Refresh App SDK live report (same HTML as manual).
+  Future<ApiResponse<Map<String, dynamic>>> writeLiveReport() => _post(
+        '/session/live',
+        const {},
+        (raw) => _asMap(raw),
+      );
+
   /// Suppress manual gesture recording while MCP drives UI.
   Future<ApiResponse<Map<String, dynamic>>> mcpGuard({required bool active}) {
     return _post(

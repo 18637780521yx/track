@@ -80,10 +80,11 @@ get_sleuth_route_health
 
 | 来源 | 怎么记步骤 | 怎么出报告 |
 |------|------------|------------|
-| MCP | 每步 `POST /session/step`（自动） | `stop_perf_test` → `sdkReportPath` |
+| MCP | 每步全量 upsert 路由章到 App SDK 账本 | `stop_perf_test` → **仅** `app_sdk` HTML（与手动同款） |
 | 手动 | 点击 hitTest（key/文案/hint） | App 顶栏「结束」或 Bridge `POST /session/stop` |
 
-手动用法：跑 `example_app`（debug/profile）→ 直接点界面（首次点击可自动开会话）→ 点顶栏 **结束** → 看 `reports/sdk_*.json` / `.html`。步骤带 `source=mcp|manual`。
+手动用法：跑 `example_app`（debug/profile）→ 直接点界面（首次点击可自动开会话）→ 点顶栏 **结束** → 看 `reports/*_<sessionId>.json` / `.html`。步骤带 `source=mcp|manual`。  
+MCP 不再另写一份大 HTML；`live_<sessionId>.html` 也由 SDK 账本刷新。
 
 ### flutter_skill（skill_call）
 
@@ -137,7 +138,7 @@ HTML 结构（schemaVersion 9）：
 
 ## 配置调参
 
-编辑 `perf_agent_config.json`：
+编辑 `perf_agent_config.json`（MCP）：
 
 | 字段 | 含义 |
 |------|------|
@@ -147,3 +148,14 @@ HTML 结构（schemaVersion 9）：
 | `maxRetries` | flutter_skill 重试次数 |
 | `captureScreenshots` | 是否截图 |
 | `thresholds.*` | 告警阈值 |
+
+App SDK（`PerfAgent.ensureInitialized`）转场泄漏：
+
+| 字段 | 含义 | 默认 |
+|------|------|------|
+| `leakTrackEnabled` | WeakRef 转场泄漏探针 | `true` |
+| `transitionSettleMs` | pop 后 settle 再检 WeakRef | `1500` |
+| `leakConfirmRounds` | 连续进出确认轮数（阶梯/持平） | `2` |
+| `leakRssRetainMb` | RSS 辅证阈值（MB） | `5` |
+
+手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持）。

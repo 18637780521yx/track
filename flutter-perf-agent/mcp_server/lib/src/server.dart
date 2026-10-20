@@ -232,13 +232,28 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final session = _session;
     if (session == null) return {};
     try {
-      final live = await _reports.writeLiveReports(session);
+      // Prefer App SDK live (same HTML as manual); mirror already refreshed it.
+      final live = await _bridge.writeLiveReport();
+      if (live.isOk && live.data != null) {
+        final d = live.data!;
+        return {
+          'liveReportPath': d['liveJsonPath'],
+          'liveHtmlReportPath': d['liveHtmlPath'],
+          'sessionId': d['sessionId'] ?? session.sessionId,
+          'stepCount': d['stepCount'] ?? session.steps.length,
+          'alertCount': session.alerts.length,
+          'reportOwner': 'app_sdk',
+        };
+      }
+      // Fallback: MCP-side live if bridge journal unavailable.
+      final mcpLive = await _reports.writeLiveReports(session);
       return {
-        'liveReportPath': live.jsonPath,
-        'liveHtmlReportPath': live.htmlPath,
+        'liveReportPath': mcpLive.jsonPath,
+        'liveHtmlReportPath': mcpLive.htmlPath,
         'sessionId': session.sessionId,
         'stepCount': session.steps.length,
         'alertCount': session.alerts.length,
+        'reportOwner': 'mcp_server',
       };
     } catch (e) {
       if (config.debugLog) {
@@ -437,7 +452,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final sleuthSum = await _bridge.sleuthSummary(topN: 10);
     final sleuthFinal = await _bridge.sleuthSnapshot();
 
-    // App SDK writes the authoritative report (MCP + manual journal).
+    // App SDK journal is authoritative (same HTML/schema as manual).
     final stop = await _bridge.stopSession(writeReport: true);
 
     String? snapshotPath;
@@ -451,26 +466,30 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         },
       );
     }
-    // PC-side copy kept for route-chapter HTML; prefer SDK paths in summary.
-    final paths = await _reports.writeReports(
-      session,
-      sleuthFinal: sleuthFinal.data,
-      sleuthDiagnose: sleuthDiag.data,
-      sleuthSummaryMarkdown: sleuthSum.data?.markdown,
-    );
-    await _disposeSkill();
+
     final sdkJson = stop.data?.reportJsonPath;
     final sdkHtml = stop.data?.reportHtmlPath;
+    // Fallback only if SDK journal empty / bridge failed.
+    ReportPaths? mcpFallback;
+    if (sdkJson == null || sdkHtml == null) {
+      mcpFallback = await _reports.writeReports(
+        session,
+        sleuthFinal: sleuthFinal.data,
+        sleuthDiagnose: sleuthDiag.data,
+        sleuthSummaryMarkdown: sleuthSum.data?.markdown,
+      );
+    }
+    await _disposeSkill();
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
-      'reportPath': sdkJson ?? paths.jsonPath,
-      'htmlReportPath': sdkHtml ?? paths.htmlPath,
+      'reportPath': sdkJson ?? mcpFallback?.jsonPath,
+      'htmlReportPath': sdkHtml ?? mcpFallback?.htmlPath,
       'reportOwner': sdkJson != null ? 'app_sdk' : 'mcp_server',
       if (sdkJson != null) 'sdkReportPath': sdkJson,
       if (sdkHtml != null) 'sdkHtmlReportPath': sdkHtml,
-      'mcpReportPath': paths.jsonPath,
-      'mcpHtmlReportPath': paths.htmlPath,
+      if (mcpFallback != null) 'mcpReportPath': mcpFallback.jsonPath,
+      if (mcpFallback != null) 'mcpHtmlReportPath': mcpFallback.htmlPath,
       if (snapshotPath != null) 'snapshotPath': snapshotPath,
       'stepCount': stop.data?.stepCount ?? session.steps.length,
       'alertCount': stop.data?.alertCount ?? session.alerts.length,
@@ -487,7 +506,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       }(),
       'bridgeStop': stop.toJson(),
       'metricsSource': 'sleuth_bridge',
-      'version': '0.7.0',
+      'version': '0.8.2',
+      'note': '报告权威在 App SDK（与手动同款 HTML）；MCP 仅在 SDK 失败时回退写出。',
     };
     _session = null;
     _vmWsUri = null;

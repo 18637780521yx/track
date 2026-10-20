@@ -16,6 +16,11 @@ Future<void> main(List<String> args) async {
   final htmlPath = p.setExtension(jsonPath, '.html');
   final report =
       jsonDecode(await File(jsonPath).readAsString()) as Map<String, dynamic>;
+  // Recompute view (timeline clamp etc.) then HTML.
+  report['view'] = buildReportView(report);
+  await File(jsonPath).writeAsString(
+    const JsonEncoder.withIndent('  ').convert(report),
+  );
   await File(htmlPath).writeAsString(buildHtmlReport(report));
-  stdout.writeln('rewrote $htmlPath');
+  stdout.writeln('rewrote $jsonPath + $htmlPath');
 }

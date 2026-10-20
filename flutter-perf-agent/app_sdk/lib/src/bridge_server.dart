@@ -13,6 +13,7 @@ import 'package:shelf_router/shelf_router.dart';
 import 'bridge_discovery.dart';
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
+import 'sdk_report_writer.dart';
 import 'session_journal.dart';
 import 'sleuth_facade.dart';
 import 'transition_leak_tracker.dart';
@@ -126,6 +127,7 @@ class PerfBridgeServer {
       ..post('/session/start', _sessionStart)
       ..post('/session/stop', _sessionStop)
       ..post('/session/step', _sessionStep)
+      ..post('/session/live', _sessionLive)
       ..get('/session/journal', _sessionJournal)
       ..post('/session/mcp_guard', _sessionMcpGuard)
       ..get('/snapshot', _snapshot)
@@ -360,10 +362,44 @@ class PerfBridgeServer {
         : <String, dynamic>{};
     extra.putIfAbsent('source', () => 'mcp');
     map['extra'] = extra;
-    journal.addStepFromJson(map);
+    // MCP ActionRunner 同章多次推送：按 stepId upsert，与手动账本结构对齐。
+    journal.upsertStepFromJson(map);
+    SdkReportPaths? live;
+    try {
+      live = await journal.writeLiveReport();
+    } catch (e) {
+      debugPrint('[PerfBridge] live report after step failed: $e');
+    }
     return _envelope(
       ApiResponse.ok({
         'ok': true,
+        'stepCount': journal.steps.length,
+        'sessionId': journal.sessionId,
+        if (live != null) 'liveJsonPath': live.jsonPath,
+        if (live != null) 'liveHtmlPath': live.htmlPath,
+      }),
+    );
+  }
+
+  Future<Response> _sessionLive(Request request) async {
+    final journal = SessionJournal.instance;
+    if (!journal.isActive) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.noSession, 'no active session'),
+        httpStatus: 400,
+      );
+    }
+    final live = await journal.writeLiveReport();
+    if (live == null) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.badRequest, 'no steps to write live report'),
+        httpStatus: 400,
+      );
+    }
+    return _envelope(
+      ApiResponse.ok({
+        'liveJsonPath': live.jsonPath,
+        'liveHtmlPath': live.htmlPath,
         'stepCount': journal.steps.length,
         'sessionId': journal.sessionId,
       }),
