@@ -108,6 +108,21 @@ class MyController extends PerfGetxController { ... }
 
 `PerfDi` / mixin 默认 **不**在 `onClose` 从登记表摘掉（外部强引用仍可通过 WeakRef 检出）。长寿页可设 `leakUntrackOnClose => true` 降噪。
 
+## 6.1 线上采样（0.8.7）
+
+Release 默认仍 noop。需要线上轻量观测时：
+
+```dart
+await PerfAgent.ensureInitialized(
+  leakOnlineEnabled: true,
+  leakSampleRate: 0.01,
+  onLeakOnlineEvent: (e) { /* 接宿主埋点 */ },
+);
+// navigatorObservers: PerfAgent.navigatorObservers
+```
+
+不启 Bridge / Sleuth / 截图。事件类型：`route_breadcrumb`、`transition_leak`。
+
 ## 7. 可信性能数据
 
 ```bash

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.7 — 线上采样首刀
+
+- `leakOnlineEnabled` / `leakSampleRate` / `onLeakOnlineEvent`：Release 可按会话采样开启轻量 WeakRef 转场观测
+- `LeakOnline`：路由面包屑 + pop 后 `transition_leak` 事件（ring buffer≤64 + 宿主回调）；**无** Bridge / Sleuth 绑定 / 截图 / 手动录制
+- `TransitionLeakTracker.track` / `PerfDi` / mixin / `navigatorObservers`：release 仅在 `LeakOnline.active` 时放行
+- example：`--dart-define=LEAK_ONLINE=true` 验收（默认关闭）
+- **本轮不做**：远程上报、多会话聚合看板、崩溃联动后端
+
 ## 0.8.6 — Sleuth 转场绑定
 
 - `SleuthTransitionBinder`：push 时 stamp issue 指纹，pop settle 后差分 allowlist（`heap_growing` / `stream_resource_growth` / `native_memory_growing`）

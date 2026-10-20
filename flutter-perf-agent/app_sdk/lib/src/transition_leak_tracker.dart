@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
+import 'leak_online.dart';
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
 import 'sleuth_transition_binder.dart';
@@ -150,9 +151,13 @@ class TransitionLeakTracker {
     }
   }
 
+  /// Release tracks only when [LeakOnline.active]; debug/profile when [enabled].
+  bool get _allowTrack =>
+      enabled && (!kReleaseMode || LeakOnline.instance.active);
+
   /// Register [resource] as owned by [route] (defaults to current route).
   void track(Object resource, {String? name, String? route}) {
-    if (!enabled || kReleaseMode) return;
+    if (!_allowTrack) return;
     final r = route ?? PerfNetworkCapture.currentRoute() ?? '(unknown)';
     final n = name ?? resource.runtimeType.toString();
     // Only dedupe the same instance — keep multiple same-type leaks for stair counts.

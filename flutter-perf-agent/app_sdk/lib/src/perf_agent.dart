@@ -5,6 +5,7 @@ import 'package:get/get.dart';
 
 import 'bridge_server.dart';
 import 'getx_leak_hook.dart' as getx_hook;
+import 'leak_online.dart';
 import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
 import 'session_journal.dart';
@@ -27,9 +28,12 @@ class PerfAgent {
   static Future<void>? get ready => _startFuture;
 
   /// [TransitionObserver] for [GetMaterialApp.navigatorObservers] /
-  /// [MaterialApp.navigatorObservers]. Empty in release.
+  /// [MaterialApp.navigatorObservers]. Empty unless debug/profile or
+  /// [LeakOnline.active].
   static List<NavigatorObserver> get navigatorObservers =>
-      getx_hook.perfNavigatorObservers(enabled: !kReleaseMode);
+      getx_hook.perfNavigatorObservers(
+        enabled: !kReleaseMode || LeakOnline.instance.active,
+      );
 
   /// Prepend [PerfLeakMiddleware] so Bindings run under a route scope for
   /// [PerfDi]. Recurses into nested [GetPage.children].
@@ -47,6 +51,10 @@ class PerfAgent {
   ///
   /// Wrap root with [PerfRecordingBanner] (or use [builder]) so manual sessions
   /// can be stopped from the in-app banner.
+  ///
+  /// **Release online lite** ([leakOnlineEnabled]): session-sampled WeakRef
+  /// track + breadcrumbs via [onLeakOnlineEvent] / [LeakOnline.drain]. No
+  /// Bridge, Sleuth bind, screenshots, or manual recorder.
   static Future<void> ensureInitialized({
     String host = '127.0.0.1',
     int port = 19288,
@@ -65,12 +73,42 @@ class PerfAgent {
     double leakRssRetainMb = 5,
     /// Bind Sleuth heap_growing / stream_resource_growth to transition windows.
     bool sleuthBindEnabled = true,
+    /// Allow lightweight leak sampling in release (no Bridge / Sleuth).
+    bool leakOnlineEnabled = false,
+    /// Session sample probability 0..1 (`0` off, `1` always).
+    double leakSampleRate = 0.0,
+    /// Host analytics callback for online events (breadcrumbs / transition_leak).
+    void Function(Map<String, dynamic> event)? onLeakOnlineEvent,
   }) async {
     if (_initialized) return;
     _initialized = true;
 
+    LeakOnline.instance.configure(
+      enabled: leakOnlineEnabled,
+      sampleRate: leakSampleRate,
+      onEvent: onLeakOnlineEvent,
+    );
+
     if (kReleaseMode) {
-      debugPrint('[PerfAgent] skipped in release mode');
+      if (LeakOnline.instance.active) {
+        TransitionLeakTracker.instance.configure(
+          enabled: true,
+          settleMs: transitionSettleMs,
+          leakConfirmRounds: leakConfirmRounds,
+          rssRetainMb: leakRssRetainMb,
+          sleuthBindEnabled: false,
+        );
+        TransitionLedger.instance.settleMs = transitionSettleMs;
+        debugPrint(
+          '[PerfAgent] release online lite active '
+          '(sampleRate=$leakSampleRate)',
+        );
+      } else {
+        debugPrint(
+          '[PerfAgent] release: online idle '
+          '(enabled=$leakOnlineEnabled rate=$leakSampleRate)',
+        );
+      }
       return;
     }
 
@@ -116,6 +154,7 @@ class PerfAgent {
     bool allowHttpLoopback = true,
     List<String>? excludeUrlSubstrings,
   }) {
+    if (kReleaseMode) return;
     PerfNetworkCapture.install(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -135,6 +174,7 @@ class PerfAgent {
     bool allowHttpLoopback = true,
     List<String>? excludeUrlSubstrings,
   }) {
+    if (kReleaseMode) return;
     PerfNetworkCapture.installDeferred(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -164,5 +204,6 @@ class PerfAgent {
     _bridge = null;
     _initialized = false;
     _startFuture = null;
+    LeakOnline.instance.reset();
   }
 }

@@ -2,8 +2,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
+import 'leak_online.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
+
+/// True when WeakRef track / TransitionObserver should run.
+bool get leakHooksActive =>
+    !kReleaseMode || LeakOnline.instance.active;
 
 /// Binding-level DI helpers that auto-[TransitionLeakTracker.track] on create.
 ///
@@ -159,14 +164,14 @@ mixin PerfLeakTrackMixin on GetxController {
   @override
   void onInit() {
     super.onInit();
-    if (!kReleaseMode) {
+    if (leakHooksActive) {
       perfTrackLeak(route: leakTrackRoute);
     }
   }
 
   @override
   void onClose() {
-    if (!kReleaseMode && leakUntrackOnClose) {
+    if (leakHooksActive && leakUntrackOnClose) {
       perfUntrackLeak();
     }
     super.onClose();
@@ -208,6 +213,9 @@ GetPage<dynamic> _instrumentOne(GetPage<dynamic> page) {
 
 /// Navigator observers for transition ledger / leak markPush.
 List<NavigatorObserver> perfNavigatorObservers({bool enabled = true}) {
-  if (!enabled || kReleaseMode) return const <NavigatorObserver>[];
+  if (!enabled) return const <NavigatorObserver>[];
+  if (kReleaseMode && !LeakOnline.instance.active) {
+    return const <NavigatorObserver>[];
+  }
   return <NavigatorObserver>[TransitionObserver()];
 }

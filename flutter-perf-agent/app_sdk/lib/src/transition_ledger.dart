@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'leak_online.dart';
 import 'network_capture.dart';
 import 'transition_leak_tracker.dart';
 
@@ -63,6 +64,11 @@ class TransitionLedger {
     if (to != null) {
       TransitionLeakTracker.instance.markPush(to);
     }
+    LeakOnline.instance.emitBreadcrumb(
+      kind: 'push',
+      from: last!.from,
+      to: last!.to,
+    );
     debugPrint('[TransitionLedger] push ${last!.from} → ${last!.to}');
   }
 
@@ -79,7 +85,39 @@ class TransitionLedger {
       to: to,
       at: DateTime.now(),
     );
+    final route = last!.from;
+    LeakOnline.instance.emitBreadcrumb(
+      kind: 'pop',
+      from: last!.from,
+      to: last!.to,
+    );
+    if (LeakOnline.instance.active && route != null && route.isNotEmpty) {
+      // ignore: unawaited_futures
+      _onlineProbeAfterPop(route);
+    }
     debugPrint('[TransitionLedger] pop ${last!.from} → ${last!.to}');
+  }
+
+  Future<void> _onlineProbeAfterPop(String route) async {
+    try {
+      final probe = await TransitionLeakTracker.instance.probeAfterPop(
+        poppedRoute: route,
+      );
+      if (!probe.hasWeakRefLeak) return;
+      LeakOnline.instance.emitTransitionLeak(
+        route: probe.route,
+        aliveCount: probe.alive.length,
+        aliveNames: probe.alive
+            .map((e) => e['name']?.toString() ?? '')
+            .where((n) => n.isNotEmpty)
+            .toList(),
+        evidence: probe.evidence,
+        aliveCounts: probe.aliveCounts,
+        multiRoundConfirmed: probe.multiRoundConfirmed,
+      );
+    } catch (e) {
+      debugPrint('[TransitionLedger] online probe failed: $e');
+    }
   }
 
   void onReplace({String? oldName, String? newName}) {

@@ -19,7 +19,11 @@ Future<void> main() async {
   // Capture TTFF from Dart entry → first frame (before runApp).
   Sleuth.init();
 
-  if (!kReleaseMode) {
+  // Release online lite accept: flutter run --release --dart-define=LEAK_ONLINE=true
+  // (sampleRate 1 + print events; do not ship with this define on by default.)
+  const leakOnline = bool.fromEnvironment('LEAK_ONLINE');
+
+  if (!kReleaseMode || leakOnline) {
     await PerfAgent.ensureInitialized(
       host: '127.0.0.1',
       port: 19288,
@@ -31,6 +35,12 @@ Future<void> main() async {
       leakTrackEnabled: true,
       transitionSettleMs: 1500,
       leakConfirmRounds: 2,
+      // Online sampling (0.8.7): release lite path when LEAK_ONLINE=true.
+      leakOnlineEnabled: leakOnline,
+      leakSampleRate: leakOnline ? 1.0 : 0.0,
+      onLeakOnlineEvent: leakOnline
+          ? (e) => debugPrint('[LeakOnlineEvent] $e')
+          : null,
     );
   }
 

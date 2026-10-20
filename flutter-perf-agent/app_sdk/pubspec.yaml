@@ -1,6 +1,6 @@
 name: flutter_perf_agent
 description: App SDK — Sleuth snapshots + local HTTP bridge for Flutter-Perf-Agent.
-version: 0.8.6
+version: 0.8.7
 publish_to: none
 
 environment:

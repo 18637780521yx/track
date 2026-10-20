@@ -157,6 +157,9 @@ HTML 结构（schemaVersion 9）：
 | `transitionSettleMs` | pop 后 settle 再检 WeakRef | `1500` |
 | `leakConfirmRounds` | 连续进出确认轮数（阶梯/持平） | `2` |
 | `leakRssRetainMb` | RSS 辅证阈值（MB） | `5` |
+| `leakOnlineEnabled` | Release 轻量线上采样总开关 | `false` |
+| `leakSampleRate` | 会话采样概率 `0`～`1`（`0` 关，`1` 全开） | `0.0` |
+| `onLeakOnlineEvent` | 线上事件回调（面包屑 / `transition_leak`） | `null` |
 
 ```json
 "transition": {
@@ -187,3 +190,27 @@ PerfDi.lazyPut(MyController.new);
 
 // 或 Controller：with PerfLeakTrackMixin / extends PerfGetxController
 ```
+
+### 线上采样（0.8.7 首刀）
+
+Release 不启 Bridge / Sleuth 绑定。开启后按**进程会话**掷骰；中选才挂 `TransitionObserver`、WeakRef `track`、pop 探针，事件交给宿主埋点：
+
+```dart
+await PerfAgent.ensureInitialized(
+  leakOnlineEnabled: true,
+  leakSampleRate: 0.01, // 1% 会话
+  onLeakOnlineEvent: (e) {
+    // e['type']: route_breadcrumb | transition_leak
+    // 接你们现有埋点 / 崩溃上报；SDK 不内置 HTTP 上报
+  },
+);
+// 记得 navigatorObservers: PerfAgent.navigatorObservers
+```
+
+事件也可 `LeakOnline.instance.drain()` 批量取走（ring≤64）。
+
+验收：
+
+- `leakSampleRate: 0` → 无 track / 无事件
+- `leakSampleRate: 1` + 故意 retain → 回调收到 `transition_leak` 且 `aliveCount ≥ 1`
+- example：`flutter run --release --dart-define=LEAK_ONLINE=true`
