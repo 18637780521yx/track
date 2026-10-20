@@ -52,12 +52,13 @@ class SdkReportWriter {
     final manualSteps =
         steps.where((s) => s.extra['source'] == 'manual').length;
 
-    // Same shape as mcp_server ReportWriter (schema 7+) so HTML matches.
-    final htmlReport = {
-      'schemaVersion': 8,
+    final stepsJson = steps.map((s) => s.toJson()).toList();
+    final alertsJson = alerts.map((a) => a.toJson()).toList();
+    final baseReport = <String, dynamic>{
+      'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.7.1',
+      'version': '0.8.1',
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
       'envelope': 'code/data/msg',
@@ -68,8 +69,8 @@ class SdkReportWriter {
       'endedAt': endedAt.toIso8601String(),
       'durationMs': endedAt.difference(startedAt).inMilliseconds,
       'thresholds': thr,
-      'steps': steps.map((s) => s.toJson()).toList(),
-      'alerts': alerts.map((a) => a.toJson()).toList(),
+      'steps': stepsJson,
+      'alerts': alertsJson,
       if (sleuthDiagnose != null) 'sleuthDiagnose': sleuthDiagnose.toJson(),
       if (sleuthSummaryMarkdown != null)
         'sleuthSummaryMarkdown': sleuthSummaryMarkdown,
@@ -84,18 +85,26 @@ class SdkReportWriter {
         'manualSteps': manualSteps,
       },
       'note':
-          '路由章 / 事件时间线 / 冷启动与 MCP 报告同一套 HTML。'
+          '全会话时间线内嵌模块（启动/页面/转场/告警）；事件在模块内。'
           '权威账本在 App SDK（source=mcp|manual）。'
-          '完整 Sleuth 快照经 PerfBridge；UI 用 flutter_skill（VM）。'
+          '网络为 PerfAgent 全量抓包（头/体）；完整快照经 PerfBridge；UI 用 flutter_skill（VM）。'
           'GC/堆等需：flutter run --profile --no-dds。',
       ...?extra,
     };
+    final view = buildReportView(baseReport);
+    final htmlReport = {...baseReport, 'view': view};
 
     final jsonReport = {
       ...htmlReport,
       'steps': steps
           .map((s) => s.toJson(includeScreenshotDataUri: false))
           .toList(),
+      'view': buildReportView({
+        ...baseReport,
+        'steps': steps
+            .map((s) => s.toJson(includeScreenshotDataUri: false))
+            .toList(),
+      }),
     };
 
     final safeName = testName

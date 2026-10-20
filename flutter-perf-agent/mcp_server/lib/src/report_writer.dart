@@ -58,12 +58,15 @@ class ReportWriter {
     }
 
     final endedAt = DateTime.now();
-    final htmlReport = {
-      'schemaVersion': 7,
+    final stepsJson = session.steps.map((s) => s.toJson()).toList();
+    final alertsJson = session.alerts.map((a) => a.toJson()).toList();
+    final baseReport = <String, dynamic>{
+      'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.6.6',
+      'version': '0.8.1',
       'metricsSource': 'sleuth_bridge',
+      'reportOwner': 'mcp_server',
       'envelope': 'code/data/msg',
       'sessionId': session.sessionId,
       'testName': session.testName,
@@ -77,8 +80,8 @@ class ReportWriter {
         'slowRequestMs': config.slowRequestMs,
         'ttffWarningMs': config.ttffWarningMs,
       },
-      'steps': session.steps.map((s) => s.toJson()).toList(),
-      'alerts': session.alerts.map((a) => a.toJson()).toList(),
+      'steps': stepsJson,
+      'alerts': alertsJson,
       if (sleuthDiagnose != null) 'sleuthDiagnose': sleuthDiagnose.toJson(),
       if (sleuthSummaryMarkdown != null)
         'sleuthSummaryMarkdown': sleuthSummaryMarkdown,
@@ -91,11 +94,13 @@ class ReportWriter {
             .fold<int>(0, (n, s) => n + s.networkRequests.length),
       },
       'note':
-          '路由章 + 章内线性 events（截图/操作/请求/跳转）；首步 cold_start。'
+          '全会话时间线内嵌模块（启动/页面/转场/告警）；首步 cold_start。'
           '完整 Sleuth 快照经 PerfBridge；UI 用 flutter_skill（VM）。'
           '步骤含 networkRequests（完整抓包：URL/头/体）。'
           'GC/堆等需：flutter run --profile --no-dds。',
     };
+    final view = buildReportView(baseReport);
+    final htmlReport = {...baseReport, 'view': view};
 
     final jsonSteps = session.steps
         .map((s) => s.toJson(includeScreenshotDataUri: false))
@@ -103,6 +108,7 @@ class ReportWriter {
     final jsonReport = {
       ...htmlReport,
       'steps': jsonSteps,
+      'view': buildReportView({...baseReport, 'steps': jsonSteps}),
     };
 
     final safeName = session.testName
@@ -128,13 +134,17 @@ class ReportWriter {
       await dir.create(recursive: true);
     }
     final now = DateTime.now();
-    final report = {
-      'schemaVersion': 7,
+    final stepsJson = session.steps
+        .map((s) => s.toJson(includeScreenshotDataUri: false))
+        .toList();
+    final liveBody = <String, dynamic>{
+      'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.6.6',
+      'version': '0.8.1',
       'live': true,
       'metricsSource': 'sleuth_bridge',
+      'reportOwner': 'mcp_server',
       'envelope': 'code/data/msg',
       'sessionId': session.sessionId,
       'testName': session.testName,
@@ -148,9 +158,7 @@ class ReportWriter {
         'slowRequestMs': config.slowRequestMs,
         'ttffWarningMs': config.ttffWarningMs,
       },
-      'steps': session.steps
-          .map((s) => s.toJson(includeScreenshotDataUri: false))
-          .toList(),
+      'steps': stepsJson,
       'alerts': session.alerts.map((a) => a.toJson()).toList(),
       'summary': {
         'stepCount': session.steps.length,
@@ -160,12 +168,13 @@ class ReportWriter {
             .fold<int>(0, (n, s) => n + s.networkRequests.length),
       },
       'note':
-          'Live report — 路由章 + events 时间线；'
+          'Live report — 全会话时间线 + 模块分区；'
           'stop_perf_test 写出最终报告。',
     };
-    final base = 'live_${session.sessionId}';
-    final jsonPath = p.join(dir.path, '$base.json');
-    final htmlPath = p.join(dir.path, '$base.html');
+    final report = {...liveBody, 'view': buildReportView(liveBody)};
+    final fileBase = 'live_${session.sessionId}';
+    final jsonPath = p.join(dir.path, '$fileBase.json');
+    final htmlPath = p.join(dir.path, '$fileBase.html');
     await File(jsonPath).writeAsString(
       const JsonEncoder.withIndent('  ').convert(report),
     );

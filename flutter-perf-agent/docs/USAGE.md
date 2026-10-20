@@ -125,9 +125,15 @@ cd flutter-perf-agent
 
 | 产物 | 内容 |
 |------|------|
-| `reports/*.json` | 机器可读：步骤、diff、告警、截图路径 |
-| `reports/*.html` | 可视化：步骤卡片、告警标红、截图嵌入 |
+| `reports/*.json` | 机器可读：`steps`/`alerts` + 派生 `view`（`timeline` 模块段 + `events`） |
+| `reports/*.html` | 可视化：时间线内嵌模块段（启动/页面/转场/告警），段内是事件 |
 | `reports/screenshots/<session>/` | 每步 PNG |
+
+HTML 结构（schemaVersion 9）：
+
+1. **摘要**：耗时、步骤、告警、网络、FPS/RSS
+2. **全会话时间线**：按时间的模块段；每段内嵌事件（截图/操作/网络/跳转等）；chips 按模块筛选
+3. **环境与阈值**：阈值 + Sleuth diagnose
 
 ## 配置调参
 

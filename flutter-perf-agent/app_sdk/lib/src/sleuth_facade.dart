@@ -225,6 +225,7 @@ class SleuthFacade {
             startedAt: r.startedAt.toIso8601String(),
             cancelled: r.cancelled,
             contentType: r.contentType,
+            source: 'sleuth',
           ),
         );
       }

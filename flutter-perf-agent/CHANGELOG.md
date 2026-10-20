@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.8.1 — 全量抓包对齐 Sleuth 代理模型
+
+- 关闭 example 的 `enableNetworkMonitoring`，由 PerfAgent 独占 `HttpOverrides`
+- 抓包代理按 Sleuth `http_monitor` 重写（订阅永久占有 terminal，避免 drain/asFuture 丢记录），并补齐头/体
+- 手动步骤截图后短等网络再落账
+- **Host 白名单** `allowedHosts`（`host` / `host:port`）+ `httpsOnly`（本机 http 可例外）
+
+## 0.8.0 — 全会话时间线（模块嵌在时间线内）+ 转场泄漏 V1
+
+- 报告 `schemaVersion=9`；派生 `view.timeline` = **按时间排列的模块段**，每段内嵌 `events`
+- HTML：摘要 → 时间线（启动/页面/转场/告警模块段）→ 环境与阈值；不再在时间线外单独堆模块区
+- 网络事件落在页面模块内；会话级 FPS/RSS 放在摘要条
+- **转场 V1**：`TransitionObserver` → `push`/`pop`/`replace`；`TransitionLeakTracker`（WeakRef，**不强制 GC**）
+- pop 后 settle + WeakRef 仍可达 → `transition_memory_leak`；RSS 辅证 → `transition_memory_retain_rss`；窗内卡顿 → `transition_jank`
+- Bridge：`/app/route` 带 transitionKind；`POST /transition/leak_probe`
+- `PerfLeakTrackMixin` 供 GetxController 登记；example ProfileController 接入
+- PRD V1.1：三阶段目标；泄漏主路径不依赖 VM 强制 GC
+
 ## 0.7.1 — SDK 报告与 MCP 同款 HTML/JSON
 
 - `buildHtmlReport` / 冷启动分阶段迁入 `protocol`，MCP 与 App SDK 共用

@@ -3,6 +3,8 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'manual_gesture_recorder.dart';
 import 'sdk_report_writer.dart';
+import 'transition_leak_tracker.dart';
+import 'transition_ledger.dart';
 
 /// In-app authoritative session ledger for MCP + manual steps.
 class SessionJournal {
@@ -66,6 +68,9 @@ class SessionJournal {
     alerts.clear();
     _stepSeq = 0;
     mcpGuardDepth = 0;
+    ManualGestureRecorder.instance.resetRouteTracking();
+    TransitionLedger.instance.reset();
+    TransitionLeakTracker.instance.clear();
     ManualGestureRecorder.instance.ensureStarted();
     debugPrint(
       '[SessionJournal] start $sessionId ($testName) '

@@ -2,118 +2,47 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'cold_start_phases.dart';
+import 'report_view.dart';
 
 /// Build a self-contained HTML report from a report JSON map.
+///
+/// Layout: summary → **timeline of module segments** (events nested inside) → env.
 String buildHtmlReport(Map<String, dynamic> report) {
+  final view = (report['view'] as Map?)?.cast<String, dynamic>() ??
+      buildReportView(report);
+  // Prefer segmented timeline; fall back if old view only had flat events.
+  var timeline =
+      (view['timeline'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  final looksFlat = timeline.isNotEmpty &&
+      timeline.first['module'] == null &&
+      timeline.first['type'] != null;
+  if (looksFlat || timeline.isEmpty) {
+    // Re-derive so modules sit inside the timeline.
+    final rebuilt = buildReportView(report);
+    timeline =
+        (rebuilt['timeline'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  }
+  final stats = (view['stats'] as Map?)?.cast<String, dynamic>() ??
+      (buildReportView(report)['stats'] as Map?)?.cast<String, dynamic>() ??
+      const {};
+
   final testName = _esc(report['testName']?.toString() ?? 'unnamed');
   final sessionId = _esc(report['sessionId']?.toString() ?? '');
   final mode = _esc(report['mode']?.toString() ?? '-');
-  final startedAt = _esc(report['startedAt']?.toString() ?? '');
-  final endedAt = _esc(report['endedAt']?.toString() ?? '');
+  final startedAt = _esc(_fmtTime(report['startedAt']?.toString()));
+  final endedAt = _esc(_fmtTime(report['endedAt']?.toString()));
   final durationMs = report['durationMs'] ?? '-';
   final summary = (report['summary'] as Map?)?.cast<String, dynamic>() ?? {};
-  final alerts =
-      (report['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-  final steps =
-      (report['steps'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
   final thresholds =
       (report['thresholds'] as Map?)?.cast<String, dynamic>() ?? {};
   final note = _esc(report['note']?.toString() ?? '');
   final sleuthMd = report['sleuthSummaryMarkdown']?.toString();
   final sleuthDiag =
       (report['sleuthDiagnose'] as Map?)?.cast<String, dynamic>();
-
-  final alertCards = alerts.isEmpty
-      ? '<p class="muted">无告警</p>'
-      : alerts.map((a) {
-          return '''
-<div class="alert">
-  <strong>${_esc(a['type']?.toString())}</strong>
-  <span>${_esc(a['message']?.toString())}</span>
-  <small>${_esc(a['stepId']?.toString())} · ${_esc(a['action']?.toString())}</small>
-</div>''';
-        }).join('\n');
-
-  final stepCards = steps.isEmpty
-      ? '<p class="muted">无步骤</p>'
-      : steps.map((s) {
-          final ok = s['ok'] == true;
-          final diff = (s['diff'] as Map?)?.cast<String, dynamic>() ?? {};
-          final stepAlerts =
-              (s['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-          final alertBadge = stepAlerts.isEmpty
-              ? ''
-              : '<span class="badge bad">${stepAlerts.length} 告警</span>';
-          final timeline = _timelineHtml(s);
-          final netCount = (s['networkRequestCount'] as num?)?.toInt() ??
-              ((s['networkRequests'] as List?)?.length ?? 0);
-          final eventCount = (s['events'] as List?)?.length ?? 0;
-          final netBadge = netCount > 0
-              ? '<span class="badge net">$netCount 请求</span>'
-              : '';
-          final eventBadge = eventCount > 0
-              ? '<span class="badge net">$eventCount 事件</span>'
-              : '';
-          final isCold = s['kind'] == 'cold_start' ||
-              s['action']?.toString() == 'cold_start';
-          final route = (s['route']?.toString().trim().isNotEmpty == true)
-              ? s['route'].toString()
-              : (s['action']?.toString().startsWith('route:') == true
-                  ? s['action'].toString().substring(6)
-                  : null);
-          final title = isCold
-              ? '${s['stepId']} · 冷启动'
-              : (route != null && route.isNotEmpty
-                  ? '${s['stepId']} · $route'
-                  : '${s['stepId']} · ${s['action']}');
-          final coldBadge = isCold
-              ? '<span class="badge net">冷启动</span>'
-              : '';
-          final metricsBlock = isCold
-              ? '''
-  <div class="metrics">
-    <div><label>TTFF</label><b>${_num(s['ttffMs'])} ms</b></div>
-    <div><label>TTI</label><b>${_num(s['ttiMs'])} ms</b></div>
-    <div><label>Engine TTFF</label><b>${_num(s['engineTtffMs'])} ms</b></div>
-    <div><label>方案</label><b>A · 引擎/Dart</b></div>
-  </div>'''
-              : '''
-  <div class="metrics">
-    <div><label>耗时</label><b>${diff['durationMs'] ?? '-'} ms</b></div>
-    <div><label>RSS Δ</label><b>${_num(diff['memoryDeltaMb'])} MB</b></div>
-    <div><label>Jank Δ</label><b>${diff['jankDelta'] ?? '-'}</b></div>
-    <div><label>FPS</label><b>${_num(diff['fpsBefore'])} → ${_num(diff['fpsAfter'])}</b></div>
-    <div><label>P90</label><b>${_num(diff['p90FrameMsBefore'])} → ${_num(diff['p90FrameMsAfter'])} ms</b></div>
-  </div>''';
-          final phasesHtml = isCold ? _coldStartPhasesHtml(s) : '';
-          final caption = isCold
-              ? '冷启动方案 A：引擎/Dart 分阶段耗时（下表）+ 首屏截图。'
-              : '路由章内<strong>线性时间线</strong>（截图 → 操作 → 请求 → 跳转）；'
-                  '网络事件可展开查看请求/响应详情。';
-          return '''
-<article class="step ${ok ? 'ok' : 'fail'}">
-  <header>
-    <h3>${_esc(title)}</h3>
-    <div class="meta">
-      <span class="badge ${ok ? 'good' : 'bad'}">${ok ? 'OK' : 'FAIL'}</span>
-      $coldBadge
-      $eventBadge
-      $alertBadge
-      $netBadge
-      <span class="muted">${_esc(s['driver']?.toString() ?? '')}</span>
-    </div>
-  </header>
-  <p><strong>路由：</strong><code>${_esc(route ?? '-')}</code></p>
-  $metricsBlock
-  $phasesHtml
-  <p class="muted shot-caption">$caption</p>
-  $timeline
-  <details>
-    <summary>原始 step JSON</summary>
-    <pre>${_esc(_stepJsonForDetails(s))}</pre>
-  </details>
-</article>''';
-        }).join('\n');
+  final reportOwner = _esc(report['reportOwner']?.toString() ?? '-');
+  final schemaVersion = report['schemaVersion'] ?? '-';
+  final steps =
+      (report['steps'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
 
   return '''<!DOCTYPE html>
 <html lang="zh-CN">
@@ -122,6 +51,59 @@ String buildHtmlReport(Map<String, dynamic> report) {
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Perf Report · $testName</title>
 <style>
+${_css()}
+</style>
+</head>
+<body>
+<main>
+  <h1>$testName</h1>
+  <p class="sub">session $sessionId · $mode · owner $reportOwner · schema $schemaVersion<br/>
+  $startedAt → $endedAt</p>
+
+  <div class="grid">
+    <div class="stat"><label>总耗时</label><b>$durationMs ms</b></div>
+    <div class="stat"><label>步骤</label><b>${summary['stepCount'] ?? steps.length}</b></div>
+    <div class="stat"><label>成功</label><b>${summary['okSteps'] ?? '-'}</b></div>
+    <div class="stat"><label>告警</label><b>${summary['alertCount'] ?? 0}</b></div>
+    <div class="stat"><label>网络</label><b>${summary['networkRequestCount'] ?? stats['networkCount'] ?? '-'}</b></div>
+    <div class="stat"><label>模块段</label><b>${timeline.length}</b></div>
+    <div class="stat"><label>avg FPS</label><b>${_num(stats['avgFps'])}</b></div>
+    <div class="stat"><label>RSS 峰值</label><b>${_num(stats['rssPeakMb'])} MB</b></div>
+  </div>
+
+  <h2 id="timeline">全会话时间线</h2>
+  <p class="muted">时间线内嵌模块（启动 / 页面 / 转场 / 告警）；模块内是该段事件。筛选按模块类型。</p>
+  <div class="filters" id="tl-filters">
+    <button type="button" class="chip active" data-filter="all">全部</button>
+    <button type="button" class="chip" data-filter="startup">启动</button>
+    <button type="button" class="chip" data-filter="page">页面</button>
+    <button type="button" class="chip" data-filter="transition">转场</button>
+    <button type="button" class="chip" data-filter="alert">告警</button>
+  </div>
+  ${_segmentedTimelineHtml(timeline)}
+
+  <h2>环境与阈值</h2>
+  <div class="grid">
+    <div class="stat"><label>maxFrameCostMs</label><b>${thresholds['maxFrameCostMs'] ?? '-'}</b></div>
+    <div class="stat"><label>memoryIncreaseWarningMB</label><b>${thresholds['memoryIncreaseWarningMB'] ?? '-'}</b></div>
+    <div class="stat"><label>slowRequestMs</label><b>${thresholds['slowRequestMs'] ?? '-'}</b></div>
+    <div class="stat"><label>ttffWarningMs</label><b>${thresholds['ttffWarningMs'] ?? '-'}</b></div>
+    <div class="stat"><label>vmConnected</label><b>${sleuthDiag?['vmConnected'] ?? '-'}</b></div>
+    <div class="stat"><label>captureMode</label><b>${sleuthDiag?['captureMode'] ?? '-'}</b></div>
+  </div>
+  ${sleuthDiag?['advisory'] != null ? '<p class="muted">${_esc(sleuthDiag!['advisory']?.toString())}</p>' : ''}
+  ${sleuthMd != null && sleuthMd.isNotEmpty ? '<details><summary>Sleuth summary</summary><pre>${_esc(sleuthMd)}</pre></details>' : ''}
+
+  <footer>$note</footer>
+</main>
+<script>
+${_filterScript()}
+</script>
+</body>
+</html>''';
+}
+
+String _css() => r'''
   :root {
     --bg: #f4f7f5;
     --card: #ffffff;
@@ -138,145 +120,319 @@ String buildHtmlReport(Map<String, dynamic> report) {
     background: linear-gradient(180deg, #e8f2ec 0%, var(--bg) 240px);
     color: var(--ink); line-height: 1.5;
   }
-  main { max-width: 920px; margin: 0 auto; padding: 32px 20px 64px; }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
   h1 { font-size: 1.75rem; margin: 0 0 8px; letter-spacing: -0.02em; }
-  h2 { margin: 32px 0 12px; font-size: 1.15rem; }
+  h2 { margin: 36px 0 12px; font-size: 1.15rem; scroll-margin-top: 16px; }
+  h3 { margin: 0; font-size: 1rem; }
   .sub { color: var(--muted); margin: 0 0 24px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(140px,1fr)); gap: 12px; }
-  .stat, .step, .alert {
+  .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(120px,1fr)); gap: 12px; }
+  .stat {
     background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
   }
-  .stat label, .metrics label { display:block; color: var(--muted); font-size: 12px; }
+  .stat label { display:block; color: var(--muted); font-size: 12px; }
   .stat b { font-size: 1.25rem; }
-  .alert { background: var(--warn-bg); border-color: #f3b4ae; margin-bottom: 8px; display:grid; gap: 4px; }
-  .step { margin-bottom: 12px; }
-  .step.fail { border-color: #f3b4ae; }
-  .step header { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
-  .step h3 { margin: 0; font-size: 1rem; }
-  .metrics { display:grid; grid-template-columns: repeat(auto-fit,minmax(110px,1fr)); gap: 10px; margin: 12px 0; }
-  .shot { margin: 12px 0; }
-  .shot img {
-    max-width: 100%; border-radius: 8px; border: 1px solid var(--line);
-    background: #0f1a14;
-  }
+  .metrics { display:grid; grid-template-columns: repeat(auto-fit,minmax(100px,1fr)); gap: 10px; margin: 10px 0; }
+  .metrics label { display:block; color: var(--muted); font-size: 12px; }
+  .muted { color: var(--muted); font-size: 13px; }
   .badge { display:inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
   .badge.good { background: #e3f5ee; color: var(--good); }
   .badge.bad { background: #fdecec; color: var(--bad); }
   .badge.net { background: #e8eef8; color: #1e4a8c; }
-  .net-section { margin: 12px 0; }
-  .net-section > h4 { margin: 0 0 8px; font-size: 0.95rem; }
-  .net-route-group { margin-bottom: 14px; }
-  .net-route-label {
-    font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--ink);
+  .badge.mod-startup { background: #fff4e5; color: #9a5b00; }
+  .badge.mod-page { background: #e3f5ee; color: var(--good); }
+  .badge.mod-transition { background: #e8eef8; color: #1e4a8c; }
+  .badge.mod-alert { background: #fdecec; color: var(--bad); }
+  .filters { display:flex; flex-wrap:wrap; gap: 8px; margin: 0 0 14px; }
+  .chip {
+    border: 1px solid var(--line); background: #fff; color: var(--ink);
+    border-radius: 999px; padding: 4px 12px; font-size: 13px; cursor: pointer;
   }
-  .net-route-label code {
-    background: #e8eef8; color: #1e4a8c; padding: 1px 6px; border-radius: 4px;
+  .chip.active { background: #14231b; color: #fff; border-color: #14231b; }
+  .seg-timeline { margin: 0; padding: 0; list-style: none; }
+  .seg-timeline > li {
+    position: relative; padding: 0 0 20px 22px;
+    border-left: 2px solid var(--line);
   }
-  .shot-caption { margin: 8px 0 4px; }
-  .net-card { margin-bottom: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fafcfb; }
-  .net-card summary { cursor: pointer; }
+  .seg-timeline > li:last-child { padding-bottom: 0; }
+  .seg-timeline > li::before {
+    content: ""; position: absolute; left: -6px; top: 14px;
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--good); border: 2px solid #fff;
+  }
+  .seg-timeline > li.startup::before { background: #c45c26; }
+  .seg-timeline > li.transition::before { background: #1e4a8c; }
+  .seg-timeline > li.alert::before { background: var(--bad); }
+  .seg-timeline > li.hidden { display: none; }
+  .seg {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 16px;
+  }
+  .seg-head { display:flex; justify-content:space-between; gap:12px; flex-wrap:wrap; align-items:flex-start; }
+  .seg-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .shot { margin: 12px 0; }
+  .shot img {
+    max-width: min(100%, 420px); border-radius: 8px; border: 1px solid var(--line);
+    background: #0f1a14;
+  }
+  .inner-timeline { margin: 12px 0 0; padding: 0; list-style: none; }
+  .inner-timeline li {
+    position: relative; padding: 0 0 12px 16px;
+    border-left: 2px solid #e8eef0;
+  }
+  .inner-timeline li:last-child { padding-bottom: 0; }
+  .inner-timeline li::before {
+    content: ""; position: absolute; left: -4px; top: 6px;
+    width: 6px; height: 6px; border-radius: 50%; background: #8aa396;
+  }
+  .inner-timeline li.fail::before, .inner-timeline li.alert::before { background: var(--bad); }
+  .inner-timeline li.network::before { background: #6b5b95; }
+  .inner-timeline li.navigate::before { background: #1e4a8c; }
+  .inner-timeline .ev-type {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .inner-timeline .ev-label { font-weight: 600; margin: 2px 0; }
+  .inner-timeline .ev-meta { font-size: 12px; color: var(--muted); }
+  .net-card { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fafcfb; }
+  .net-card summary { cursor: pointer; font-size: 13px; }
   .net-url { word-break: break-all; font-size: 12px; color: var(--muted); }
   .net-grid { display:grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 8px; }
   @media (max-width: 720px) { .net-grid { grid-template-columns: 1fr; } }
   .net-grid h4 { margin: 8px 0 4px; font-size: 12px; color: var(--muted); font-weight: 600; }
-  .net-grid pre {
+  .net-grid pre, pre {
     margin: 0; max-height: 280px; overflow: auto;
     background:#0f1a14; color:#d7ece1; padding:10px; border-radius:6px;
     font-size: 11px; line-height: 1.35; white-space: pre-wrap; word-break: break-word;
   }
-  .muted { color: var(--muted); font-size: 13px; }
   details { margin-top: 8px; }
-  pre {
-    overflow:auto; background:#0f1a14; color:#d7ece1; padding:12px; border-radius:8px;
-    font-size: 12px; line-height: 1.4;
-  }
   footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
-  .timeline { margin: 12px 0 4px; padding: 0; list-style: none; }
-  .timeline li {
-    position: relative; padding: 0 0 14px 20px;
-    border-left: 2px solid var(--line);
-  }
-  .timeline li:last-child { padding-bottom: 0; }
-  .timeline li::before {
-    content: ""; position: absolute; left: -5px; top: 6px;
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--good);
-  }
-  .timeline li.fail::before { background: var(--bad); }
-  .timeline li.nav::before { background: #1e4a8c; }
-  .timeline li.net::before { background: #6b5b95; }
-  .timeline .ev-type {
-    font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
-    text-transform: uppercase; color: var(--muted);
-  }
-  .timeline .ev-label { font-weight: 600; margin: 2px 0; }
-  .timeline .ev-meta { font-size: 12px; color: var(--muted); }
-  .timeline .shot { margin-top: 8px; }
-  .timeline .shot img { max-width: min(100%, 420px); }
-  .timeline-net { margin-top: 8px; }
-  .timeline-net summary { font-size: 13px; }
   .phases { margin: 14px 0; }
   .phases h4 { margin: 0 0 8px; font-size: 0.95rem; }
-  .phases table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  .phases th, .phases td {
+  .phases table, .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .phases th, .phases td, .data-table th, .data-table td {
     text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line);
-    vertical-align: middle;
   }
-  .phases th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .phases th, .data-table th { color: var(--muted); font-weight: 600; font-size: 12px; }
   .phases tr.highlight td { background: #f0faf5; }
   .phases tr.total td { font-weight: 700; }
   .phases .bar-wrap {
-    height: 10px; background: #e8eef0; border-radius: 999px; overflow: hidden;
-    min-width: 80px;
+    height: 10px; background: #e8eef0; border-radius: 999px; overflow: hidden; min-width: 80px;
   }
-  .phases .bar {
-    height: 100%; background: var(--good); border-radius: 999px;
-  }
+  .phases .bar { height: 100%; background: var(--good); border-radius: 999px; }
   .phases .bar.hi { background: #c45c26; }
   .phases .bar.engine { background: #1e4a8c; }
   .phases .bar.post { background: #6b5b95; }
   .phases .note { color: var(--muted); font-size: 12px; }
-</style>
-</head>
-<body>
-<main>
-  <h1>$testName</h1>
-  <p class="sub">session $sessionId · $mode · $startedAt → $endedAt</p>
+  .alert-inline {
+    background: var(--warn-bg); border: 1px solid #f3b4ae; border-radius: 8px;
+    padding: 8px 10px; margin-top: 6px; display:grid; gap: 2px;
+  }
+''';
 
-  <div class="grid">
-    <div class="stat"><label>总耗时</label><b>$durationMs ms</b></div>
-    <div class="stat"><label>步骤</label><b>${summary['stepCount'] ?? steps.length}</b></div>
-    <div class="stat"><label>成功</label><b>${summary['okSteps'] ?? '-'}</b></div>
-    <div class="stat"><label>告警</label><b>${summary['alertCount'] ?? alerts.length}</b></div>
-    <div class="stat"><label>网络请求</label><b>${summary['networkRequestCount'] ?? '-'}</b></div>
+String _filterScript() => r'''
+(function () {
+  var root = document.getElementById('tl-filters');
+  if (!root) return;
+  var items = document.querySelectorAll('#global-timeline > li');
+  root.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-filter]');
+    if (!btn) return;
+    var filter = btn.getAttribute('data-filter');
+    root.querySelectorAll('.chip').forEach(function (c) { c.classList.remove('active'); });
+    btn.classList.add('active');
+    items.forEach(function (li) {
+      var m = li.getAttribute('data-module') || '';
+      var show = filter === 'all' || m === filter;
+      li.classList.toggle('hidden', !show);
+    });
+  });
+})();
+''';
+
+String _segmentedTimelineHtml(List<Map<String, dynamic>> segments) {
+  if (segments.isEmpty) {
+    return '<p class="muted">无时间线模块</p>';
+  }
+  final items = <String>[];
+  var i = 0;
+  for (final seg in segments) {
+    i++;
+    final id = seg['id']?.toString() ?? 'seg_$i';
+    final module = seg['module']?.toString() ?? 'page';
+    items.add('''
+<li id="$id" class="$module" data-module="${_esc(module)}">
+  ${_segmentCardHtml(seg, index: i)}
+</li>''');
+  }
+  return '<ol class="seg-timeline" id="global-timeline">${items.join('\n')}</ol>';
+}
+
+String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
+  final module = seg['module']?.toString() ?? 'page';
+  final title = _esc(seg['title']?.toString() ?? module);
+  final at = _esc(_fmtTime(seg['at']?.toString()));
+  final modLabel = switch (module) {
+    'startup' => 'App 启动',
+    'transition' => '转场',
+    'alert' => '告警',
+    _ => '页面',
+  };
+  final badges = StringBuffer()
+    ..write('<span class="badge mod-$module">$modLabel</span> ');
+  if (module == 'page') {
+    badges
+      ..write('<span class="badge net">${seg['eventCount'] ?? 0} 事件</span> ')
+      ..write('<span class="badge net">${seg['networkCount'] ?? 0} 请求</span>');
+    if ((seg['alertCount'] as num?) != null && (seg['alertCount'] as num) > 0) {
+      badges.write(
+        ' <span class="badge bad">${seg['alertCount']} 告警</span>',
+      );
+    }
+  }
+  if (module == 'transition') {
+    badges.write(
+      '<span class="badge net">${_esc(seg['transitionKind']?.toString() ?? 'unknown')}</span>',
+    );
+  }
+
+  final headerExtra = switch (module) {
+    'startup' => '''
+  <div class="metrics">
+    <div><label>TTFF</label><b>${_num(seg['ttffMs'])} ms</b></div>
+    <div><label>TTI</label><b>${_num(seg['ttiMs'])} ms</b></div>
+    <div><label>Engine TTFF</label><b>${_num(seg['engineTtffMs'])} ms</b></div>
   </div>
+  ${_coldStartPhasesHtml(seg)}
+  ${_shotFromFields(seg['screenshotDataUri'] as String?, seg['screenshotPath'] as String?)}''',
+    'page' => _pageDiffsHtml(seg),
+    'transition' => _transitionExtrasHtml(seg),
+    _ => '',
+  };
 
-  <h2>阈值</h2>
-  <div class="grid">
-    <div class="stat"><label>maxFrameCostMs</label><b>${thresholds['maxFrameCostMs'] ?? '-'}</b></div>
-    <div class="stat"><label>memoryIncreaseWarningMB</label><b>${thresholds['memoryIncreaseWarningMB'] ?? '-'}</b></div>
-    <div class="stat"><label>slowRequestMs</label><b>${thresholds['slowRequestMs'] ?? '-'}</b></div>
+  final events =
+      (seg['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  // Startup already shows phases + cover; still list nested events if more than cold_start alone.
+  final showInner = module != 'startup' || events.length > 1;
+
+  return '''
+<article class="seg">
+  <div class="seg-head">
+    <div>
+      <h3>$index · $title</h3>
+      <div class="seg-meta">$at</div>
+    </div>
+    <div>$badges</div>
   </div>
+  $headerExtra
+  ${showInner ? _innerEventsHtml(events) : ''}
+</article>''';
+}
 
-  <h2>Sleuth</h2>
-  <div class="grid">
-    <div class="stat"><label>vmConnected</label><b>${sleuthDiag?['vmConnected'] ?? '-'}</b></div>
-    <div class="stat"><label>initialized</label><b>${sleuthDiag?['initialized'] ?? '-'}</b></div>
-    <div class="stat"><label>captureMode</label><b>${sleuthDiag?['captureMode'] ?? '-'}</b></div>
-  </div>
-  ${sleuthDiag?['advisory'] != null ? '<p class="muted">${_esc(sleuthDiag!['advisory']?.toString())}</p>' : ''}
-  ${sleuthMd != null && sleuthMd.isNotEmpty ? '<details open><summary>Sleuth summary</summary><pre>${_esc(sleuthMd)}</pre></details>' : ''}
+String _transitionExtrasHtml(Map<String, dynamic> seg) {
+  final kind = _esc(seg['transitionKind']?.toString() ?? 'unknown');
+  final from = _esc(seg['from']?.toString());
+  final to = _esc(seg['to']?.toString());
+  final leak = (seg['leak'] as Map?)?.cast<String, dynamic>();
+  final buf = StringBuffer()
+    ..writeln('<p class="seg-meta">$from → $to · <code>$kind</code></p>');
+  if (leak == null) return buf.toString();
+  final alive = (leak['alive'] as List?) ?? const [];
+  final aliveCount = leak['aliveCount'] ?? alive.length;
+  final rssDelta = leak['rssDeltaMb'];
+  if (aliveCount is num && aliveCount > 0) {
+    final names = alive
+        .map((e) => e is Map ? e['name']?.toString() ?? '?' : e.toString())
+        .join(', ');
+    buf.writeln(
+      '<p class="badge bad">泄漏 WeakRef ×$aliveCount：${_esc(names)}</p>',
+    );
+  } else {
+    buf.writeln('<p class="muted">WeakRef 探针：无仍可达对象</p>');
+  }
+  if (rssDelta != null) {
+    buf.writeln(
+      '<p class="muted">RSS 辅证 Δ ${_num(rssDelta)} MB（settle ${leak['settleMs'] ?? '-'}ms）</p>',
+    );
+  }
+  return buf.toString();
+}
 
-  <h2>告警</h2>
-  $alertCards
+String _pageDiffsHtml(Map<String, dynamic> seg) {
+  final diffs =
+      (seg['diffs'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  if (diffs.isEmpty) return '';
+  final rows = diffs.map((d) {
+    return '<tr>'
+        '<td>${_esc(d['stepId']?.toString())}</td>'
+        '<td>${_esc(d['cause']?.toString())}</td>'
+        '<td>${_esc(d['durationMs']?.toString() ?? '-')} ms</td>'
+        '<td>${_num(d['memoryDeltaMb'])}</td>'
+        '<td>${d['jankDelta'] ?? '-'}</td>'
+        '</tr>';
+  }).join('\n');
+  return '''
+<table class="data-table" style="margin-top:10px;">
+  <thead><tr><th>步骤</th><th>操作</th><th>耗时</th><th>Δmem</th><th>Jank</th></tr></thead>
+  <tbody>$rows</tbody>
+</table>''';
+}
 
-  <h2>步骤时序</h2>
-  $stepCards
-
-  <footer>$note</footer>
-</main>
-</body>
-</html>''';
+String _innerEventsHtml(List<Map<String, dynamic>> events) {
+  if (events.isEmpty) return '<p class="muted">无事件</p>';
+  final items = <String>[];
+  var i = 0;
+  for (final t in events) {
+    i++;
+    final id = t['id']?.toString() ?? 'ev_$i';
+    final type = t['type']?.toString() ?? 'action';
+    final label = t['label']?.toString() ?? type;
+    final ok = t['ok'] != false;
+    final at = _fmtTime(t['at']?.toString());
+    final detail =
+        (t['detail'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    final cls = [
+      type,
+      if (!ok || type == 'alert') 'fail',
+    ].join(' ');
+    final meta = <String>[];
+    if (at.isNotEmpty) meta.add(at);
+    if (t['stepId'] != null) meta.add(t['stepId'].toString());
+    if (t['source'] != null) meta.add(t['source'].toString());
+    if (type == 'network') {
+      if (detail['statusCode'] != null) meta.add('HTTP ${detail['statusCode']}');
+      if (detail['durationMs'] != null) meta.add('${detail['durationMs']}ms');
+    }
+    if (type == 'navigate') {
+      meta.add('${detail['from'] ?? '?'} → ${detail['to'] ?? '?'}');
+      if (detail['transitionKind'] != null) {
+        meta.add(detail['transitionKind'].toString());
+      }
+    }
+    final shot = type == 'screenshot' || type == 'cold_start'
+        ? _shotFromFields(
+            t['screenshotDataUri'] as String?,
+            t['screenshotPath'] as String?,
+          )
+        : '';
+    final netExpand = type == 'network' ? _networkExpandHtml(detail) : '';
+    final alertBox = type == 'alert'
+        ? '''
+<div class="alert-inline">
+  <strong>${_esc(detail['type']?.toString() ?? 'alert')}</strong>
+  <span>${_esc(t['label']?.toString())}</span>
+</div>'''
+        : '';
+    items.add('''
+<li id="$id" class="$cls" data-type="${_esc(type)}">
+  <div class="ev-type">$i · ${_esc(type)}</div>
+  <div class="ev-label">${_esc(label)}</div>
+  ${meta.isEmpty ? '' : '<div class="ev-meta">${_esc(meta.join(' · '))}</div>'}
+  $shot
+  $netExpand
+  $alertBox
+</li>''');
+  }
+  return '<ol class="inner-timeline">${items.join('\n')}</ol>';
 }
 
 String _prettyJsonOrMap(Object? raw) {
@@ -287,7 +443,6 @@ String _prettyJsonOrMap(Object? raw) {
     }
     final s = raw.toString();
     if (s.isEmpty) return '';
-    // Try parse JSON string bodies already escaped later.
     return _esc(s);
   } catch (_) {
     return _esc(raw.toString());
@@ -358,101 +513,16 @@ String _coldStartPhasesHtml(Map<String, dynamic> step) {
 
   return '''
 <section class="phases">
-  <h4>冷启动分阶段（方案 A）</h4>
-  <p class="muted">占比相对 TTFF；「业务启动」= TTFF − Framework init − 首帧合计，通常是业务优化重点。</p>
+  <h4>冷启动分阶段</h4>
   <table>
     <thead>
-      <tr>
-        <th>阶段</th><th>耗时</th><th>占 TTFF</th><th>占比条</th><th>说明</th>
-      </tr>
+      <tr><th>阶段</th><th>耗时</th><th>占 TTFF</th><th>占比条</th><th>说明</th></tr>
     </thead>
-    <tbody>
-      $rows
-    </tbody>
+    <tbody>$rows</tbody>
   </table>
 </section>''';
 }
 
-String _timelineHtml(Map<String, dynamic> step) {
-  final raw = step['events'];
-  if (raw is! List || raw.isEmpty) {
-    // Fallback: single cover screenshot when no events yet.
-    final shot = _shotFromFields(
-      step['screenshotDataUri'] as String?,
-      step['screenshotPath'] as String?,
-    );
-    return shot.isEmpty
-        ? '<p class="muted">无事件时间线</p>'
-        : shot;
-  }
-  // Prefer full payloads from step.networkRequests when event.detail is thin.
-  final netByKey = <String, Map<String, dynamic>>{};
-  final rawNet = step['networkRequests'];
-  if (rawNet is List) {
-    for (final n in rawNet) {
-      if (n is! Map) continue;
-      final m = Map<String, dynamic>.from(n);
-      netByKey[_netKey(m)] = m;
-    }
-  }
-
-  final items = <String>[];
-  var i = 0;
-  for (final e in raw) {
-    if (e is! Map) continue;
-    i++;
-    final m = Map<String, dynamic>.from(e);
-    final type = m['type']?.toString() ?? 'action';
-    final label = m['label']?.toString() ?? type;
-    final ok = m['ok'] != false;
-    final at = m['at']?.toString() ?? '';
-    var detail = (m['detail'] as Map?)?.cast<String, dynamic>() ?? {};
-    if (type == 'network') {
-      final full = netByKey[_netKey(detail)];
-      if (full != null) detail = {...full, ...detail};
-    }
-    final cls = [
-      if (!ok) 'fail',
-      if (type == 'navigate') 'nav',
-      if (type == 'network') 'net',
-    ].join(' ');
-    final meta = <String>[];
-    if (at.isNotEmpty) meta.add(at);
-    if (type == 'network') {
-      if (detail['statusCode'] != null) meta.add('HTTP ${detail['statusCode']}');
-      if (detail['durationMs'] != null) meta.add('${detail['durationMs']}ms');
-      if (detail['responseBytes'] != null) {
-        meta.add('${detail['responseBytes']}B');
-      }
-      if (detail['route'] != null) meta.add('发起于 ${detail['route']}');
-    }
-    if (type == 'navigate') {
-      meta.add('${detail['from'] ?? '?'} → ${detail['to'] ?? '?'}');
-    }
-    if (type == 'cold_start' && detail['ttffMs'] != null) {
-      meta.add('TTFF ${detail['ttffMs']}ms');
-    }
-    final shot = _shotFromFields(
-      m['screenshotDataUri'] as String?,
-      m['screenshotPath'] as String?,
-    );
-    final netExpand = type == 'network' ? _networkExpandHtml(detail) : '';
-    items.add('''
-<li class="$cls">
-  <div class="ev-type">$i · ${_esc(type)}</div>
-  <div class="ev-label">${_esc(label)}</div>
-  ${meta.isEmpty ? '' : '<div class="ev-meta">${_esc(meta.join(' · '))}</div>'}
-  $shot
-  $netExpand
-</li>''');
-  }
-  return '<ol class="timeline">${items.join('\n')}</ol>';
-}
-
-String _netKey(Map<String, dynamic> m) =>
-    '${m['startedAt']}|${m['method']}|${m['url']}|${m['statusCode']}';
-
-/// Collapsed-by-default request/response detail inside a timeline network event.
 String _networkExpandHtml(Map<String, dynamic> m) {
   final method = _esc(m['method']?.toString() ?? 'GET');
   final status = m['statusCode']?.toString() ?? '-';
@@ -478,7 +548,7 @@ String _networkExpandHtml(Map<String, dynamic> m) {
       ? ''
       : '<span class="muted"> · 发起于 <code>${_esc(route)}</code></span>';
   return '''
-<details class="net-card timeline-net">
+<details class="net-card">
   <summary>
     查看请求详情 · <code>$method</code> $status · ${ms}ms · ${bytes}B
     <span class="muted">$source</span>$routeHtml<br/>
@@ -487,16 +557,12 @@ String _networkExpandHtml(Map<String, dynamic> m) {
   $errHtml
   <div class="net-grid">
     <div>
-      <h4>Request Headers</h4>
-      <pre>$reqH</pre>
-      <h4>Request Body$reqTrunc</h4>
-      <pre>$reqB</pre>
+      <h4>Request Headers</h4><pre>$reqH</pre>
+      <h4>Request Body$reqTrunc</h4><pre>$reqB</pre>
     </div>
     <div>
-      <h4>Response Headers</h4>
-      <pre>$resH</pre>
-      <h4>Response Body$resTrunc</h4>
-      <pre>$resB</pre>
+      <h4>Response Headers</h4><pre>$resH</pre>
+      <h4>Response Body$resTrunc</h4><pre>$resB</pre>
     </div>
   </div>
 </details>''';
@@ -518,21 +584,6 @@ String _shotFromFields(String? dataUri, String? path) {
   return '';
 }
 
-String _stepJsonForDetails(Map<String, dynamic> step) {
-  final copy = Map<String, dynamic>.from(step)..remove('screenshotDataUri');
-  final events = copy['events'];
-  if (events is List) {
-    copy['events'] = [
-      for (final e in events)
-        if (e is Map)
-          (Map<String, dynamic>.from(e)..remove('screenshotDataUri'))
-        else
-          e,
-    ];
-  }
-  return const JsonEncoder.withIndent('  ').convert(copy);
-}
-
 String _esc(String? s) {
   if (s == null) return '';
   return s
@@ -540,6 +591,19 @@ String _esc(String? s) {
       .replaceAll('<', '&lt;')
       .replaceAll('>', '&gt;')
       .replaceAll('"', '&quot;');
+}
+
+/// Display time as `yyyy-MM-dd HH:mm:ss.SSS` (local), keep ms for ordering.
+String _fmtTime(String? raw) {
+  if (raw == null || raw.isEmpty) return '';
+  final t = DateTime.tryParse(raw);
+  if (t == null) return raw;
+  final l = t.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  String three(int n) => n.toString().padLeft(3, '0');
+  return '${l.year}-${two(l.month)}-${two(l.day)} '
+      '${two(l.hour)}:${two(l.minute)}:${two(l.second)}.'
+      '${three(l.millisecond)}';
 }
 
 String _num(Object? v) {

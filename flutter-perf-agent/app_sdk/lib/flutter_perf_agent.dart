@@ -23,3 +23,5 @@ export 'src/manual_gesture_recorder.dart';
 export 'src/hit_target.dart';
 export 'src/sdk_report_writer.dart';
 export 'src/recording_overlay.dart';
+export 'src/transition_ledger.dart';
+export 'src/transition_leak_tracker.dart';

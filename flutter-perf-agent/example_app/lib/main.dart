@@ -39,6 +39,8 @@ Future<void> main() async {
 
   // Capture helpers need SLEUTH_CAPTURE_MODE; deep rebuild instrumentation
   // is off in that mode (matches Sleuth official example).
+  // Network: PerfAgent full capture (headers+body). Sleuth network OFF so
+  // we alone own HttpOverrides (see SleuthConfig.enableNetworkMonitoring).
   const captureMode = bool.fromEnvironment('SLEUTH_CAPTURE_MODE');
 
   runApp(
@@ -48,7 +50,7 @@ Future<void> main() async {
       config: SleuthConfig(
         captureMode: captureMode,
         fpsTarget: 60,
-        enableNetworkMonitoring: true,
+        enableNetworkMonitoring: false,
         showOverlay: true,
         autoFrameBudget: true,
         // Rebuild Hotspot + rebuild_activity need these (Sleuth example).
@@ -66,10 +68,15 @@ Future<void> main() async {
     ),
   );
 
-  // After Sleuth.track so we can wrap its HttpOverrides and capture
-  // request/response headers + bodies into perf reports.
   if (!kReleaseMode) {
-    PerfAgent.installHttpCaptureDeferred();
+    // Only Demo API host; httpsOnly + loopback http for local python server.
+    PerfAgent.installHttpCaptureDeferred(
+      allowedHosts: PerfNetworkCapture.hostsFromBaseUrls([
+        DemoApi.defaultBaseUrl,
+      ]),
+      httpsOnly: true,
+      allowHttpLoopback: true,
+    );
   }
 }
 
@@ -87,6 +94,10 @@ class PerfDemoApp extends StatelessWidget {
       initialRoute: AppPages.initial,
       getPages: AppPages.routes,
       defaultTransition: Transition.cupertino,
+      // push/pop → TransitionLedger（转场 kind + 泄漏探针）
+      navigatorObservers: [
+        if (!kReleaseMode) TransitionObserver(),
+      ],
       // Manual + MCP unified journal: banner to stop & write SDK report.
       builder: (context, child) => PerfRecordingBanner(child: child),
     );

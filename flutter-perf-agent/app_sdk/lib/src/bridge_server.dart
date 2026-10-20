@@ -15,6 +15,8 @@ import 'network_capture.dart';
 import 'perf_snapshot.dart';
 import 'session_journal.dart';
 import 'sleuth_facade.dart';
+import 'transition_leak_tracker.dart';
+import 'transition_ledger.dart';
 import 'ui_actions.dart';
 
 /// Local HTTP bridge: session + full Sleuth exports for the PC-side MCP server.
@@ -137,7 +139,8 @@ class PerfBridgeServer {
       ..get('/sleuth/route_health', _sleuthRouteHealth)
       ..get('/sleuth/startup', _sleuthStartup)
       ..get('/network', _network)
-      ..get('/app/route', _appRoute);
+      ..get('/app/route', _appRoute)
+      ..post('/transition/leak_probe', _leakProbe);
 
     return const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
@@ -403,7 +406,7 @@ class PerfBridgeServer {
   }
 
   void _ingestNetwork() {
-    // Prefer full HttpCapture (headers + bodies); keep Sleuth as fallback.
+    // Full PerfAgent HttpCapture (headers + bodies).
     for (final r in PerfNetworkStore.instance.records) {
       final key = _networkDedupeKey(r);
       final existing = _networkArchive[key];
@@ -411,38 +414,14 @@ class PerfBridgeServer {
         _networkArchive[key] = r;
       }
     }
-    final live = SleuthFacade.networkRequests(limit: 200);
-    if (!live.isOk || live.data == null) return;
-    for (final r in live.data!.requests) {
-      final key = _networkDedupeKey(r);
-      if (_networkArchive.containsKey(key)) continue;
-      if (_hasNearbyFull(r)) continue;
-      _networkArchive.putIfAbsent(key, () => r);
-    }
   }
 
   String _networkDedupeKey(NetworkRequest r) {
-    // Bucket startedAt to 1s to collapse double-emit / sleuth+full twins.
     final at = DateTime.tryParse(r.startedAt);
     final bucket = at == null
         ? r.startedAt
         : at.toUtc().toIso8601String().substring(0, 19);
     return '$bucket|${r.method.toUpperCase()}|${r.url}|${r.statusCode}';
-  }
-
-  bool _hasNearbyFull(NetworkRequest thin) {
-    final thinAt = DateTime.tryParse(thin.startedAt);
-    if (thinAt == null) return false;
-    for (final full in _networkArchive.values) {
-      if (!full.hasPayload) continue;
-      if (full.method.toUpperCase() != thin.method.toUpperCase()) continue;
-      if (full.url != thin.url) continue;
-      if (full.statusCode != thin.statusCode) continue;
-      final fullAt = DateTime.tryParse(full.startedAt);
-      if (fullAt == null) continue;
-      if (fullAt.difference(thinAt).inMilliseconds.abs() <= 3000) return true;
-    }
-    return false;
   }
 
   FutureOr<Response> _snapshot(Request request) {
@@ -538,7 +517,36 @@ class PerfBridgeServer {
 
   FutureOr<Response> _appRoute(Request request) {
     final route = PerfNetworkCapture.currentRoute() ?? '';
-    return _envelope(ApiResponse.ok(AppRouteData(route: route)));
+    final last = TransitionLedger.instance.last;
+    return _envelope(
+      ApiResponse.ok(
+        AppRouteData(
+          route: route,
+          transitionKind: last?.kind,
+          from: last?.from,
+          to: last?.to,
+        ),
+      ),
+    );
+  }
+
+  /// Post-pop WeakRef leak probe (no forced GC).
+  /// Body: `{ "route": "/detail", "settleMs": 1500 }`
+  Future<Response> _leakProbe(Request request) async {
+    final body = await _readJson(request);
+    final route = (body['route'] as String?)?.trim();
+    if (route == null || route.isEmpty) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.badRequest, 'route is required'),
+        httpStatus: 400,
+      );
+    }
+    final settle = (body['settleMs'] as num?)?.toInt();
+    final probe = await TransitionLeakTracker.instance.probeAfterPop(
+      poppedRoute: route,
+      settleOverrideMs: settle,
+    );
+    return _envelope(ApiResponse.ok(probe.toJson()));
   }
 
   Future<Response> _tapLegacy(Request request) async {

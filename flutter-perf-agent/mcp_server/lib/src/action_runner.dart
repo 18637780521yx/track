@@ -358,7 +358,9 @@ class ActionRunner {
       );
     }
 
-    final actionAt = DateTime.now().toIso8601String();
+    // Gesture/action time = window start (before skill tap), not finalize time.
+    // Otherwise network startedAt sorts before the click in the timeline.
+    final actionAt = networkSince;
     final wantNav = expectNavigation || (extraSettleMs ?? 0) > 0;
     final routeAfter = await _awaitRoute(
       previous: routeBefore,
@@ -417,11 +419,13 @@ class ActionRunner {
       _log('network fetch failed: $e');
     }
 
-    final alerts = reports.evaluateDiff(
-      diff,
-      stepId: chapter.stepId,
-      action: '$routeBefore · $actionLabel',
-      sleuthIssues: sleuthIssues,
+    final alerts = List<AlertItem>.from(
+      reports.evaluateDiff(
+        diff,
+        stepId: chapter.stepId,
+        action: '$routeBefore · $actionLabel',
+        sleuthIssues: sleuthIssues,
+      ),
     );
     for (final a in alerts) {
       session.addAlert(a);
@@ -454,12 +458,96 @@ class ActionRunner {
     ];
 
     if (routeChanged) {
+      String kind = 'route_change';
+      Map<String, dynamic>? leakJson;
+      try {
+        final meta = await bridge.appRoute();
+        if (meta.isOk && meta.data != null) {
+          final k = meta.data!.transitionKind;
+          if (k != null && k.isNotEmpty) kind = k;
+        }
+      } catch (_) {}
+
+      if (kind == 'pop' || kind == 'remove') {
+        try {
+          final probe = await bridge.transitionLeakProbe(
+            route: routeBefore,
+          );
+          if (probe.isOk && probe.data != null) {
+            leakJson = probe.data;
+            final alive = (leakJson!['alive'] as List?) ?? const [];
+            if (alive.isNotEmpty) {
+              final names = alive
+                  .map((e) => e is Map ? e['name'] : e)
+                  .join(', ');
+              final leakAlert = AlertItem(
+                type: 'transition_memory_leak',
+                stepId: chapter.stepId,
+                action: actionLabel,
+                message:
+                    'pop $routeBefore 后仍可达: $names（WeakRef，未强制 GC）',
+                value: leakJson,
+              );
+              alerts.add(leakAlert);
+              session.addAlert(leakAlert);
+            }
+            final rssDelta = (leakJson['rssDeltaMb'] as num?)?.toDouble();
+            if (rssDelta != null &&
+                rssDelta >= config.memoryIncreaseWarningMB) {
+              final rssAlert = AlertItem(
+                type: 'transition_memory_retain_rss',
+                stepId: chapter.stepId,
+                action: actionLabel,
+                message:
+                    'pop $routeBefore 后 RSS 辅证滞留 ${rssDelta.toStringAsFixed(2)} MB',
+                value: rssDelta,
+                threshold: config.memoryIncreaseWarningMB,
+              );
+              alerts.add(rssAlert);
+              session.addAlert(rssAlert);
+            }
+          }
+        } catch (e) {
+          _log('leak probe failed: $e');
+        }
+      }
+
+      final p90 = diff.p90FrameMsAfter;
+      if (p90 != null && p90 > config.maxFrameCostMs) {
+        final jankAlert = AlertItem(
+          type: 'transition_jank',
+          stepId: chapter.stepId,
+          action: actionLabel,
+          message:
+              '转场窗 P90 ${p90.toStringAsFixed(1)}ms > ${config.maxFrameCostMs}ms',
+          value: p90,
+          threshold: config.maxFrameCostMs,
+        );
+        alerts.add(jankAlert);
+        session.addAlert(jankAlert);
+      } else if ((diff.jankDelta ?? 0) > 0) {
+        final jankAlert = AlertItem(
+          type: 'transition_jank',
+          stepId: chapter.stepId,
+          action: actionLabel,
+          message: '转场窗新增 Jank ${diff.jankDelta} 次',
+          value: diff.jankDelta,
+        );
+        alerts.add(jankAlert);
+        session.addAlert(jankAlert);
+      }
+
       newEvents.add(
         StepEvent(
           type: 'navigate',
           at: DateTime.now().toIso8601String(),
           label: '$routeBefore → $routeAfter',
-          detail: {'from': routeBefore, 'to': routeAfter},
+          detail: {
+            'from': routeBefore,
+            'to': routeAfter,
+            'transitionKind': kind,
+            if (leakJson != null) 'leak': leakJson,
+          },
         ),
       );
     } else if (config.captureScreenshots && client != null) {

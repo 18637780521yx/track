@@ -1,11 +1,13 @@
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
 import '../../app/services/auth_service.dart';
 import '../../demo_api.dart';
 
-class ProfileController extends GetxController {
+class ProfileController extends GetxController with PerfLeakTrackMixin {
   AuthService get auth => Get.find<AuthService>();
 
   final busy = false.obs;
@@ -13,7 +15,14 @@ class ProfileController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    if (!kReleaseMode) perfTrackLeak();
     refreshProfile();
+  }
+
+  @override
+  void onClose() {
+    if (!kReleaseMode) perfUntrackLeak();
+    super.onClose();
   }
 
   Future<void> refreshProfile() async {

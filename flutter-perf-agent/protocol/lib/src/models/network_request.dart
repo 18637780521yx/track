@@ -1,7 +1,6 @@
 /// One HTTP request observed during a perf step.
 ///
-/// Prefer full capture from [PerfNetworkCapture] (headers + bodies).
-/// Sleuth NetworkMonitor only fills timing / size fields.
+/// Prefer full capture from PerfAgent HttpOverrides (headers + bodies).
 class NetworkRequest {
   const NetworkRequest({
     required this.url,
@@ -55,7 +54,7 @@ class NetworkRequest {
 
   final String? error;
 
-  /// `full` = PerfAgent HttpCapture; `sleuth` = timing-only fallback.
+  /// `full` = PerfAgent HttpCapture; `sleuth` = legacy timing-only.
   final String source;
 
   bool get hasPayload =>

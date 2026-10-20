@@ -19,3 +19,4 @@ export 'src/models/ui_element.dart';
 export 'src/models/wait_data.dart';
 export 'src/report/cold_start_phases.dart';
 export 'src/report/html_report.dart';
+export 'src/report/report_view.dart';

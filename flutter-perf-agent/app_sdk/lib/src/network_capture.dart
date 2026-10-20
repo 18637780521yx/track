@@ -32,17 +32,38 @@ class PerfNetworkStore {
   }
 }
 
-/// Chains onto current [HttpOverrides] and records request/response payloads.
+/// App route stamp + HttpOverrides installer.
+///
+/// Capture proxy follows Sleuth's `SleuthHttpOverrides` shape (chaining +
+/// subscription that owns terminal events) and additionally records
+/// request/response headers and bodies.
 class PerfNetworkCapture {
   static PerfHttpOverrides? _overrides;
+
+  static List<String> _excludeUrlSubstrings = const [
+    '127.0.0.1:19288',
+    '/sleuth/',
+    'flutter-perf-agent',
+  ];
+  static List<String> _allowedHosts = const [];
+  static bool _httpsOnly = false;
+  static bool _allowHttpLoopback = true;
+  static bool _redactSensitiveHeaders = true;
+
   static bool get isInstalled =>
       _overrides != null && identical(HttpOverrides.current, _overrides);
 
+  /// Host whitelist in effect (`host` or `host:port`). Empty = all hosts.
+  static List<String> get allowedHosts => _allowedHosts;
+
+  /// When true, only `https` (plus loopback `http` if [allowHttpLoopback]).
+  static bool get httpsOnly => _httpsOnly;
+
+  static bool get allowHttpLoopback => _allowHttpLoopback;
+
   /// Optional app-specific route resolver (e.g. `() => Get.currentRoute`).
-  /// Stamped onto each [NetworkRequest] at **open** time.
   static String? Function()? routeProvider;
 
-  /// Resolve route for a request that is about to start.
   static String? currentRoute() {
     try {
       final custom = routeProvider?.call();
@@ -58,56 +79,152 @@ class PerfNetworkCapture {
     return null;
   }
 
-  /// True only for the outermost capture layer (avoids duplicate records when
-  /// [install] re-chains over an older self still nested under Sleuth).
-  static bool get _isOutermostRecorder =>
-      _overrides != null && identical(HttpOverrides.current, _overrides);
+  /// Whether [url] passes exclude / scheme / host whitelist filters.
+  static bool shouldCapture(Uri url) {
+    final s = url.toString();
+    for (final p in _excludeUrlSubstrings) {
+      if (p.isNotEmpty && s.contains(p)) return false;
+    }
+    if (!_schemeAllowed(url)) return false;
+    if (!_hostAllowed(url)) return false;
+    return true;
+  }
 
-  /// Install (or re-chain) so we sit outside whatever is current — typically
-  /// after Sleuth installs its monitor. Safe to call multiple times.
+  static bool _schemeAllowed(Uri url) {
+    if (!_httpsOnly) return true;
+    final scheme = url.scheme.toLowerCase();
+    if (scheme == 'https') return true;
+    if (_allowHttpLoopback && scheme == 'http' && _isLoopbackHost(url.host)) {
+      return true;
+    }
+    return false;
+  }
+
+  static bool _isLoopbackHost(String host) {
+    final h = host.toLowerCase();
+    return h == 'localhost' ||
+        h == '127.0.0.1' ||
+        h == '::1' ||
+        h == '0:0:0:0:0:0:0:1' ||
+        h == '10.0.2.2'; // Android emulator → host machine
+  }
+
+  /// Match `host` or `host:port` entries (case-insensitive).
+  static bool _hostAllowed(Uri url) {
+    if (_allowedHosts.isEmpty) return true;
+    final host = url.host.toLowerCase();
+    if (host.isEmpty) return false;
+    final withPort = '$host:${url.port}';
+    for (final raw in _allowedHosts) {
+      final e = raw.trim().toLowerCase();
+      if (e.isEmpty) continue;
+      if (e == host || e == withPort) return true;
+      // Whitelist `api.example.com` matches any port on that host.
+      if (!e.contains(':') && e == host) return true;
+    }
+    return false;
+  }
+
+  /// Build `host` / `host:port` entries from absolute API base URLs.
+  static List<String> hostsFromBaseUrls(Iterable<String> baseUrls) {
+    final out = <String>{};
+    for (final raw in baseUrls) {
+      final u = Uri.tryParse(raw.trim());
+      if (u == null || u.host.isEmpty) continue;
+      final host = u.host.toLowerCase();
+      out.add(u.hasPort ? '$host:${u.port}' : host);
+      if (host == '127.0.0.1' && u.hasPort) {
+        out.add('localhost:${u.port}');
+      } else if (host == 'localhost' && u.hasPort) {
+        out.add('127.0.0.1:${u.port}');
+      }
+    }
+    return out.toList();
+  }
+
+  /// Install (or re-chain) as [HttpOverrides.global]. Prefer with Sleuth
+  /// `enableNetworkMonitoring: false` so we own the slot alone.
+  ///
+  /// [allowedHosts]: `host` or `host:port`. Empty / omitted keeps prior list
+  /// (default empty = capture all hosts after excludes).
+  /// [httpsOnly]: only HTTPS; loopback HTTP still allowed when
+  /// [allowHttpLoopback] is true (local demo API).
   static void install({
     int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
     int capacity = PerfNetworkStore.defaultCapacity,
     List<String>? excludeUrlSubstrings,
-    bool redactSensitiveHeaders = true,
+    List<String>? allowedHosts,
+    bool? httpsOnly,
+    bool? allowHttpLoopback,
+    bool? redactSensitiveHeaders,
   }) {
     if (kReleaseMode) return;
     PerfNetworkStore.instance.maxBodyBytes = maxBodyBytes;
     PerfNetworkStore.instance.capacity = capacity;
-    // Already outermost — nothing to do.
+    if (excludeUrlSubstrings != null) {
+      _excludeUrlSubstrings = List.unmodifiable(excludeUrlSubstrings);
+    }
+    if (allowedHosts != null) {
+      _allowedHosts = List.unmodifiable(
+        allowedHosts.map((e) => e.trim()).where((e) => e.isNotEmpty),
+      );
+    }
+    if (httpsOnly != null) _httpsOnly = httpsOnly;
+    if (allowHttpLoopback != null) _allowHttpLoopback = allowHttpLoopback;
+    if (redactSensitiveHeaders != null) {
+      _redactSensitiveHeaders = redactSensitiveHeaders;
+    }
     if (identical(HttpOverrides.current, _overrides) && _overrides != null) {
       return;
     }
     _overrides = PerfHttpOverrides(
-      excludeUrlSubstrings: excludeUrlSubstrings ??
-          const [
-            '127.0.0.1:19288',
-            '/sleuth/',
-            'flutter-perf-agent',
-          ],
-      redactSensitiveHeaders: redactSensitiveHeaders,
+      redactSensitiveHeaders: _redactSensitiveHeaders,
     );
     HttpOverrides.global = _overrides;
-    debugPrint('[PerfAgent] HTTP full capture installed');
+    debugPrint(
+      '[PerfAgent] HTTP full capture installed '
+      '(hosts=${_allowedHosts.isEmpty ? "ALL" : _allowedHosts.join(",")}; '
+      'httpsOnly=$_httpsOnly)',
+    );
   }
 
-  /// Wait for Sleuth's async HttpOverrides, then install once on top.
+  /// Install now + a few delayed retries (hot restart / late overrides).
+  /// Options are stored and reused by each retry.
   static void installDeferred({
-    Duration delay = const Duration(milliseconds: 800),
+    Duration delay = const Duration(milliseconds: 400),
+    int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
+    int capacity = PerfNetworkStore.defaultCapacity,
+    List<String>? excludeUrlSubstrings,
+    List<String>? allowedHosts,
+    bool? httpsOnly,
+    bool? allowHttpLoopback,
+    bool? redactSensitiveHeaders,
   }) {
     if (kReleaseMode) return;
-    Future<void>.delayed(delay, install);
-    Future<void>.delayed(const Duration(milliseconds: 1800), install);
+    void go() => install(
+          maxBodyBytes: maxBodyBytes,
+          capacity: capacity,
+          excludeUrlSubstrings: excludeUrlSubstrings,
+          allowedHosts: allowedHosts,
+          httpsOnly: httpsOnly,
+          allowHttpLoopback: allowHttpLoopback,
+          redactSensitiveHeaders: redactSensitiveHeaders,
+        );
+    go();
+    Future<void>.delayed(delay, go);
+    Future<void>.delayed(const Duration(milliseconds: 1200), go);
+    Future<void>.delayed(const Duration(milliseconds: 2500), go);
   }
 }
 
+/// Chaining [HttpOverrides] — same pattern as Sleuth's monitor, plus bodies.
+///
+/// Host / scheme filters live on [PerfNetworkCapture] (see [shouldCapture]).
 class PerfHttpOverrides extends HttpOverrides {
   PerfHttpOverrides({
-    this.excludeUrlSubstrings = const [],
     this.redactSensitiveHeaders = true,
   }) : _previous = HttpOverrides.current;
 
-  final List<String> excludeUrlSubstrings;
   final bool redactSensitiveHeaders;
   final HttpOverrides? _previous;
 
@@ -117,7 +234,6 @@ class PerfHttpOverrides extends HttpOverrides {
         _previous?.createHttpClient(context) ?? super.createHttpClient(context);
     return _CaptureHttpClient(
       inner,
-      excludeUrlSubstrings: excludeUrlSubstrings,
       redactSensitiveHeaders: redactSensitiveHeaders,
     );
   }
@@ -132,37 +248,63 @@ class PerfHttpOverrides extends HttpOverrides {
 class _CaptureHttpClient implements HttpClient {
   _CaptureHttpClient(
     this._inner, {
-    required this.excludeUrlSubstrings,
     required this.redactSensitiveHeaders,
   });
 
   final HttpClient _inner;
-  final List<String> excludeUrlSubstrings;
   final bool redactSensitiveHeaders;
 
-  bool _excluded(Uri url) {
-    final s = url.toString();
-    for (final p in excludeUrlSubstrings) {
-      if (p.isNotEmpty && s.contains(p)) return true;
-    }
-    return false;
-  }
+  bool _skip(Uri url) => !PerfNetworkCapture.shouldCapture(url);
 
   @override
   Future<HttpClientRequest> openUrl(String method, Uri url) async {
-    if (_excluded(url)) return _inner.openUrl(method, url);
+    if (_skip(url)) return _inner.openUrl(method, url);
     final started = DateTime.now();
-    // Capture route at open — before await/navigation can change it.
     final route = PerfNetworkCapture.currentRoute();
-    final req = await _inner.openUrl(method, url);
-    return _CaptureRequest(
-      req,
-      method: method.toUpperCase(),
-      url: url.toString(),
-      startedAt: started,
-      route: route,
-      redactSensitiveHeaders: redactSensitiveHeaders,
-    );
+    try {
+      final req = await _inner.openUrl(method, url);
+      return _CaptureRequest(
+        req,
+        method: method.toUpperCase(),
+        url: url.toString(),
+        startedAt: started,
+        route: route,
+        redactSensitiveHeaders: redactSensitiveHeaders,
+      );
+    } catch (e) {
+      _emitFailure(
+        method: method.toUpperCase(),
+        url: url.toString(),
+        startedAt: started,
+        route: route,
+        error: e,
+      );
+      rethrow;
+    }
+  }
+
+  static void _emitFailure({
+    required String method,
+    required String url,
+    required DateTime startedAt,
+    required String? route,
+    required Object error,
+  }) {
+    try {
+      PerfNetworkStore.instance.add(
+        NetworkRequest(
+          url: url,
+          method: method,
+          statusCode: -1,
+          durationMs: DateTime.now().difference(startedAt).inMilliseconds,
+          responseBytes: 0,
+          startedAt: startedAt.toIso8601String(),
+          route: route,
+          error: error.toString(),
+          source: 'full',
+        ),
+      );
+    } catch (_) {}
   }
 
   @override
@@ -222,9 +364,9 @@ class _CaptureHttpClient implements HttpClient {
   Future<HttpClientRequest> headUrl(Uri url) => openUrl('HEAD', url);
 
   @override
-  Duration get idleTimeout => _inner.idleTimeout;
+  bool get autoUncompress => _inner.autoUncompress;
   @override
-  set idleTimeout(Duration value) => _inner.idleTimeout = value;
+  set autoUncompress(bool value) => _inner.autoUncompress = value;
 
   @override
   Duration? get connectionTimeout => _inner.connectionTimeout;
@@ -232,19 +374,22 @@ class _CaptureHttpClient implements HttpClient {
   set connectionTimeout(Duration? value) => _inner.connectionTimeout = value;
 
   @override
+  Duration get idleTimeout => _inner.idleTimeout;
+  @override
+  set idleTimeout(Duration value) => _inner.idleTimeout = value;
+
+  @override
   int? get maxConnectionsPerHost => _inner.maxConnectionsPerHost;
   @override
   set maxConnectionsPerHost(int? value) => _inner.maxConnectionsPerHost = value;
 
   @override
-  bool get autoUncompress => _inner.autoUncompress;
-  @override
-  set autoUncompress(bool value) => _inner.autoUncompress = value;
-
-  @override
   String? get userAgent => _inner.userAgent;
   @override
   set userAgent(String? value) => _inner.userAgent = value;
+
+  @override
+  set findProxy(String Function(Uri url)? f) => _inner.findProxy = f;
 
   @override
   set authenticate(
@@ -260,9 +405,6 @@ class _CaptureHttpClient implements HttpClient {
       _inner.authenticateProxy = f;
 
   @override
-  set findProxy(String Function(Uri url)? f) => _inner.findProxy = f;
-
-  @override
   set badCertificateCallback(
     bool Function(X509Certificate cert, String host, int port)? callback,
   ) =>
@@ -274,8 +416,7 @@ class _CaptureHttpClient implements HttpClient {
       Uri url,
       String? proxyHost,
       int? proxyPort,
-    )?
-        f,
+    )? f,
   ) =>
       _inner.connectionFactory = f;
 
@@ -336,44 +477,47 @@ class _CaptureRequest implements HttpClientRequest {
     }
   }
 
-  void _emitFailure(Object error) {
+  void _emitOpenFailure(Object error) {
     if (_emitted) return;
     _emitted = true;
-    if (!PerfNetworkCapture._isOutermostRecorder) return;
     final reqBytes = _reqBody.takeBytes();
     final decoded = _decodeBody(reqBytes, headers.contentType?.mimeType);
-    PerfNetworkStore.instance.add(
-      NetworkRequest(
-        url: url,
-        method: method,
-        statusCode: -1,
-        durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-        responseBytes: 0,
-        startedAt: startedAt.toIso8601String(),
-        route: route,
-        requestHeaders: _headersMap(headers, redactSensitiveHeaders),
-        requestBody: decoded.$1,
-        requestBodyTruncated: decoded.$2 || reqBytes.length >= PerfNetworkStore.instance.maxBodyBytes,
-        requestBytes: reqBytes.length,
-        error: error.toString(),
-        source: 'full',
-      ),
-    );
+    try {
+      PerfNetworkStore.instance.add(
+        NetworkRequest(
+          url: url,
+          method: method,
+          statusCode: -1,
+          durationMs: DateTime.now().difference(startedAt).inMilliseconds,
+          responseBytes: 0,
+          startedAt: startedAt.toIso8601String(),
+          route: route,
+          requestHeaders: _headersMap(headers, redactSensitiveHeaders),
+          requestBody: decoded.$1,
+          requestBodyTruncated: decoded.$2 ||
+              reqBytes.length >= PerfNetworkStore.instance.maxBodyBytes,
+          requestBytes: reqBytes.length,
+          error: error.toString(),
+          source: 'full',
+        ),
+      );
+    } catch (_) {}
   }
 
   @override
   Future<HttpClientResponse> close() async {
     try {
-      final response = await _inner.close();
-      final reqBytes = _reqBody.takeBytes();
+      final reqBytes = _reqBody.toBytes();
       final reqDecoded = _decodeBody(reqBytes, headers.contentType?.mimeType);
+      final reqHeaders = _headersMap(headers, redactSensitiveHeaders);
+      final response = await _inner.close();
       return _CaptureResponse(
         response,
         url: url,
         method: method,
         startedAt: startedAt,
         route: route,
-        requestHeaders: _headersMap(headers, redactSensitiveHeaders),
+        requestHeaders: reqHeaders,
         requestBody: reqDecoded.$1,
         requestBodyTruncated: reqDecoded.$2 ||
             reqBytes.length >= PerfNetworkStore.instance.maxBodyBytes,
@@ -382,11 +526,12 @@ class _CaptureRequest implements HttpClientRequest {
         onEmitted: () => _emitted = true,
       );
     } catch (e) {
-      _emitFailure(e);
+      _emitOpenFailure(e);
       rethrow;
     }
   }
 
+  /// Prefer [close] so capture wraps the response (unlike Sleuth's `_inner.done`).
   @override
   Future<HttpClientResponse> get done => close();
 
@@ -483,6 +628,8 @@ class _CaptureRequest implements HttpClientRequest {
   }
 }
 
+/// Same Stream subclass trick as Sleuth: all drain/toList/forEach go through
+/// [listen], so we always see the body.
 class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
   _CaptureResponse(
     this._inner, {
@@ -511,11 +658,42 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
   final void Function() onEmitted;
 
   final BytesBuilder _resBody = BytesBuilder(copy: false);
-  bool _recorded = false;
-  int _totalBytes = 0;
 
-  void _take(List<int> data) {
-    _totalBytes += data.length;
+  void _emitRecord(int bytesReceived, {bool cancelled = false, String? error}) {
+    onEmitted();
+    final max = PerfNetworkStore.instance.maxBodyBytes;
+    final captured = _resBody.takeBytes();
+    final mime = headers.contentType?.mimeType;
+    final decoded = _decodeBody(captured, mime);
+    try {
+      PerfNetworkStore.instance.add(
+        NetworkRequest(
+          url: url,
+          method: method,
+          statusCode: statusCode,
+          durationMs: DateTime.now().difference(startedAt).inMilliseconds,
+          responseBytes: bytesReceived,
+          startedAt: startedAt.toIso8601String(),
+          route: route,
+          cancelled: cancelled,
+          contentType: mime,
+          requestHeaders: requestHeaders,
+          requestBody: requestBody,
+          requestBodyTruncated: requestBodyTruncated,
+          requestBytes: requestBytes,
+          responseHeaders: _headersMap(headers, redactSensitiveHeaders),
+          responseBody: decoded.$1,
+          responseBodyTruncated: decoded.$2 ||
+              captured.length >= max ||
+              bytesReceived > captured.length,
+          error: error,
+          source: 'full',
+        ),
+      );
+    } catch (_) {}
+  }
+
+  void _takeChunk(List<int> data) {
     final max = PerfNetworkStore.instance.maxBodyBytes;
     final have = _resBody.length;
     if (have >= max) return;
@@ -527,39 +705,6 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
     }
   }
 
-  void _finish({bool cancelled = false, String? error}) {
-    if (_recorded) return;
-    _recorded = true;
-    onEmitted();
-    if (!PerfNetworkCapture._isOutermostRecorder) return;
-    final bytes = _resBody.takeBytes();
-    final mime = headers.contentType?.mimeType;
-    final decoded = _decodeBody(bytes, mime);
-    PerfNetworkStore.instance.add(
-      NetworkRequest(
-        url: url,
-        method: method,
-        statusCode: statusCode,
-        durationMs: DateTime.now().difference(startedAt).inMilliseconds,
-        responseBytes: _totalBytes,
-        startedAt: startedAt.toIso8601String(),
-        route: route,
-        cancelled: cancelled,
-        contentType: mime,
-        requestHeaders: requestHeaders,
-        requestBody: requestBody,
-        requestBodyTruncated: requestBodyTruncated,
-        requestBytes: requestBytes,
-        responseHeaders: _headersMap(headers, redactSensitiveHeaders),
-        responseBody: decoded.$1,
-        responseBodyTruncated:
-            decoded.$2 || bytes.length >= PerfNetworkStore.instance.maxBodyBytes,
-        error: error,
-        source: 'full',
-      ),
-    );
-  }
-
   @override
   StreamSubscription<List<int>> listen(
     void Function(List<int> event)? onData, {
@@ -567,24 +712,42 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
     void Function()? onDone,
     bool? cancelOnError,
   }) {
-    return _inner.listen(
+    // Sleuth pattern: proxy owns terminal handlers permanently so
+    // drain()/asFuture()/onDone rebinding cannot drop the record.
+    final sub = _CaptureSubscription<List<int>>._((bytes, {cancelled = false, error}) {
+      _emitRecord(bytes, cancelled: cancelled, error: error);
+    });
+    sub._terminated.future.ignore();
+    sub._userOnData = onData;
+    sub._userOnError = onError;
+    sub._userOnDone = onDone;
+
+    sub._inner = _inner.listen(
       (chunk) {
-        _take(chunk);
-        onData?.call(chunk);
+        sub._bytesReceived += chunk.length;
+        _takeChunk(chunk);
+        sub._userOnData?.call(chunk);
       },
-      onError: (Object e, StackTrace st) {
-        _finish(error: e.toString());
-        if (onError != null) {
-          // ignore: avoid_dynamic_calls
-          onError(e, st);
+      onError: (Object error, [StackTrace? stackTrace]) {
+        final stack = stackTrace ?? StackTrace.empty;
+        sub._emitOnTerminalWithError(error, stack);
+        final handler = sub._userOnError;
+        if (handler != null) {
+          if (handler is void Function(Object, StackTrace)) {
+            handler(error, stack);
+          } else {
+            (handler as void Function(Object))(error);
+          }
         }
       },
       onDone: () {
-        _finish();
-        onDone?.call();
+        sub._emitOnTerminal();
+        sub._userOnDone?.call();
       },
       cancelOnError: cancelOnError,
     );
+
+    return sub;
   }
 
   @override
@@ -618,6 +781,9 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
   List<RedirectInfo> get redirects => _inner.redirects;
 
   @override
+  bool get isBroadcast => _inner.isBroadcast;
+
+  @override
   Future<HttpClientResponse> redirect([
     String? method,
     Uri? url,
@@ -631,6 +797,74 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
   @override
   HttpClientResponseCompressionState get compressionState =>
       _inner.compressionState;
+}
+
+/// Mirrors Sleuth `_MonitoringSubscription`: owns terminal signal + emit.
+class _CaptureSubscription<T> implements StreamSubscription<T> {
+  _CaptureSubscription._(this._emit);
+
+  late StreamSubscription<T> _inner;
+  final Completer<void> _terminated = Completer<void>();
+  int _bytesReceived = 0;
+  bool _terminatedFlag = false;
+
+  final void Function(int bytesReceived, {bool cancelled, String? error}) _emit;
+
+  void Function(T data)? _userOnData;
+  Function? _userOnError;
+  void Function()? _userOnDone;
+
+  void _emitOnTerminal({bool cancelled = false, String? error}) {
+    if (_terminatedFlag) return;
+    _terminatedFlag = true;
+    _emit(_bytesReceived, cancelled: cancelled, error: error);
+    if (!_terminated.isCompleted) {
+      _terminated.complete();
+    }
+  }
+
+  void _emitOnTerminalWithError(Object error, StackTrace stackTrace) {
+    if (_terminatedFlag) return;
+    _terminatedFlag = true;
+    _emit(_bytesReceived, cancelled: false, error: error.toString());
+    if (!_terminated.isCompleted) {
+      _terminated.completeError(error, stackTrace);
+    }
+  }
+
+  @override
+  Future<E> asFuture<E>([E? futureValue]) =>
+      _terminated.future.then<E>((_) => futureValue as E);
+
+  @override
+  Future<void> cancel() {
+    _emitOnTerminal(cancelled: true);
+    return _inner.cancel();
+  }
+
+  @override
+  void onData(void Function(T data)? handleData) {
+    _userOnData = handleData;
+  }
+
+  @override
+  void onError(Function? handleError) {
+    _userOnError = handleError;
+  }
+
+  @override
+  void onDone(void Function()? handleDone) {
+    _userOnDone = handleDone;
+  }
+
+  @override
+  void pause([Future<void>? resumeSignal]) => _inner.pause(resumeSignal);
+
+  @override
+  void resume() => _inner.resume();
+
+  @override
+  bool get isPaused => _inner.isPaused;
 }
 
 Map<String, String> _headersMap(HttpHeaders headers, bool redact) {
@@ -654,7 +888,6 @@ Map<String, String> _headersMap(HttpHeaders headers, bool redact) {
   return out;
 }
 
-/// Returns (textOrPlaceholder, truncatedByDecode).
 (String?, bool) _decodeBody(List<int> bytes, String? mimeType) {
   if (bytes.isEmpty) return (null, false);
   final mime = (mimeType ?? '').toLowerCase();
@@ -669,7 +902,6 @@ Map<String, String> _headersMap(HttpHeaders headers, bool redact) {
   }
   try {
     final text = utf8.decode(bytes, allowMalformed: true);
-    // Heuristic: too many replacement chars → treat as binary.
     final bad = '\uFFFD'.allMatches(text).length;
     if (bad > text.length * 0.1 && text.length > 32) {
       return ('[binary ${bytes.length} bytes]', false);

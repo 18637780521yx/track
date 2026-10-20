@@ -156,6 +156,21 @@ class BridgeClient {
         (raw) => AppRouteData.fromJson(_asMap(raw)),
       );
 
+  /// Post-pop WeakRef leak probe on the app (no forced GC).
+  Future<ApiResponse<Map<String, dynamic>>> transitionLeakProbe({
+    required String route,
+    int? settleMs,
+  }) {
+    return _post(
+      '/transition/leak_probe',
+      {
+        'route': route,
+        if (settleMs != null) 'settleMs': settleMs,
+      },
+      (raw) => _asMap(raw),
+    );
+  }
+
   /// Sleuth cold-start metrics (TTFF / TTI). Empty [StartupMetricsData.metrics]
   /// until first frame after [Sleuth.init].
   Future<ApiResponse<StartupMetricsData>> sleuthStartup() => _get(

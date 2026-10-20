@@ -24,10 +24,9 @@ class PerfAgent {
   /// Initialize flutter-skill + local perf HTTP bridge + unified journal.
   ///
   /// Call once before [runApp]. Wrap the app with `Sleuth.track(child: ...)`
-  /// yourself so Sleuth owns the widget tree.
-  ///
-  /// After `Sleuth.track`, call [installHttpCaptureDeferred] so reports include
-  /// request/response headers and bodies.
+  /// yourself. Prefer `enableNetworkMonitoring: false` so PerfAgent owns
+  /// [HttpOverrides] for full header/body capture — then call
+  /// [installHttpCaptureDeferred] after `Sleuth.track`.
   ///
   /// Wrap root with [PerfRecordingBanner] (or use [builder]) so manual sessions
   /// can be stopped from the in-app banner.
@@ -69,24 +68,48 @@ class PerfAgent {
     _startFuture = _startBridgeDeferred();
   }
 
-  /// Capture URL / headers / body / response into reports (debug/profile).
+  /// Full HTTP capture (URL / headers / body) into [PerfNetworkStore].
+  ///
+  /// [allowedHosts]: business API hosts (`host` or `host:port`). Empty = all.
+  /// [httpsOnly]: only HTTPS; loopback HTTP allowed when [allowHttpLoopback].
   static void installHttpCapture({
     int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
     bool redactSensitiveHeaders = true,
+    List<String>? allowedHosts,
+    bool httpsOnly = false,
+    bool allowHttpLoopback = true,
+    List<String>? excludeUrlSubstrings,
   }) {
     PerfNetworkCapture.install(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
+      allowedHosts: allowedHosts,
+      httpsOnly: httpsOnly,
+      allowHttpLoopback: allowHttpLoopback,
+      excludeUrlSubstrings: excludeUrlSubstrings,
     );
   }
 
-  /// Install now + again after Sleuth async HttpOverrides setup.
-  static void installHttpCaptureDeferred() {
-    PerfNetworkCapture.installDeferred();
+  /// Install now + delayed retries after `Sleuth.track`.
+  static void installHttpCaptureDeferred({
+    int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
+    bool redactSensitiveHeaders = true,
+    List<String>? allowedHosts,
+    bool httpsOnly = false,
+    bool allowHttpLoopback = true,
+    List<String>? excludeUrlSubstrings,
+  }) {
+    PerfNetworkCapture.installDeferred(
+      maxBodyBytes: maxBodyBytes,
+      redactSensitiveHeaders: redactSensitiveHeaders,
+      allowedHosts: allowedHosts,
+      httpsOnly: httpsOnly,
+      allowHttpLoopback: allowHttpLoopback,
+      excludeUrlSubstrings: excludeUrlSubstrings,
+    );
   }
 
   static Future<void> _startBridgeDeferred() async {
-    // Give the previous isolate a moment to close its socket (hot restart).
     await Future<void>.delayed(const Duration(milliseconds: 350));
     final bridge = _bridge;
     if (bridge == null) return;
