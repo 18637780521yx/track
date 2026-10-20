@@ -491,22 +491,39 @@ class ActionRunner {
           if (probe.isOk && probe.data != null) {
             leakJson = probe.data;
             final alive = (leakJson!['alive'] as List?) ?? const [];
-            if (alive.isNotEmpty) {
-              final names = alive
-                  .map((e) => e is Map ? e['name'] : e)
-                  .join(', ');
+            final sleuthHits =
+                (leakJson['sleuthHits'] as List?) ?? const [];
+            final hasLeak = alive.isNotEmpty || sleuthHits.isNotEmpty;
+            if (hasLeak) {
+              final parts = <String>[];
+              if (alive.isNotEmpty) {
+                final names = alive
+                    .map((e) => e is Map ? e['name'] : e)
+                    .join(', ');
+                parts.add('仍可达: $names（WeakRef）');
+              }
+              if (sleuthHits.isNotEmpty) {
+                final titles = sleuthHits
+                    .map((e) => e is Map
+                        ? (e['title'] ?? e['stableId'] ?? '?')
+                        : e)
+                    .join(', ');
+                parts.add('Sleuth: $titles');
+              }
               final multi = leakJson['multiRoundConfirmed'] == true;
               final counts = (leakJson['aliveCounts'] as List?) ?? const [];
               final multiNote = multi && counts.isNotEmpty
                   ? '；多轮确认：同路由 ${counts.length} 次进出存活数 '
                       '[${counts.join('→')}]'
                   : '';
+              final evidence = leakJson['evidence']?.toString() ?? '';
               final leakAlert = AlertItem(
                 type: 'transition_memory_leak',
                 stepId: chapter.stepId,
                 action: actionLabel,
                 message:
-                    'pop $routeBefore 后仍可达: $names（WeakRef，未强制 GC）$multiNote',
+                    'pop $routeBefore 后 ${parts.join('；')}$multiNote'
+                    '${evidence.isNotEmpty ? ' · evidence=$evidence' : ''}',
                 value: leakJson,
               );
               alerts.add(leakAlert);

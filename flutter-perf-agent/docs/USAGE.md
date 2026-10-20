@@ -163,9 +163,12 @@ HTML 结构（schemaVersion 9）：
   "leakTrackEnabled": true,
   "transitionSettleMs": 1500,
   "leakConfirmRounds": 2,
-  "leakRssRetainMb": 5
+  "leakRssRetainMb": 5,
+  "sleuthBindEnabled": true
 }
 ```
+
+Sleuth 转场绑定（0.8.6）：push 时记录 issue 指纹，pop 后若新增 `heap_growing` / `stream_resource_growth` / `native_memory_growing`，写入探针 `sleuthHits`，`evidence` 可为 `sleuth` 或与 WeakRef 组合。需探测器实际 hit（常要 `--profile`）才会非空。
 
 手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持；登记由 `PerfDi.lazyPut` 自动完成）。
 

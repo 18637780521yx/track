@@ -16,6 +16,7 @@ import 'perf_snapshot.dart';
 import 'sdk_report_writer.dart';
 import 'session_journal.dart';
 import 'sleuth_facade.dart';
+import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
 import 'ui_actions.dart';
@@ -294,6 +295,7 @@ class PerfBridgeServer {
         settleMs: (transition['transitionSettleMs'] as num?)?.toInt(),
         leakConfirmRounds: (transition['leakConfirmRounds'] as num?)?.toInt(),
         rssRetainMb: (transition['leakRssRetainMb'] as num?)?.toDouble(),
+        sleuthBindEnabled: transition['sleuthBindEnabled'] as bool?,
       );
       final settle = (transition['transitionSettleMs'] as num?)?.toInt();
       if (settle != null && settle >= 0) {
@@ -304,7 +306,8 @@ class PerfBridgeServer {
         'enabled=${TransitionLeakTracker.instance.enabled} '
         'settleMs=${TransitionLeakTracker.instance.settleMs} '
         'rounds=${TransitionLeakTracker.instance.leakConfirmRounds} '
-        'rssRetainMb=${TransitionLeakTracker.instance.rssRetainMb}',
+        'rssRetainMb=${TransitionLeakTracker.instance.rssRetainMb} '
+        'sleuthBind=${SleuthTransitionBinder.instance.enabled}',
       );
     }
 

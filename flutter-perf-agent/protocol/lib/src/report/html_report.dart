@@ -346,17 +346,29 @@ String _transitionExtrasHtml(Map<String, dynamic> seg) {
   final alive = (leak['alive'] as List?) ?? const [];
   final aliveCount = leak['aliveCount'] ?? alive.length;
   final rssDelta = leak['rssDeltaMb'];
+  final evidence = leak['evidence']?.toString() ?? 'weak_ref';
+  final sleuthHits = (leak['sleuthHits'] as List?) ?? const [];
   if (aliveCount is num && aliveCount > 0) {
     final names = alive
         .map((e) => e is Map ? e['name']?.toString() ?? '?' : e.toString())
         .join(', ');
-    final evidence = leak['evidence']?.toString() ?? 'weak_ref';
     buf.writeln(
       '<p class="badge bad">泄漏 WeakRef ×$aliveCount：${_esc(names)}'
       ' · <code>${_esc(evidence)}</code></p>',
     );
-  } else {
+  } else if (sleuthHits.isEmpty) {
     buf.writeln('<p class="muted">WeakRef 探针：无仍可达对象</p>');
+  }
+  if (sleuthHits.isNotEmpty) {
+    final titles = sleuthHits
+        .map((e) => e is Map
+            ? (e['title'] ?? e['stableId'] ?? '?').toString()
+            : e.toString())
+        .join(', ');
+    buf.writeln(
+      '<p class="badge bad">Sleuth 转场窗新增：${_esc(titles)}'
+      ' · <code>${_esc(evidence)}</code></p>',
+    );
   }
   final counts = (leak['aliveCounts'] as List?) ?? const [];
   if (counts.length >= 2) {

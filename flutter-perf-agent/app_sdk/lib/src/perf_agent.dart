@@ -63,6 +63,8 @@ class PerfAgent {
     int leakConfirmRounds = 2,
     /// RSS retain (MB) auxiliary alert threshold.
     double leakRssRetainMb = 5,
+    /// Bind Sleuth heap_growing / stream_resource_growth to transition windows.
+    bool sleuthBindEnabled = true,
   }) async {
     if (_initialized) return;
     _initialized = true;
@@ -81,6 +83,7 @@ class PerfAgent {
       settleMs: transitionSettleMs,
       leakConfirmRounds: leakConfirmRounds,
       rssRetainMb: leakRssRetainMb,
+      sleuthBindEnabled: sleuthBindEnabled,
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 

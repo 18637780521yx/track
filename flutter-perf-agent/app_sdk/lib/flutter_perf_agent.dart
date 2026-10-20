@@ -25,4 +25,5 @@ export 'src/sdk_report_writer.dart';
 export 'src/recording_overlay.dart';
 export 'src/transition_ledger.dart';
 export 'src/transition_leak_tracker.dart';
+export 'src/sleuth_transition_binder.dart';
 export 'src/getx_leak_hook.dart';

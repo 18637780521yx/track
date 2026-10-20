@@ -3,6 +3,7 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
+import 'sleuth_transition_binder.dart';
 
 class _Tracked {
   _Tracked({
@@ -29,6 +30,7 @@ class TransitionLeakProbe {
     required this.roundIndex,
     required this.aliveCounts,
     required this.multiRoundConfirmed,
+    this.sleuthHits = const [],
   });
 
   final String route;
@@ -46,7 +48,14 @@ class TransitionLeakProbe {
   /// True when last [leakConfirmRounds] counts are all > 0 and non-decreasing.
   final bool multiRoundConfirmed;
 
-  bool get hasLeak => alive.isNotEmpty;
+  /// Allowlisted Sleuth issues new since push of this route.
+  final List<Map<String, dynamic>> sleuthHits;
+
+  bool get hasWeakRefLeak => alive.isNotEmpty;
+
+  bool get hasSleuthLeak => sleuthHits.isNotEmpty;
+
+  bool get hasLeak => hasWeakRefLeak || hasSleuthLeak;
 
   double? get rssDeltaMb {
     if (rssBeforeMb == null || rssAfterMb == null) return null;
@@ -57,6 +66,18 @@ class TransitionLeakProbe {
     if (aliveCounts.isEmpty) return '';
     final series = aliveCounts.join('→');
     return '同路由 ${aliveCounts.length} 次进出存活数 [$series]';
+  }
+
+  /// weak_ref_multi | weak_ref | sleuth | weak_ref+sleuth | weak_ref_multi+sleuth
+  String get evidence {
+    final wr = hasWeakRefLeak
+        ? (multiRoundConfirmed ? 'weak_ref_multi' : 'weak_ref')
+        : null;
+    final sl = hasSleuthLeak ? 'sleuth' : null;
+    if (wr != null && sl != null) return '$wr+$sl';
+    if (wr != null) return wr;
+    if (sl != null) return sl;
+    return 'none';
   }
 
   Map<String, dynamic> toJson() => {
@@ -70,7 +91,8 @@ class TransitionLeakProbe {
         'roundIndex': roundIndex,
         'aliveCounts': aliveCounts,
         'multiRoundConfirmed': multiRoundConfirmed,
-        'evidence': multiRoundConfirmed ? 'weak_ref_multi' : 'weak_ref',
+        'sleuthHits': sleuthHits,
+        'evidence': evidence,
       };
 }
 
@@ -78,6 +100,7 @@ class TransitionLeakProbe {
 ///
 /// Does **not** call VM forced GC — still-reachable objects are leaks.
 /// V2: keeps per-route [aliveCounts] history for multi-round confirmation.
+/// V2.1: merges Sleuth transition-window hits ([SleuthTransitionBinder]).
 class TransitionLeakTracker {
   TransitionLeakTracker._();
   static final TransitionLeakTracker instance = TransitionLeakTracker._();
@@ -106,12 +129,13 @@ class TransitionLeakTracker {
     _aliveHistory.clear();
   }
 
-  /// Apply config from [PerfAgent.ensureInitialized].
+  /// Apply config from [PerfAgent.ensureInitialized] / MCP session start.
   void configure({
     bool? enabled,
     int? settleMs,
     int? leakConfirmRounds,
     double? rssRetainMb,
+    bool? sleuthBindEnabled,
   }) {
     if (enabled != null) this.enabled = enabled;
     if (settleMs != null && settleMs >= 0) this.settleMs = settleMs;
@@ -120,6 +144,9 @@ class TransitionLeakTracker {
     }
     if (rssRetainMb != null && rssRetainMb >= 0) {
       this.rssRetainMb = rssRetainMb;
+    }
+    if (sleuthBindEnabled != null) {
+      SleuthTransitionBinder.instance.enabled = sleuthBindEnabled;
     }
   }
 
@@ -150,17 +177,17 @@ class TransitionLeakTracker {
     });
   }
 
-  /// Call when a route is pushed (or becomes active) to stamp RSS baseline.
+  /// Call when a route is pushed (or becomes active) to stamp RSS + Sleuth.
   void markPush(String route) {
     if (!enabled) return;
     try {
       final snap = PerfSnapshot.capture(sleuth: false);
       _rssAtPush[route] = snap.rssBytes / (1024 * 1024);
     } catch (_) {}
+    SleuthTransitionBinder.instance.stampPush(route);
   }
 
-  /// After pop: wait [settleMs], then list registrations for [poppedRoute]
-  /// whose WeakRef is still alive; append to multi-round history.
+  /// After pop: wait [settleMs], then WeakRef + Sleuth window diff.
   Future<TransitionLeakProbe> probeAfterPop({
     required String poppedRoute,
     int? settleOverrideMs,
@@ -193,6 +220,8 @@ class TransitionLeakTracker {
     }
 
     final multi = _isMultiRoundConfirmed(history);
+    final sleuthHits =
+        SleuthTransitionBinder.instance.diffSincePush(poppedRoute);
 
     double? rssAfter;
     try {
@@ -209,6 +238,7 @@ class TransitionLeakTracker {
       roundIndex: history.length,
       aliveCounts: List<int>.from(history),
       multiRoundConfirmed: multi,
+      sleuthHits: sleuthHits,
     );
   }
 
@@ -235,7 +265,17 @@ class TransitionLeakTracker {
   }) {
     final out = <AlertItem>[];
     if (probe.hasLeak) {
-      final names = probe.alive.map((e) => e['name']).join(', ');
+      final parts = <String>[];
+      if (probe.hasWeakRefLeak) {
+        final names = probe.alive.map((e) => e['name']).join(', ');
+        parts.add('仍可达: $names（WeakRef）');
+      }
+      if (probe.hasSleuthLeak) {
+        final titles = probe.sleuthHits
+            .map((e) => e['title'] ?? e['stableId'] ?? '?')
+            .join(', ');
+        parts.add('Sleuth: $titles');
+      }
       final multiNote = probe.multiRoundConfirmed
           ? '；多轮确认：${probe.multiRoundSummary}'
           : '';
@@ -245,7 +285,8 @@ class TransitionLeakTracker {
           stepId: stepId,
           action: action,
           message:
-              'pop ${probe.route} 后仍可达: $names（WeakRef，未强制 GC）$multiNote',
+              'pop ${probe.route} 后 ${parts.join('；')}$multiNote'
+              ' · evidence=${probe.evidence}',
           value: probe.toJson(),
         ),
       );

@@ -35,6 +35,7 @@ class PerfAgentConfig {
     required this.transitionSettleMs,
     required this.leakConfirmRounds,
     required this.leakRssRetainMb,
+    required this.sleuthBindEnabled,
     this.repoRoot,
   });
 
@@ -76,6 +77,7 @@ class PerfAgentConfig {
   final int transitionSettleMs;
   final int leakConfirmRounds;
   final double leakRssRetainMb;
+  final bool sleuthBindEnabled;
 
   final String? repoRoot;
 
@@ -87,6 +89,7 @@ class PerfAgentConfig {
         'transitionSettleMs': transitionSettleMs,
         'leakConfirmRounds': leakConfirmRounds,
         'leakRssRetainMb': leakRssRetainMb,
+        'sleuthBindEnabled': sleuthBindEnabled,
       };
 
   String? resolveColdStartAppPath() {
@@ -168,6 +171,7 @@ class PerfAgentConfig {
           (transition['leakConfirmRounds'] as num?)?.toInt() ?? 2,
       leakRssRetainMb:
           (transition['leakRssRetainMb'] as num?)?.toDouble() ?? 5,
+      sleuthBindEnabled: transition['sleuthBindEnabled'] as bool? ?? true,
       repoRoot: repoRoot,
     );
   }

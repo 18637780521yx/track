@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.6 — Sleuth 转场绑定
+
+- `SleuthTransitionBinder`：push 时 stamp issue 指纹，pop settle 后差分 allowlist（`heap_growing` / `stream_resource_growth` / `native_memory_growing`）
+- 探针 JSON：`sleuthHits` + `evidence`（`weak_ref` / `weak_ref_multi` / `sleuth` / 组合）
+- WeakRef 空但 Sleuth hit 仍出 `transition_memory_leak`（MCP + SDK）
+- 配置 `transition.sleuthBindEnabled`（默认 true）开会话下推
+
 ## 0.8.5 — MCP 转场泄漏配置对齐
 
 - `perf_agent_config.json` → `transition`：`leakTrackEnabled` / `transitionSettleMs` / `leakConfirmRounds` / `leakRssRetainMb`

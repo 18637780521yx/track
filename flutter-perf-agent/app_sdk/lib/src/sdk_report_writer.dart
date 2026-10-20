@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
+import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 
 class SdkReportPaths {
@@ -61,7 +62,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.5',
+      'version': '0.8.6',
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
       'envelope': 'code/data/msg',
@@ -176,7 +177,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.5',
+      'version': '0.8.6',
       'live': true,
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
@@ -219,6 +220,7 @@ class SdkReportWriter {
       'transitionSettleMs': t.settleMs,
       'leakConfirmRounds': t.leakConfirmRounds,
       'leakRssRetainMb': t.rssRetainMb,
+      'sleuthBindEnabled': SleuthTransitionBinder.instance.enabled,
     };
   }
 }

@@ -33,7 +33,8 @@
     "leakTrackEnabled": true,
     "transitionSettleMs": 1500,
     "leakConfirmRounds": 2,
-    "leakRssRetainMb": 5
+    "leakRssRetainMb": 5,
+    "sleuthBindEnabled": true
   },
   "coldStart": {
     "relaunch": false,

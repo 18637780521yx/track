@@ -3,6 +3,7 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'manual_gesture_recorder.dart';
 import 'sdk_report_writer.dart';
+import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
 
@@ -71,6 +72,7 @@ class SessionJournal {
     ManualGestureRecorder.instance.resetRouteTracking();
     TransitionLedger.instance.reset();
     TransitionLeakTracker.instance.clear();
+    SleuthTransitionBinder.instance.clear();
     ManualGestureRecorder.instance.ensureStarted();
     debugPrint(
       '[SessionJournal] start $sessionId ($testName) '
