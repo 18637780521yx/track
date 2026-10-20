@@ -1,3 +1,4 @@
+import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
 import 'home_controller.dart';
@@ -5,6 +6,6 @@ import 'home_controller.dart';
 class HomeBinding extends Bindings {
   @override
   void dependencies() {
-    Get.lazyPut(HomeController.new);
+    PerfDi.lazyPut(HomeController.new);
   }
 }

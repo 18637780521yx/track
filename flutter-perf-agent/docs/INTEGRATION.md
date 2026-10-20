@@ -86,7 +86,29 @@ adb reverse tcp:19288 tcp:19288
 
 桌面（macOS）无需此步。
 
-## 6. 可信性能数据
+## 6. GetX / Navigator 自动 hook（0.8.3）
+
+转场泄漏登记三选一（推荐 1）：
+
+```dart
+// 1) Binding：PerfDi（需配合 instrumentGetPages 注入路由 scope）
+GetMaterialApp(
+  getPages: PerfAgent.instrumentGetPages(AppPages.routes),
+  navigatorObservers: PerfAgent.navigatorObservers,
+);
+// Binding.dependencies:
+PerfDi.lazyPut(MyController.new);
+
+// 2) mixin
+class MyController extends GetxController with PerfLeakTrackMixin { ... }
+
+// 3) 基类
+class MyController extends PerfGetxController { ... }
+```
+
+`PerfDi` / mixin 默认 **不**在 `onClose` 从登记表摘掉（外部强引用仍可通过 WeakRef 检出）。长寿页可设 `leakUntrackOnClose => true` 降噪。
+
+## 7. 可信性能数据
 
 ```bash
 flutter run --profile

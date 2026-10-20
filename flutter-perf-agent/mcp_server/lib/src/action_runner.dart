@@ -391,8 +391,10 @@ class ActionRunner {
     }
     final after = afterRes.data!.snapshot;
 
+    // Chapter-scoped memory window: first action's before → latest after.
+    final baselineBefore = chapter.diff?.before ?? before;
     final diff = computePerfDiff(
-      before: before,
+      before: baselineBefore,
       after: after,
       durationMs: DateTime.now().difference(t0).inMilliseconds,
     );
@@ -420,17 +422,28 @@ class ActionRunner {
       _log('network fetch failed: $e');
     }
 
-    final alerts = List<AlertItem>.from(
-      reports.evaluateDiff(
-        diff,
-        stepId: chapter.stepId,
-        action: '$routeBefore · $actionLabel',
-        sleuthIssues: sleuthIssues,
-      ),
+    final stepId = chapter.stepId;
+    final evaluated = reports.evaluateDiff(
+      diff,
+      stepId: stepId,
+      action: '$routeBefore · $actionLabel',
+      sleuthIssues: sleuthIssues,
     );
-    for (final a in alerts) {
+    // memory_increase is chapter-stateful: replace per stepId (align with final diff).
+    final memAlerts =
+        evaluated.where((a) => a.type == 'memory_increase').toList();
+    final otherAlerts =
+        evaluated.where((a) => a.type != 'memory_increase').toList();
+    session.removeAlertsWhere(
+      (a) => a.stepId == stepId && a.type == 'memory_increase',
+    );
+    for (final a in memAlerts) {
       session.addAlert(a);
     }
+    for (final a in otherAlerts) {
+      session.addAlert(a);
+    }
+    final alerts = <AlertItem>[...memAlerts, ...otherAlerts];
 
     // Split network: stamp-matching source route stays on this chapter.
     final sourceNet = <NetworkRequest>[];
@@ -590,6 +603,9 @@ class ActionRunner {
       }
     }
 
+    final keptChapterAlerts = chapter.alerts
+        .where((a) => a.type != 'memory_increase')
+        .toList();
     final updated = chapter.copyWith(
       ok: chapter.ok && ok,
       driver: driver,
@@ -598,7 +614,7 @@ class ActionRunner {
       sleuthIssues: sleuthIssues,
       networkRequests: _mergeNetwork(chapter.networkRequests, sourceNet),
       events: [...chapter.events, ...newEvents],
-      alerts: [...chapter.alerts, ...alerts],
+      alerts: [...keptChapterAlerts, ...alerts],
       screenshotPath: coverShot?.screenshotPath ?? chapter.screenshotPath,
       screenshotDataUri:
           coverShot?.screenshotDataUri ?? chapter.screenshotDataUri,
@@ -610,6 +626,8 @@ class ActionRunner {
         'routeBefore': routeBefore,
         'routeChanged': routeChanged,
         'lastAction': action,
+        'rssBaselineBytes':
+            chapter.extra['rssBaselineBytes'] ?? baselineBefore.rssBytes,
         ...?extraStepFields,
       },
     );

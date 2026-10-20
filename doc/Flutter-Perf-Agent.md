@@ -236,7 +236,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 | 阶段 | 内容 | 状态 |
 |------|------|------|
 | **V1** | push/pop；资源 track/WeakRef；pop 后仍可达 → `transition_memory_leak`；转场 jank；RSS 辅证；**默认不做强制 GC** | 已实现（0.8.0） |
-| **V2** | **多轮确认**（`leakConfirmRounds` + `aliveCounts` / `weak_ref_multi`）；配置透传 | **部分已实现（0.8.2）**；GetX/Navigator 自动 hook、Sleuth 绑定、线上采样仍规划 |
+| **V2** | **多轮确认**（0.8.2）+ **GetX/Navigator 自动 hook**（`PerfDi` / `instrumentGetPages` / `navigatorObservers`，0.8.3） | **部分已实现**；Sleuth stream 绑定、线上采样仍规划 |
 | **V3** | opt-in VM 深挖；modal/Hero；门禁策略 | 规划 |
 
 #### E. 配置扩展
@@ -320,7 +320,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 5. 增加录制回放功能
 6. 支持WebView页面测试
 7. 增加AI自动性能根因分析（基于采集指标，给出优化代码建议）
-8. 转场 V2 剩余 / V3：GetX/Navigator 自动 hook、Sleuth 绑定、线上采样、动画窗精确帧、modal/Hero（详见 4.3.3）
+8. 转场 V2 剩余 / V3：Sleuth stream 绑定、线上采样、动画窗精确帧、modal/Hero（GetX/Navigator 自动 hook 已在 0.8.3；详见 4.3.3）
 
 ## 10. 目录结构建议（项目仓库）
 ```

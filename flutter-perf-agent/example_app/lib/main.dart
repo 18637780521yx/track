@@ -100,9 +100,7 @@ class PerfDemoApp extends StatelessWidget {
       getPages: AppPages.routes,
       defaultTransition: Transition.cupertino,
       // push/pop → TransitionLedger（转场 kind + 泄漏探针）
-      navigatorObservers: [
-        if (!kReleaseMode) TransitionObserver(),
-      ],
+      navigatorObservers: PerfAgent.navigatorObservers,
       // Manual + MCP unified journal: banner to stop & write SDK report.
       builder: (context, child) => PerfRecordingBanner(child: child),
     );

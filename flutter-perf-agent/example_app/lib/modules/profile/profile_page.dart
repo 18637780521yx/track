@@ -193,7 +193,7 @@ class _ProfilePushPage extends GetView<ProfilePushController> {
 
   @override
   Widget build(BuildContext context) {
-    // 必须触达 controller，lazyPut 才会 onInit → track + demoRetain。
+    // 必须触达 controller，PerfDi.lazyPut 才会创建 → 自动 track + demoRetain。
     final _ = controller;
     final auth = Get.find<AuthService>();
     return Scaffold(

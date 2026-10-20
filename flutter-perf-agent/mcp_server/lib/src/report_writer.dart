@@ -32,6 +32,11 @@ class PerfSession {
   }
 
   void addAlert(AlertItem alert) => alerts.add(alert);
+
+  /// Drop session alerts matching [test] (e.g. replace memory_increase per step).
+  void removeAlertsWhere(bool Function(AlertItem a) test) {
+    alerts.removeWhere(test);
+  }
 }
 
 class ReportPaths {
@@ -233,16 +238,21 @@ class ReportWriter {
     }
 
     if (diff.issuesAfter.length > diff.issuesBefore.length) {
-      final newly =
-          diff.issuesAfter.skip(diff.issuesBefore.length).take(5).toList();
+      final added =
+          diff.issuesAfter.length - diff.issuesBefore.length;
+      final value = _sleuthIssuesValue(
+        addedCount: added,
+        sleuthIssues: sleuthIssues,
+        fallbackStrings:
+            diff.issuesAfter.skip(diff.issuesBefore.length).take(5).toList(),
+      );
       alerts.add(
         AlertItem(
           type: 'sleuth_issues',
           stepId: stepId,
           action: action,
-          message:
-              '操作后新增 Sleuth issue ${diff.issuesAfter.length - diff.issuesBefore.length} 条',
-          value: newly,
+          message: '操作后新增 Sleuth issue $added 条',
+          value: value,
         ),
       );
     }
@@ -272,5 +282,38 @@ class ReportWriter {
     }
 
     return alerts;
+  }
+
+  /// Prefer structured maps from live [sleuthIssues]; else string titles.
+  static Object _sleuthIssuesValue({
+    required int addedCount,
+    required SleuthIssuesData? sleuthIssues,
+    required List<String> fallbackStrings,
+  }) {
+    final take = addedCount.clamp(1, 5);
+    final live = sleuthIssues?.issues;
+    if (live != null && live.isNotEmpty) {
+      final start = (live.length - take).clamp(0, live.length);
+      final slice = live.sublist(start);
+      return slice.map(_shortIssueMap).toList();
+    }
+    return fallbackStrings;
+  }
+
+  static Map<String, dynamic> _shortIssueMap(SleuthIssueItem item) {
+    String? clip(String? s, [int max = 160]) {
+      if (s == null || s.isEmpty) return null;
+      final t = s.trim();
+      if (t.length <= max) return t;
+      return '${t.substring(0, max)}…';
+    }
+
+    final title = item.title ?? item.detail ?? item.stableId ?? item.id;
+    return <String, dynamic>{
+      if (title != null) 'title': clip(title, 120),
+      if (item.severity != null) 'severity': item.severity,
+      if (item.category != null) 'category': item.category,
+      if (item.fixHint != null) 'fixHint': clip(item.fixHint),
+    };
   }
 }

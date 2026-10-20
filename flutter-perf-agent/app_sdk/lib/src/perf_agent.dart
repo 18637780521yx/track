@@ -1,7 +1,10 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:flutter_skill/flutter_skill.dart';
+import 'package:get/get.dart';
 
 import 'bridge_server.dart';
+import 'getx_leak_hook.dart' as getx_hook;
 import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
 import 'session_journal.dart';
@@ -22,6 +25,18 @@ class PerfAgent {
 
   /// Completes when the deferred bridge bind finishes (success or failure).
   static Future<void>? get ready => _startFuture;
+
+  /// [TransitionObserver] for [GetMaterialApp.navigatorObservers] /
+  /// [MaterialApp.navigatorObservers]. Empty in release.
+  static List<NavigatorObserver> get navigatorObservers =>
+      getx_hook.perfNavigatorObservers(enabled: !kReleaseMode);
+
+  /// Prepend [PerfLeakMiddleware] so Bindings run under a route scope for
+  /// [PerfDi]. Recurses into nested [GetPage.children].
+  static List<GetPage<dynamic>> instrumentGetPages(
+    List<GetPage<dynamic>> pages,
+  ) =>
+      getx_hook.instrumentGetPages(pages);
 
   /// Initialize flutter-skill + local perf HTTP bridge + unified journal.
   ///

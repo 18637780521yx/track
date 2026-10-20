@@ -299,19 +299,4 @@ class TransitionLeakTracker {
   }
 }
 
-/// Mixin for GetxController: auto track onInit / untrack onClose.
-mixin PerfLeakTrackMixin on Object {
-  String get leakTrackName => runtimeType.toString();
-
-  void perfTrackLeak({String? route}) {
-    TransitionLeakTracker.instance.track(
-      this,
-      name: leakTrackName,
-      route: route,
-    );
-  }
-
-  void perfUntrackLeak() {
-    TransitionLeakTracker.instance.untrack(this, name: leakTrackName);
-  }
-}
+// PerfLeakTrackMixin / PerfGetxController / PerfDi live in getx_leak_hook.dart.

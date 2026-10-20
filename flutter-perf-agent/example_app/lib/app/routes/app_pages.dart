@@ -1,3 +1,4 @@
+import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
 import '../../modules/login/login_binding.dart';
@@ -11,7 +12,7 @@ import 'app_routes.dart';
 class AppPages {
   static const initial = AppRoutes.login;
 
-  static final routes = <GetPage<dynamic>>[
+  static final routes = PerfAgent.instrumentGetPages(<GetPage<dynamic>>[
     GetPage(
       name: AppRoutes.login,
       page: () => const LoginPage(),
@@ -27,5 +28,5 @@ class AppPages {
       page: () => const ProfilePage(),
       binding: ProfileBinding(),
     ),
-  ];
+  ]);
 }

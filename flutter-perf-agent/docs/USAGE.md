@@ -158,4 +158,20 @@ App SDK（`PerfAgent.ensureInitialized`）转场泄漏：
 | `leakConfirmRounds` | 连续进出确认轮数（阶梯/持平） | `2` |
 | `leakRssRetainMb` | RSS 辅证阈值（MB） | `5` |
 
-手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持）。
+手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持；登记由 `PerfDi.lazyPut` 自动完成）。
+
+告警可读性（0.8.4）：HTML 告警块会展开 `value`（如新增 Sleuth issue 的 title）；同一步多点击时 `memory_increase` 与步骤 `diff.memoryDeltaMb` 同源（章起点 RSS），不再出现「告警涨、diff 跌」打架。
+
+### GetX / Navigator 自动 hook（0.8.3）
+
+```dart
+GetMaterialApp(
+  getPages: PerfAgent.instrumentGetPages(AppPages.routes),
+  navigatorObservers: PerfAgent.navigatorObservers,
+);
+
+// Binding 内（推荐）
+PerfDi.lazyPut(MyController.new);
+
+// 或 Controller：with PerfLeakTrackMixin / extends PerfGetxController
+```

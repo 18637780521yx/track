@@ -225,8 +225,13 @@ String _css() => r'''
   .phases .note { color: var(--muted); font-size: 12px; }
   .alert-inline {
     background: var(--warn-bg); border: 1px solid #f3b4ae; border-radius: 8px;
-    padding: 8px 10px; margin-top: 6px; display:grid; gap: 2px;
+    padding: 8px 10px; margin-top: 6px; display:grid; gap: 4px;
   }
+  .alert-inline ul.alert-values {
+    margin: 4px 0 0; padding-left: 1.2em; font-size: 12px; color: var(--text);
+  }
+  .alert-inline ul.alert-values li { margin: 2px 0; }
+  .alert-inline .alert-metric { font-size: 12px; color: var(--muted); }
 ''';
 
 String _filterScript() => r'''
@@ -435,6 +440,7 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
 <div class="alert-inline">
   <strong>${_esc(detail['type']?.toString() ?? 'alert')}</strong>
   <span>${_esc(t['label']?.toString())}</span>
+  ${_alertValueHtml(detail)}
 </div>'''
         : '';
     items.add('''
@@ -448,6 +454,74 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
 </li>''');
   }
   return '<ol class="inner-timeline">${items.join('\n')}</ol>';
+}
+
+/// Expand alert `detail.value` under the message (sleuth titles, MB, leak…).
+String _alertValueHtml(Map<String, dynamic> detail) {
+  final value = detail['value'];
+  if (value == null) return '';
+
+  String clip(String s, [int max = 140]) {
+    final t = s.trim();
+    if (t.length <= max) return t;
+    return '${t.substring(0, max)}…';
+  }
+
+  if (value is num) {
+    final th = detail['threshold'];
+    final thPart = th != null ? ' · 阈值 ${_esc(th.toString())}' : '';
+    return '<div class="alert-metric">value=${_esc(value.toString())}$thPart</div>';
+  }
+
+  if (value is List) {
+    if (value.isEmpty) return '';
+    final items = <String>[];
+    for (final e in value.take(8)) {
+      if (e is Map) {
+        final m = Map<String, dynamic>.from(e);
+        final title = m['title']?.toString() ??
+            m['name']?.toString() ??
+            m['message']?.toString() ??
+            m['type']?.toString() ??
+            e.toString();
+        final sev = m['severity']?.toString();
+        final line = sev != null && sev.isNotEmpty
+            ? '${clip(title)} · $sev'
+            : clip(title);
+        items.add('<li>${_esc(line)}</li>');
+      } else {
+        items.add('<li>${_esc(clip(e.toString()))}</li>');
+      }
+    }
+    return '<ul class="alert-values">${items.join()}</ul>';
+  }
+
+  if (value is Map) {
+    final m = Map<String, dynamic>.from(value);
+    final bits = <String>[];
+    final evidence = m['evidence']?.toString();
+    if (evidence != null && evidence.isNotEmpty) {
+      bits.add('evidence=$evidence');
+    }
+    final alive = m['alive'];
+    if (alive is List && alive.isNotEmpty) {
+      final names = alive.take(5).map((e) {
+        if (e is Map) return e['name']?.toString() ?? e.toString();
+        return e.toString();
+      }).join(', ');
+      bits.add('alive: $names');
+    }
+    final counts = m['aliveCounts'];
+    if (counts is List && counts.isNotEmpty) {
+      bits.add('counts=[${counts.join('→')}]');
+    }
+    if (bits.isEmpty) {
+      return '<div class="alert-metric">${_esc(clip(value.toString(), 200))}</div>';
+    }
+    return '<div class="alert-metric">${_esc(bits.join(' · '))}</div>';
+  }
+
+  return '<div class="alert-metric">${_esc(clip(value.toString()))}</div>';
 }
 
 String _prettyJsonOrMap(Object? raw) {

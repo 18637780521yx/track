@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.4 — 报告告警可读性
+
+- HTML 告警展开 `value`：`sleuth_issues` / `sleuth_detector` 列 title·severity；内存告警显示数值与阈值；泄漏摘要 alive/evidence
+- `sleuth_issues` 的 `value` 优先结构化（title / severity / category / fixHint）
+- 同章多动作：RSS 按**章起点 → 当前 after** 计算 `diff`；`memory_increase` 按 stepId **替换**，与步骤最终 Δ 对齐
+
+## 0.8.3 — GetX/Navigator 自动 hook
+
+- **`PerfDi.put` / `lazyPut` / `putAsync`**：Binding 注册点自动 `TransitionLeakTracker.track`（推荐接入）
+- **`PerfAgent.instrumentGetPages`**：注入 `PerfLeakMiddleware`，Bindings 在路由 scope 下执行
+- **`PerfAgent.navigatorObservers`**：一键挂 `TransitionObserver`
+- **`PerfLeakTrackMixin` / `PerfGetxController`**：`onInit` 自动 track；默认 **不**在 `onClose` untrack（避免漏报外部 retain）；`leakUntrackOnClose` 可开
+- example：Bindings 改 `PerfDi`；`ProfilePushController` 仅 `demoRetain`，无手写 track
+- **本轮不做**：Sleuth stream 绑定、线上采样、§9
+
 ## 0.8.2 — 转场 V2：多轮泄漏确认 + MCP/手动报告统一
 
 - `TransitionLeakTracker`：按路由记录每次 pop 后 `aliveCount`；`leakConfirmRounds`（默认 2）连续非递减且均 >0 → `evidence=weak_ref_multi`

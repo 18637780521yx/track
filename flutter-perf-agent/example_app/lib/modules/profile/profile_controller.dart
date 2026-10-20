@@ -1,15 +1,14 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_perf_agent/flutter_perf_agent.dart';
 import 'package:get/get.dart';
 
-import '../../app/routes/app_routes.dart';
 import '../../app/services/auth_service.dart';
 import '../../demo_api.dart';
 
 /// Push `/profile` 专用：故意保留强引用，便于 V2 多轮 WeakRef 演示。
-class ProfilePushController extends GetxController with PerfLeakTrackMixin {
+/// 泄漏登记由 [PerfDi.lazyPut]（ProfileBinding）自动完成，此处不手写 track。
+class ProfilePushController extends GetxController {
   static final List<ProfilePushController> demoRetain = [];
 
   @override
@@ -17,12 +16,11 @@ class ProfilePushController extends GetxController with PerfLeakTrackMixin {
     super.onInit();
     if (!kReleaseMode) {
       demoRetain.add(this);
-      perfTrackLeak(route: AppRoutes.profile);
     }
   }
 }
 
-class ProfileController extends GetxController with PerfLeakTrackMixin {
+class ProfileController extends GetxController {
   AuthService get auth => Get.find<AuthService>();
 
   final busy = false.obs;
@@ -30,15 +28,8 @@ class ProfileController extends GetxController with PerfLeakTrackMixin {
   @override
   void onInit() {
     super.onInit();
-    // Tab 内嵌：正确登记 + untrack（多轮演示走 [ProfilePushController]）。
-    if (!kReleaseMode) perfTrackLeak();
+    // 登记由 MainBinding 的 PerfDi.lazyPut 完成；多轮演示走 [ProfilePushController]。
     refreshProfile();
-  }
-
-  @override
-  void onClose() {
-    if (!kReleaseMode) perfUntrackLeak();
-    super.onClose();
   }
 
   Future<void> refreshProfile() async {

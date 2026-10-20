@@ -45,7 +45,17 @@ Future<void> main() async {
     return res.data!;
   }
 
-  // Ensure on home, open mine tab, then push profile twice.
+  // Login if needed, then mine tab → push profile twice.
+  final route0 = (await bridge.appRoute()).data?.route ?? '';
+  if (route0.contains('login') || route0.isEmpty) {
+    final enter = await skill.enterText(text: '123456', target: 'password_field');
+    stdout.writeln('password ok=${FlutterSkillVmClient.isOk(enter)}');
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await tapKey('login_button', text: '登录');
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    stdout.writeln('route after login: ${(await bridge.appRoute()).data?.route}');
+  }
+
   await tapKey('tab_mine', text: '我的');
   stdout.writeln('route: ${(await bridge.appRoute()).data?.route}');
 
@@ -84,5 +94,6 @@ Future<void> main() async {
     stderr.writeln('FAIL: expected evidence=weak_ref_multi got $evidence');
     exit(1);
   }
-  stdout.writeln('PASS: Transition V2 multi-round leak confirmed');
+  // ProfilePushController 无手写 track：登记来自 PerfDi.lazyPut（0.8.3）。
+  stdout.writeln('PASS: Transition V2 multi-round leak confirmed (PerfDi auto-track)');
 }
