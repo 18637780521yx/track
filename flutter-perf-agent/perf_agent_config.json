@@ -29,6 +29,12 @@
     "slowRequestMs": 300,
     "ttffWarningMs": 1500
   },
+  "transition": {
+    "leakTrackEnabled": true,
+    "transitionSettleMs": 1500,
+    "leakConfirmRounds": 2,
+    "leakRssRetainMb": 5
+  },
   "coldStart": {
     "relaunch": false,
     "appPath": "example_app/build/macos/Build/Products/Debug/example_app.app",

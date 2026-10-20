@@ -285,6 +285,29 @@ class PerfBridgeServer {
           : (kProfileMode ? 'profile' : 'debug'),
     );
 
+    // MCP (or any client) may push transition leak knobs for this session.
+    final transition =
+        (body['transition'] as Map?)?.cast<String, dynamic>() ?? const {};
+    if (transition.isNotEmpty) {
+      TransitionLeakTracker.instance.configure(
+        enabled: transition['leakTrackEnabled'] as bool?,
+        settleMs: (transition['transitionSettleMs'] as num?)?.toInt(),
+        leakConfirmRounds: (transition['leakConfirmRounds'] as num?)?.toInt(),
+        rssRetainMb: (transition['leakRssRetainMb'] as num?)?.toDouble(),
+      );
+      final settle = (transition['transitionSettleMs'] as num?)?.toInt();
+      if (settle != null && settle >= 0) {
+        TransitionLedger.instance.settleMs = settle;
+      }
+      debugPrint(
+        '[PerfBridge] transition config applied: '
+        'enabled=${TransitionLeakTracker.instance.enabled} '
+        'settleMs=${TransitionLeakTracker.instance.settleMs} '
+        'rounds=${TransitionLeakTracker.instance.leakConfirmRounds} '
+        'rssRetainMb=${TransitionLeakTracker.instance.rssRetainMb}',
+      );
+    }
+
     _networkArchive.clear();
     PerfNetworkStore.instance.clear();
     _startNetworkIngest();

@@ -88,6 +88,8 @@ ${_css()}
     <div class="stat"><label>memoryIncreaseWarningMB</label><b>${thresholds['memoryIncreaseWarningMB'] ?? '-'}</b></div>
     <div class="stat"><label>slowRequestMs</label><b>${thresholds['slowRequestMs'] ?? '-'}</b></div>
     <div class="stat"><label>ttffWarningMs</label><b>${thresholds['ttffWarningMs'] ?? '-'}</b></div>
+    <div class="stat"><label>transitionSettleMs</label><b>${thresholds['transitionSettleMs'] ?? '-'}</b></div>
+    <div class="stat"><label>leakConfirmRounds</label><b>${thresholds['leakConfirmRounds'] ?? '-'}</b></div>
     <div class="stat"><label>vmConnected</label><b>${sleuthDiag?['vmConnected'] ?? '-'}</b></div>
     <div class="stat"><label>captureMode</label><b>${sleuthDiag?['captureMode'] ?? '-'}</b></div>
   </div>

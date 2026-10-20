@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.5 — MCP 转场泄漏配置对齐
+
+- `perf_agent_config.json` → `transition`：`leakTrackEnabled` / `transitionSettleMs` / `leakConfirmRounds` / `leakRssRetainMb`
+- `POST /session/start` 下推到 App SDK `TransitionLeakTracker.configure`
+- MCP pop 探针使用 `transitionSettleMs`；RSS 辅证阈值用 `leakRssRetainMb`
+- 报告 `thresholds` / HTML 展示 settle 与多轮轮数
+
 ## 0.8.4 — 报告告警可读性
 
 - HTML 告警展开 `value`：`sleuth_issues` / `sleuth_detector` 列 title·severity；内存告警显示数值与阈值；泄漏摘要 alive/evidence

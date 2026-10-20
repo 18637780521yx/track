@@ -43,7 +43,10 @@ class BridgeClient {
     int? waitStableMs,
     String? reportsDir,
     bool manualRecording = true,
+    /// When null, push [PerfAgentConfig.transitionPayload] from [config].
+    Map<String, dynamic>? transition,
   }) {
+    final transitionBody = transition ?? config.transitionPayload;
     return _post(
       '/session/start',
       {
@@ -52,6 +55,7 @@ class BridgeClient {
         'waitStableMs': waitStableMs ?? config.waitStableMs,
         if (reportsDir != null) 'reportsDir': reportsDir,
         'manualRecording': manualRecording,
+        'transition': transitionBody,
       },
       (raw) => SessionStartData.fromJson(_asMap(raw)),
     );

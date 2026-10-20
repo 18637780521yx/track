@@ -149,7 +149,7 @@ HTML 结构（schemaVersion 9）：
 | `captureScreenshots` | 是否截图 |
 | `thresholds.*` | 告警阈值 |
 
-App SDK（`PerfAgent.ensureInitialized`）转场泄漏：
+转场泄漏（App SDK `ensureInitialized` **或** MCP `perf_agent_config.json` → `transition`，开会话下推）：
 
 | 字段 | 含义 | 默认 |
 |------|------|------|
@@ -157,6 +157,15 @@ App SDK（`PerfAgent.ensureInitialized`）转场泄漏：
 | `transitionSettleMs` | pop 后 settle 再检 WeakRef | `1500` |
 | `leakConfirmRounds` | 连续进出确认轮数（阶梯/持平） | `2` |
 | `leakRssRetainMb` | RSS 辅证阈值（MB） | `5` |
+
+```json
+"transition": {
+  "leakTrackEnabled": true,
+  "transitionSettleMs": 1500,
+  "leakConfirmRounds": 2,
+  "leakRssRetainMb": 5
+}
+```
 
 手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持；登记由 `PerfDi.lazyPut` 自动完成）。
 

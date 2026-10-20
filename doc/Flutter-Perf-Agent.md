@@ -253,7 +253,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
   - maxFrameCostMs：单帧最大耗时阈值（默认16ms）
   - memoryIncreaseWarningMB：单次内存上涨告警阈值（默认5MB）
   - slowRequestMs：慢接口阈值（默认300ms）
-  - App SDK：`transitionSettleMs` / `leakConfirmRounds` / `leakTrackEnabled`（见 4.3.3；MCP JSON 配置待对齐）
+  - App SDK + MCP JSON `transition`：`transitionSettleMs` / `leakConfirmRounds` / `leakTrackEnabled` / `leakRssRetainMb`（开会话下推到 Bridge，0.8.5 已对齐）
   - （规划）leakVmDeepProbe / 线上采样率
 - 页面等待稳定默认时长
 - 是否开启网络采集开关

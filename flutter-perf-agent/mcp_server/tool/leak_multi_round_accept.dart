@@ -35,7 +35,10 @@ Future<void> main() async {
   }
 
   Future<Map<String, dynamic>> probe(String route) async {
-    final res = await bridge.transitionLeakProbe(route: route, settleMs: 1500);
+    final res = await bridge.transitionLeakProbe(
+      route: route,
+      settleMs: config.transitionSettleMs,
+    );
     stdout.writeln(
       'probe /$route → ${const JsonEncoder.withIndent('  ').convert(res.toJson())}',
     );

@@ -486,6 +486,7 @@ class ActionRunner {
         try {
           final probe = await bridge.transitionLeakProbe(
             route: routeBefore,
+            settleMs: config.transitionSettleMs,
           );
           if (probe.isOk && probe.data != null) {
             leakJson = probe.data;
@@ -512,8 +513,7 @@ class ActionRunner {
               session.addAlert(leakAlert);
             }
             final rssDelta = (leakJson['rssDeltaMb'] as num?)?.toDouble();
-            if (rssDelta != null &&
-                rssDelta >= config.memoryIncreaseWarningMB) {
+            if (rssDelta != null && rssDelta >= config.leakRssRetainMb) {
               final rssAlert = AlertItem(
                 type: 'transition_memory_retain_rss',
                 stepId: chapter.stepId,
@@ -521,7 +521,7 @@ class ActionRunner {
                 message:
                     'pop $routeBefore 后 RSS 辅证滞留 ${rssDelta.toStringAsFixed(2)} MB',
                 value: rssDelta,
-                threshold: config.memoryIncreaseWarningMB,
+                threshold: config.leakRssRetainMb,
               );
               alerts.add(rssAlert);
               session.addAlert(rssAlert);

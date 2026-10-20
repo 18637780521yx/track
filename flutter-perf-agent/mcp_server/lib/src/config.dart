@@ -31,6 +31,10 @@ class PerfAgentConfig {
     required this.coldStartAppPath,
     required this.coldStartMaxWaitMs,
     required this.ttffWarningMs,
+    required this.leakTrackEnabled,
+    required this.transitionSettleMs,
+    required this.leakConfirmRounds,
+    required this.leakRssRetainMb,
     this.repoRoot,
   });
 
@@ -66,9 +70,24 @@ class PerfAgentConfig {
 
   final int coldStartMaxWaitMs;
   final double ttffWarningMs;
+
+  /// PRD / App SDK transition leak knobs (pushed on session/start).
+  final bool leakTrackEnabled;
+  final int transitionSettleMs;
+  final int leakConfirmRounds;
+  final double leakRssRetainMb;
+
   final String? repoRoot;
 
   String get bridgeBaseUrl => 'http://$bridgeHost:$bridgePort';
+
+  /// Body fragment for Bridge `POST /session/start`.
+  Map<String, dynamic> get transitionPayload => {
+        'leakTrackEnabled': leakTrackEnabled,
+        'transitionSettleMs': transitionSettleMs,
+        'leakConfirmRounds': leakConfirmRounds,
+        'leakRssRetainMb': leakRssRetainMb,
+      };
 
   String? resolveColdStartAppPath() {
     final raw = coldStartAppPath;
@@ -91,6 +110,8 @@ class PerfAgentConfig {
 
     final thresholds =
         (json['thresholds'] as Map?)?.cast<String, dynamic>() ?? {};
+    final transition =
+        (json['transition'] as Map?)?.cast<String, dynamic>() ?? {};
     final devtools =
         (json['devtoolsSampling'] as Map?)?.cast<String, dynamic>() ?? {};
     final debugger =
@@ -140,6 +161,13 @@ class PerfAgentConfig {
       ttffWarningMs: (coldStart['ttffWarningMs'] as num?)?.toDouble() ??
           (thresholds['ttffWarningMs'] as num?)?.toDouble() ??
           1500,
+      leakTrackEnabled: transition['leakTrackEnabled'] as bool? ?? true,
+      transitionSettleMs:
+          (transition['transitionSettleMs'] as num?)?.toInt() ?? 1500,
+      leakConfirmRounds:
+          (transition['leakConfirmRounds'] as num?)?.toInt() ?? 2,
+      leakRssRetainMb:
+          (transition['leakRssRetainMb'] as num?)?.toDouble() ?? 5,
       repoRoot: repoRoot,
     );
   }

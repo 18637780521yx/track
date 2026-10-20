@@ -5,6 +5,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
+import 'transition_leak_tracker.dart';
+
 class SdkReportPaths {
   SdkReportPaths({required this.jsonPath, required this.htmlPath});
 
@@ -39,13 +41,14 @@ class SdkReportWriter {
     }
 
     final endedAt = DateTime.now();
-    final thr = thresholds ??
-        const {
-          'maxFrameCostMs': 16,
-          'memoryIncreaseWarningMB': 5,
-          'slowRequestMs': 300,
-          'ttffWarningMs': 1500,
-        };
+    final thr = {
+      'maxFrameCostMs': 16,
+      'memoryIncreaseWarningMB': 5,
+      'slowRequestMs': 300,
+      'ttffWarningMs': 1500,
+      ..._transitionThresholds(),
+      ...?thresholds,
+    };
 
     final mcpSteps =
         steps.where((s) => s.extra['source'] == 'mcp').length;
@@ -58,7 +61,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.2',
+      'version': '0.8.5',
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
       'envelope': 'code/data/msg',
@@ -156,13 +159,14 @@ class SdkReportWriter {
       await dir.create(recursive: true);
     }
     final now = DateTime.now();
-    final thr = thresholds ??
-        const {
-          'maxFrameCostMs': 16,
-          'memoryIncreaseWarningMB': 5,
-          'slowRequestMs': 300,
-          'ttffWarningMs': 1500,
-        };
+    final thr = {
+      'maxFrameCostMs': 16,
+      'memoryIncreaseWarningMB': 5,
+      'slowRequestMs': 300,
+      'ttffWarningMs': 1500,
+      ..._transitionThresholds(),
+      ...?thresholds,
+    };
     final mcpSteps = steps.where((s) => s.extra['source'] == 'mcp').length;
     final manualSteps =
         steps.where((s) => s.extra['source'] == 'manual').length;
@@ -172,7 +176,7 @@ class SdkReportWriter {
       'schemaVersion': 9,
       'agent': 'flutter-perf-agent',
       'phase': 'sleuth_full',
-      'version': '0.8.2',
+      'version': '0.8.5',
       'live': true,
       'metricsSource': 'sleuth_bridge',
       'reportOwner': 'app_sdk',
@@ -205,5 +209,16 @@ class SdkReportWriter {
     );
     await File(htmlPath).writeAsString(buildHtmlReport(report));
     return SdkReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
+  }
+
+  /// Current [TransitionLeakTracker] knobs (after MCP session/start push).
+  static Map<String, dynamic> _transitionThresholds() {
+    final t = TransitionLeakTracker.instance;
+    return {
+      'leakTrackEnabled': t.enabled,
+      'transitionSettleMs': t.settleMs,
+      'leakConfirmRounds': t.leakConfirmRounds,
+      'leakRssRetainMb': t.rssRetainMb,
+    };
   }
 }
