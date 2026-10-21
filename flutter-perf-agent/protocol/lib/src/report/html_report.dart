@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'cold_start_phases.dart';
 import 'report_view.dart';
@@ -72,13 +71,13 @@ ${_css()}
   </div>
 
   <h2 id="timeline">全会话时间线</h2>
-  <p class="muted">时间线内嵌模块（启动 / 页面 / 转场 / 告警）；模块内是该段事件。筛选按模块类型。</p>
+  <p class="muted">页面级操作路径：生命周期 / 页面 / 转场 / 性能报告。筛选按模块类型。</p>
   <div class="filters" id="tl-filters">
     <button type="button" class="chip active" data-filter="all">全部</button>
-    <button type="button" class="chip" data-filter="startup">启动</button>
+    <button type="button" class="chip" data-filter="lifecycle">生命周期</button>
     <button type="button" class="chip" data-filter="page">页面</button>
     <button type="button" class="chip" data-filter="transition">转场</button>
-    <button type="button" class="chip" data-filter="alert">告警</button>
+    <button type="button" class="chip" data-filter="alert">性能报告</button>
   </div>
   ${_segmentedTimelineHtml(timeline)}
 
@@ -140,10 +139,12 @@ String _css() => r'''
   .badge.good { background: #e3f5ee; color: var(--good); }
   .badge.bad { background: #fdecec; color: var(--bad); }
   .badge.net { background: #e8eef8; color: #1e4a8c; }
-  .badge.mod-startup { background: #fff4e5; color: #9a5b00; }
+  .badge.mod-startup, .badge.mod-lifecycle { background: #fff4e5; color: #9a5b00; }
   .badge.mod-page { background: #e3f5ee; color: var(--good); }
   .badge.mod-transition { background: #e8eef8; color: #1e4a8c; }
   .badge.mod-alert { background: #fdecec; color: var(--bad); }
+  .badge.src-mcp { background: #e8eef8; color: #1e4a8c; }
+  .badge.src-manual { background: #f3eef8; color: #5b3d7a; }
   .filters { display:flex; flex-wrap:wrap; gap: 8px; margin: 0 0 14px; }
   .chip {
     border: 1px solid var(--line); background: #fff; color: var(--ink);
@@ -161,7 +162,8 @@ String _css() => r'''
     width: 10px; height: 10px; border-radius: 50%;
     background: var(--good); border: 2px solid #fff;
   }
-  .seg-timeline > li.startup::before { background: #c45c26; }
+  .seg-timeline > li.startup::before,
+  .seg-timeline > li.lifecycle::before { background: #c45c26; }
   .seg-timeline > li.transition::before { background: #1e4a8c; }
   .seg-timeline > li.alert::before { background: var(--bad); }
   .seg-timeline > li.hidden { display: none; }
@@ -249,7 +251,8 @@ String _filterScript() => r'''
     btn.classList.add('active');
     items.forEach(function (li) {
       var m = li.getAttribute('data-module') || '';
-      var show = filter === 'all' || m === filter;
+      var show = filter === 'all' || m === filter ||
+        (filter === 'lifecycle' && (m === 'lifecycle' || m === 'startup'));
       li.classList.toggle('hidden', !show);
     });
   });
@@ -279,47 +282,50 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
   final title = _esc(seg['title']?.toString() ?? module);
   final at = _esc(_fmtTime(seg['at']?.toString()));
   final modLabel = switch (module) {
-    'startup' => 'App 启动',
+    'startup' || 'lifecycle' => '生命周期',
     'transition' => '转场',
-    'alert' => '告警',
+    'alert' => '性能报告',
     _ => '页面',
   };
   final badges = StringBuffer()
     ..write('<span class="badge mod-$module">$modLabel</span> ');
+  if (module == 'lifecycle' || module == 'startup') {
+    final kind = seg['kind']?.toString() ?? 'cold_start';
+    badges.write(
+      '<span class="badge net">${_esc(kind)}</span> ',
+    );
+  }
   if (module == 'page') {
+    final actions = seg['actionCount'] ?? 0;
+    final nets = seg['networkCount'] ?? 0;
     badges
-      ..write('<span class="badge net">${seg['eventCount'] ?? 0} 事件</span> ')
-      ..write('<span class="badge net">${seg['networkCount'] ?? 0} 请求</span>');
-    if ((seg['alertCount'] as num?) != null && (seg['alertCount'] as num) > 0) {
-      badges.write(
-        ' <span class="badge bad">${seg['alertCount']} 告警</span>',
-      );
-    }
+      ..write('<span class="badge net">$actions 操作</span> ')
+      ..write('<span class="badge net">$nets 请求</span>');
   }
   if (module == 'transition') {
     badges.write(
       '<span class="badge net">${_esc(seg['transitionKind']?.toString() ?? 'unknown')}</span>',
     );
   }
+  if (module == 'alert') {
+    badges.write(
+      '<span class="badge bad">${seg['eventCount'] ?? (seg['events'] as List?)?.length ?? 0} 条</span>',
+    );
+  }
 
   final headerExtra = switch (module) {
-    'startup' => '''
-  <div class="metrics">
-    <div><label>TTFF</label><b>${_num(seg['ttffMs'])} ms</b></div>
-    <div><label>TTI</label><b>${_num(seg['ttiMs'])} ms</b></div>
-    <div><label>Engine TTFF</label><b>${_num(seg['engineTtffMs'])} ms</b></div>
-  </div>
-  ${_coldStartPhasesHtml(seg)}
-  ${_shotFromFields(seg['screenshotDataUri'] as String?, seg['screenshotPath'] as String?)}''',
-    'page' => _pageDiffsHtml(seg),
+    'startup' || 'lifecycle' => _lifecycleExtrasHtml(seg),
+    'page' => _pageExtrasHtml(seg),
     'transition' => _transitionExtrasHtml(seg),
+    'alert' => _perfReportExtrasHtml(seg),
     _ => '',
   };
 
   final events =
       (seg['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-  // Startup already shows phases + cover; still list nested events if more than cold_start alone.
-  final showInner = module != 'startup' || events.length > 1;
+  final isLifecycle = module == 'startup' || module == 'lifecycle';
+  final showInner = !isLifecycle || events.length > 1;
+  final emptyPage = module == 'page' && events.isEmpty;
 
   return '''
 <article class="seg">
@@ -331,8 +337,39 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
     <div>$badges</div>
   </div>
   $headerExtra
-  ${showInner ? _innerEventsHtml(events) : ''}
+  ${emptyPage ? '<p class="muted">无操作</p>' : (showInner ? _innerEventsHtml(events) : '')}
 </article>''';
+}
+
+String _lifecycleExtrasHtml(Map<String, dynamic> seg) {
+  final kind = seg['kind']?.toString() ?? 'cold_start';
+  if (kind == 'cold_start') {
+    return '''
+  <div class="metrics">
+    <div><label>TTFF</label><b>${_num(seg['ttffMs'])} ms</b></div>
+    <div><label>TTI</label><b>${_num(seg['ttiMs'])} ms</b></div>
+    <div><label>Engine TTFF</label><b>${_num(seg['engineTtffMs'])} ms</b></div>
+  </div>
+  ${_coldStartPhasesHtml(seg)}''';
+  }
+  final route = seg['route']?.toString();
+  final bg = seg['backgroundMs'];
+  final buf = StringBuffer();
+  if (route != null && route.isNotEmpty) {
+    buf.writeln('<p class="seg-meta">当时路由 <code>${_esc(route)}</code></p>');
+  }
+  if (bg != null) {
+    buf.writeln('<p class="seg-meta">后台时长 ${_num(bg)} ms</p>');
+  }
+  return buf.toString();
+}
+
+String _pageExtrasHtml(Map<String, dynamic> seg) => _pageDiffsHtml(seg);
+
+String _perfReportExtrasHtml(Map<String, dynamic> seg) {
+  final owner = seg['ownerRoute']?.toString();
+  if (owner == null || owner.isEmpty) return '';
+  return '<p class="seg-meta">所属页面：<code>${_esc(owner)}</code></p>';
 }
 
 String _transitionExtrasHtml(Map<String, dynamic> seg) {
@@ -416,14 +453,16 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
   final items = <String>[];
   var i = 0;
   for (final t in events) {
+    final type = t['type']?.toString() ?? 'action';
+    if (type == 'screenshot') continue; // path narrative: no screenshots
     i++;
     final id = t['id']?.toString() ?? 'ev_$i';
-    final type = t['type']?.toString() ?? 'action';
     final label = t['label']?.toString() ?? type;
     final ok = t['ok'] != false;
     final at = _fmtTime(t['at']?.toString());
     final detail =
         (t['detail'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    final source = t['source']?.toString();
     final cls = [
       type,
       if (!ok || type == 'alert') 'fail',
@@ -431,7 +470,6 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
     final meta = <String>[];
     if (at.isNotEmpty) meta.add(at);
     if (t['stepId'] != null) meta.add(t['stepId'].toString());
-    if (t['source'] != null) meta.add(t['source'].toString());
     if (type == 'network') {
       if (detail['statusCode'] != null) meta.add('HTTP ${detail['statusCode']}');
       if (detail['durationMs'] != null) meta.add('${detail['durationMs']}ms');
@@ -442,12 +480,10 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
         meta.add(detail['transitionKind'].toString());
       }
     }
-    final shot = type == 'screenshot' || type == 'cold_start'
-        ? _shotFromFields(
-            t['screenshotDataUri'] as String?,
-            t['screenshotPath'] as String?,
-          )
+    final srcBadge = (type == 'action' && source != null && source.isNotEmpty)
+        ? ' <span class="badge src-$source">${_esc(source)}</span>'
         : '';
+    final failBadge = !ok ? ' <span class="badge bad">失败</span>' : '';
     final netExpand = type == 'network' ? _networkExpandHtml(detail) : '';
     final alertBox = type == 'alert'
         ? '''
@@ -459,14 +495,14 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
         : '';
     items.add('''
 <li id="$id" class="$cls" data-type="${_esc(type)}">
-  <div class="ev-type">$i · ${_esc(type)}</div>
+  <div class="ev-type">$i · ${_esc(type)}$srcBadge$failBadge</div>
   <div class="ev-label">${_esc(label)}</div>
   ${meta.isEmpty ? '' : '<div class="ev-meta">${_esc(meta.join(' · '))}</div>'}
-  $shot
   $netExpand
   $alertBox
 </li>''');
   }
+  if (items.isEmpty) return '<p class="muted">无操作</p>';
   return '<ol class="inner-timeline">${items.join('\n')}</ol>';
 }
 
@@ -669,22 +705,6 @@ String _networkExpandHtml(Map<String, dynamic> m) {
     </div>
   </div>
 </details>''';
-}
-
-String _shotFromFields(String? dataUri, String? path) {
-  if (dataUri != null && dataUri.isNotEmpty) {
-    return '<div class="shot"><img alt="screenshot" src="$dataUri"/></div>';
-  }
-  if (path != null && path.isNotEmpty) {
-    try {
-      final bytes = File(path).readAsBytesSync();
-      final b64 = base64Encode(bytes);
-      return '<div class="shot"><img alt="screenshot" src="data:image/png;base64,$b64"/></div>';
-    } catch (_) {
-      return '<p class="muted">截图不可读: ${_esc(path)}</p>';
-    }
-  }
-  return '';
 }
 
 String _esc(String? s) {

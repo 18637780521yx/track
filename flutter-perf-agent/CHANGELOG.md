@@ -1,11 +1,20 @@
 # Changelog
 
+## 0.9.2 — 页面级时间线（生命周期 / 性能报告）
+
+- PRD §4.3.2：四模块 `lifecycle | page | transition | 性能报告`；`view.timeline` 字段最小集；操作 `tap:`/`input:`/`scroll:` + `mcp|manual`
+- 分段：转场落地即建页卡（允许空白「无操作」）；`页面 → 性能报告? → 转场`；截图退出路径主叙事
+- HTML：筛选「生命周期」；性能报告显示所属页面；操作行来源 chip
+- App SDK：`AppLifecycleTracker` 写入进后台/进前台事件
+
 ## 0.9.1 — Tab 假泄漏与陈旧 transitionKind
 
 - 同源 `#tab` 切换（`/home#home`→`/home#mine`）记 `tab_change`，**不**跑泄漏探针
 - `resolveKind` 不再在 800ms 内复用无关的陈旧 `remove`（GetX offAll 残留）
 - `PerfDi.*(trackLeak: false)`：Tab 壳常驻 Controller 可关闭 WeakRef 登记
 - example `MainBinding`：Main/Home/Profile 不 track
+- 报告时间线：告警不再按 `route` 拆页；同页事件合并为一张卡，告警段标题为「性能报告」（无路由）
+- 告警若早于落页事件到达，不再先刷出「性能报告」再开页卡（避免把同轮告警拆成两张、夹在中间的假页卡）
 
 ## 0.9.0 — V3：modal + 门禁 + VM 深挖
 

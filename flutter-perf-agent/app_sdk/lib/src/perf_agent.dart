@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_skill/flutter_skill.dart';
 import 'package:get/get.dart';
 
+import 'app_lifecycle_tracker.dart';
 import 'bridge_server.dart';
 import 'getx_leak_hook.dart' as getx_hook;
 import 'leak_online.dart';
@@ -148,6 +149,8 @@ class PerfAgent {
       ManualGestureRecorder.instance.ensureStarted();
     }
 
+    AppLifecycleTracker.instance.ensureStarted();
+
     _bridge = PerfBridgeServer(
       host: host,
       port: port,
@@ -215,6 +218,7 @@ class PerfAgent {
   }
 
   static Future<void> shutdown() async {
+    AppLifecycleTracker.instance.stop();
     await _bridge?.stop();
     _bridge = null;
     _initialized = false;

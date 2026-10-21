@@ -2,7 +2,7 @@
 > 项目代号：Flutter-Perf-Agent
 版本：V1.1
 编写日期：2026-10-15
-最近更新：2026-10-20
+最近更新：2026-10-21
 目标：一套贯穿 **开发 / 测试 / 线上** 的 Flutter 性能与质量 SDK +（开发/测试期）AI 编排能力。
 一句话目标：开发期用 flutter_skill + Sleuth 辅助定位；测试期自动跑场景出报告；线上轻量采集性能、崩溃与埋点日志——**同一套 App SDK 账本与路由/转场模型，能力按阶段降级，不绑死 VM。**
 
@@ -132,33 +132,74 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 - **区分多控件**：优先 `ValueKey`，其次 label/hint/可见文案，再次坐标；与 flutter_skill 定位策略对齐
 - **非目标（本迭代）**：完整手动手势回放、精确区分所有自定义手势；极简控件无 Key/文案时可能记为 `tap@x,y`
 
-### 4.3.2 报告信息架构：时间线内嵌模块
-> 核心原则：**模块不是时间线外的独立分区，而是时间线上的段（segment）；事件嵌在模块段内部。**
+### 4.3.2 报告信息架构：页面级时间线内嵌模块
+> 核心原则：**模块不是时间线外的独立分区，而是时间线上的段（segment）；事件嵌在模块段内部。**  
+> 目标：自上而下**复述用户操作路径（页面级）** + App 生命周期；性能/告警是路径注解，不得把同一页拆碎。
+
+**设计稿（讨论定稿）：**
+
+| 文件 | 说明 |
+|------|------|
+| [design/report-timeline-v3-empty-page-source.jpg](design/report-timeline-v3-empty-page-source.jpg) | **当前方案**：无截图主叙事；空白页建卡；`tap:`/`input:` + `mcp`/`manual`；生命周期 / 页面 / 转场 / 性能报告 |
+| [design/report-timeline-no-screenshot-mock.jpg](design/report-timeline-no-screenshot-mock.jpg) | 中间稿：去掉截图后的模块示意 |
+| [design/report-timeline-design-mock.jpg](design/report-timeline-design-mock.jpg) | 初稿：曾含页面截图封面（截图策略已后置） |
+
+![页面级时间线设计稿](design/report-timeline-v3-empty-page-source.jpg)
 
 **HTML 页面结构（自上而下）：**
 1. **摘要条**：会话名、总耗时、步骤/成功/告警/网络数、会话级 avg FPS / RSS 峰值等
-2. **全会话时间线（主视图）**：按时间从上到下排列的**模块段**；顶部 chips 按模块类型筛选（全部 / 启动 / 页面 / 转场 / 告警）
+2. **全会话时间线（主视图）**：按时间排列的**模块段**；筛选 chips：`全部 | 生命周期 | 页面 | 转场 | 性能报告`
 3. **环境与阈值**（页脚轻量区）：阈值、Sleuth diagnose、说明文案
 
-**时间线内的模块类型：**
+**模块类型（`view.timeline[].module`）：**
 
-| 模块 | 何时成段 | 段内内容 |
-|------|----------|----------|
-| **App 启动** | `cold_start` | TTFF/TTI、冷启动分阶段表、首屏截图 |
-| **页面** | 同 route 连续停留期间 | 该页上的 screenshot / action / network / 页内 alert；附步骤 diff 摘要（耗时、Δmem、Jank） |
-| **转场** | `navigate` 事件 | from → to、`transitionKind`；后续见 **4.3.3** 补齐窗口指标与泄漏检测 |
-| **告警** | 无法挂到当前页面段的会话级 alert | 告警正文；可锚定回时间线 |
+| 模块 | `module` | 何时成段 | 标题 | 段内内容 |
+|------|----------|----------|------|----------|
+| **生命周期** | `lifecycle` | `kind=cold_start\|background\|foreground` 各一段 | App 启动 / App 进入后台 / App 进入前台 | 启动：TTFF/TTI、阶段表；前后台：时间、当时 route、可选 `backgroundMs`/RSS。兼容旧 `module=startup`→`lifecycle+cold_start` |
+| **页面** | `page` | 一次页面停留（边界=转场/生命周期/会话起止）；**转场落地后即使无操作也建卡** | 规范路由名 | 统一格式 `action`（含 `source`）+ `network`；步骤 diff；空卡显示「无操作」 |
+| **转场** | `transition` | 每条 `navigate`（含 `tab_change` / `modal_*`） | `from → to` | `transitionKind`、泄漏一行摘要；全文进性能报告 |
+| **性能报告** | `alert` | **每个页面停留结束 0～1 张**（有告警或页级摘要才出） | 固定「性能报告」（**不带路由作标题**） | 告警列表 + 可选页级指标；`ownerRoute` / `pageSegId` |
 
-**事件类型（挂在模块段内）：**  
-`cold_start` / `screenshot` / `action` / `network` / `navigate` / `alert`
+**段顺序约定：** `… → 页面 → 性能报告? → 转场 → 页面 → …`；生命周期与转场同为路径边界（先 flush 页面+性能报告再插入）。
 
-**明确不做（避免与主时间线重复）：**
-- 不在时间线下方再做独立的「网络总表 / 性能总表 / 截图墙 / 操作清单」大分区
-- 网络请求展示在**页面模块**的内嵌时间线中（可展开头/体）；会话级网络计数放在摘要条
-- 会话级性能概览（FPS/RSS）放在摘要条，逐步 Δmem 挂在**页面模块**内
+**`view.timeline` 段字段最小集（MCP / SDK 共用，唯一派生入口 `protocol.buildReportView`）：**
+
+- **公共：** `id`, `module`, `title`, `at`, `events[]`, `eventCount?`
+- **`lifecycle`：** `kind`；启动可选 `ttffMs`/`ttiMs`/`startupPhases`；前后台可选 `route`/`backgroundMs`
+- **`page`：** `route`, `stepIds`, `diffs[]`, `networkCount`, `actionCount`
+- **`transition`：** `from`, `to`, `transitionKind`, `leak?`, `stepId?`
+- **性能报告（`alert`）：** `title=性能报告`, `ownerRoute`, `pageSegId`；`events` 均为 alert
+
+扁平 `view.events` 仅调试；HTML **只渲染** `view.timeline`。
+
+**操作文案 `label` 统一格式：**
+
+| 类型 | 格式 | 例 |
+|------|------|-----|
+| 点击 | `tap:{target}` | `tap:登录` / `tap:profile_button` |
+| 输入 | `input:{field}={value}` | `input:password=***`（敏感打码） |
+| 滚动 | `scroll:{dir}{delta}` | `scroll:↓320` |
+| 其它 | `{action}:{detail}` | 与 cause 对齐 |
+| 失败 | 同上 + `ok=false` | UI 标「失败」 |
+
+事件至少含：`type`, `label`, `at`, `ok`, `source`（`mcp`\|`manual`）, `route`, `stepId`, `detail?`。
+
+**事件归属：**
+- `action` → 动作发生页（step 起点 route）
+- `network` → 请求发起时 route（`detail.route` 优先）
+- `navigate` → 仅转场段
+- `alert` → 该页性能报告（转场缝告警归 **from 页**）；泄漏可在转场卡一行摘要
+- `screenshot` → **本迭代不做路径主叙事**（截图策略后置；HTML 可忽略旧字段）
+
+**事件类型：** `cold_start` / `lifecycle` / `action` / `network` / `navigate` / `alert`（`screenshot` 保留兼容、不作为主路径）
+
+**明确不做（本迭代）：**
+- 截图就绪策略（`page_ready` / `network_quiet` / 离页取消等）整块后置
+- 时间线下方独立「网络总表 / 性能总表 / 截图墙 / 操作清单」
+- 假落页配图标注、多会话聚合看板
 
 **派生与兼容：**
-- `protocol.buildReportView(report)` 从 `steps`/`alerts` 派生 `view`；HTML 优先渲染 `view.timeline`（模块段）
+- `protocol.buildReportView(report)` 从 `steps`/`alerts` 派生 `view`；HTML 优先 `view.timeline`
 - 旧报告无 `view` 或仍为扁平事件时，渲染前现场派生，保证 MCP / SDK HTML 一致
 
 ### 4.3.3 转场模块：卡顿 / 真泄漏（**不依赖 VM 强制 GC**）

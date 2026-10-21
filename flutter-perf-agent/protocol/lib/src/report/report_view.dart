@@ -61,15 +61,13 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
         'stepId': sid,
         'route': route,
         'source': source,
-        'module': 'startup',
+        'module': 'lifecycle',
         'detail': {
+          'kind': 'cold_start',
           'ttffMs': s['ttffMs'],
           'ttiMs': s['ttiMs'],
           'engineTtffMs': s['engineTtffMs'],
         },
-        if (s['screenshotDataUri'] != null)
-          'screenshotDataUri': s['screenshotDataUri'],
-        if (s['screenshotPath'] != null) 'screenshotPath': s['screenshotPath'],
         'startupPhases': s['startupPhases'],
         'startup': s['startup'],
         'ttffMs': s['ttffMs'],
@@ -111,44 +109,33 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
             }
           }
         }
+        // Screenshots deferred from path narrative (still in raw steps if needed).
+        if (type == 'screenshot') continue;
+
+        var label = m['label']?.toString() ?? type;
+        if (type == 'action') {
+          label = _normalizeActionLabel(label, detail: detail);
+        } else if (type == 'lifecycle') {
+          final kind = detail['kind']?.toString() ?? label;
+          label = switch (kind) {
+            'background' || 'paused' || 'hidden' => 'App 进入后台',
+            'foreground' || 'resumed' => 'App 进入前台',
+            'cold_start' => 'App 启动',
+            _ => label,
+          };
+        }
+
         events.add({
           'id': 'ev_${idx++}',
-          'type': type,
+          'type': type == 'cold_start' ? 'cold_start' : type,
           'at': m['at']?.toString() ?? '',
-          'label': m['label']?.toString() ?? type,
+          'label': label,
           'ok': m['ok'] != false,
           'stepId': sid,
           'route': eventRoute,
-          'source': source,
+          'source': _normalizeSource(source),
           'module': _moduleForEventType(type),
           'detail': detail,
-          if (m['screenshotDataUri'] != null)
-            'screenshotDataUri': m['screenshotDataUri'],
-          if (m['screenshotPath'] != null)
-            'screenshotPath': m['screenshotPath'],
-        });
-      }
-    } else if (!isCold) {
-      final hasShot = (s['screenshotDataUri'] != null &&
-              s['screenshotDataUri'].toString().isNotEmpty) ||
-          (s['screenshotPath'] != null &&
-              s['screenshotPath'].toString().isNotEmpty);
-      if (hasShot) {
-        events.add({
-          'id': 'ev_${idx++}',
-          'type': 'screenshot',
-          'at': s['at']?.toString() ?? '',
-          'label': '步骤截图',
-          'ok': true,
-          'stepId': sid,
-          'route': route,
-          'source': source,
-          'module': 'page',
-          'detail': const <String, dynamic>{},
-          if (s['screenshotDataUri'] != null)
-            'screenshotDataUri': s['screenshotDataUri'],
-          if (s['screenshotPath'] != null)
-            'screenshotPath': s['screenshotPath'],
         });
       }
     }
@@ -234,7 +221,8 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
 String _moduleForEventType(String type) {
   switch (type) {
     case 'cold_start':
-      return 'startup';
+    case 'lifecycle':
+      return 'lifecycle';
     case 'navigate':
       return 'transition';
     case 'alert':
@@ -246,10 +234,67 @@ String _moduleForEventType(String type) {
   }
 }
 
+String _normalizeSource(String? raw) {
+  final s = (raw ?? '').toLowerCase().trim();
+  if (s == 'manual' || s == 'user' || s == 'manual_gesture') return 'manual';
+  // flutter_skill / mcp / bridge / empty → mcp
+  return 'mcp';
+}
+
+/// Normalize action labels to `tap:` / `input:` / `scroll:` forms.
+String _normalizeActionLabel(String? raw, {Map<String, dynamic>? detail}) {
+  final s = (raw ?? '').trim();
+  if (s.isEmpty) return 'action';
+  final lower = s.toLowerCase();
+  if (lower.startsWith('tap:') ||
+      lower.startsWith('input:') ||
+      lower.startsWith('scroll:')) {
+    final mEq = RegExp(
+      r'^input:(password|pwd|passwd)\s*=\s*.+$',
+      caseSensitive: false,
+    ).firstMatch(s);
+    if (mEq != null) return 'input:${mEq.group(1)}=***';
+    final mBare = RegExp(
+      r'^input:(password|pwd|passwd)$',
+      caseSensitive: false,
+    ).firstMatch(s);
+    if (mBare != null) return 'input:${mBare.group(1)}=***';
+    return s;
+  }
+  if (lower.startsWith('tap:') || lower.contains('tap:')) return s;
+  // Common demo labels: tap:login, input:password, scroll…
+  if (lower.startsWith('input')) {
+    final field = detail?['key']?.toString() ??
+        detail?['field']?.toString() ??
+        (s.contains(':') ? s.split(':').skip(1).join(':') : 'field');
+    final sensitive = RegExp(r'pass|pwd', caseSensitive: false).hasMatch(field);
+    final val = detail?['text']?.toString() ?? detail?['value']?.toString();
+    if (sensitive) return 'input:$field=***';
+    if (val != null && val.isNotEmpty) return 'input:$field=$val';
+    return 'input:$field';
+  }
+  if (lower.startsWith('scroll')) {
+    final dir = detail?['direction']?.toString() ??
+        (lower.contains('up') || lower.contains('↑') ? '↑' : '↓');
+    final delta = detail?['delta'] ?? detail?['dy'] ?? detail?['offset'];
+    return delta != null ? 'scroll:$dir$delta' : 'scroll:$dir';
+  }
+  if (lower.startsWith('tap') || s.contains('button') || s.contains('登录')) {
+    final target = detail?['key']?.toString() ??
+        detail?['text']?.toString() ??
+        (s.contains(':') ? s.split(':').skip(1).join(':').trim() : s);
+    return 'tap:$target';
+  }
+  // Fallback: keep as action:label
+  if (s.contains(':')) return s;
+  return 'action:$s';
+}
+
 /// Tie-break only when two events share the same [at] timestamp.
 int _eventTypeRank(String? type) {
   switch (type) {
     case 'cold_start':
+    case 'lifecycle':
       return 0;
     case 'action':
       return 1;
@@ -339,29 +384,53 @@ void _clampNavigateBeforeDestination(List<Map<String, dynamic>> events) {
   }
 }
 
-/// Walk flat events → chronological module segments (modules live inside timeline).
+/// Walk flat events → chronological module segments (page-level path).
 List<Map<String, dynamic>> _segmentTimeline(
   List<Map<String, dynamic>> events,
   Map<String, Map<String, dynamic>> stepById,
 ) {
   final segments = <Map<String, dynamic>>[];
   Map<String, dynamic>? openPage;
+  Map<String, dynamic>? openReport;
+  String? lastPageRoute;
+  String? lastPageId;
   var segIdx = 0;
 
   void flushPage() {
     final page = openPage;
     if (page == null) return;
     final evs = page['events'] as List;
-    if (evs.isEmpty) {
-      openPage = null;
-      return;
-    }
+    // Empty page cards are kept (path continuity after navigate).
     page['eventCount'] = evs.length;
     page['networkCount'] =
         evs.where((e) => (e as Map)['type'] == 'network').length;
-    page['alertCount'] = evs.where((e) => (e as Map)['type'] == 'alert').length;
+    page['actionCount'] =
+        evs.where((e) => (e as Map)['type'] == 'action').length;
+    page['alertCount'] = 0;
+    lastPageRoute = page['route']?.toString();
+    lastPageId = page['id']?.toString();
     segments.add(page);
     openPage = null;
+  }
+
+  void flushReport() {
+    final report = openReport;
+    if (report == null) return;
+    final evs = report['events'] as List;
+    if (evs.isEmpty) {
+      openReport = null;
+      return;
+    }
+    report['eventCount'] = evs.length;
+    report['ownerRoute'] = lastPageRoute;
+    report['pageSegId'] = lastPageId;
+    segments.add(report);
+    openReport = null;
+  }
+
+  void flushPageThenReport() {
+    flushPage();
+    flushReport();
   }
 
   Map<String, dynamic> newPage(String route, Map<String, dynamic> first) {
@@ -376,32 +445,57 @@ List<Map<String, dynamic>> _segmentTimeline(
     };
   }
 
+  void ensureReport(Map<String, dynamic> first) {
+    openReport ??= {
+      'id': 'seg_${segIdx++}',
+      'module': 'alert',
+      'title': '性能报告',
+      'at': first['at'],
+      'events': <Map<String, dynamic>>[],
+    };
+  }
+
   for (final e in events) {
     final type = e['type']?.toString() ?? 'action';
 
-    if (type == 'cold_start') {
-      flushPage();
+    // Screenshots are not path narrative this iteration.
+    if (type == 'screenshot') continue;
+
+    if (type == 'cold_start' || type == 'lifecycle') {
+      flushPageThenReport();
+      final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
+      final kind = type == 'cold_start'
+          ? 'cold_start'
+          : (d['kind']?.toString() ?? 'foreground');
+      final title = switch (kind) {
+        'cold_start' => 'App 启动',
+        'background' || 'paused' || 'hidden' => 'App 进入后台',
+        'foreground' || 'resumed' => 'App 进入前台',
+        _ => e['label']?.toString() ?? '生命周期',
+      };
       segments.add({
         'id': 'seg_${segIdx++}',
-        'module': 'startup',
-        'title': 'App 启动',
+        'module': 'lifecycle',
+        'kind': kind == 'paused' || kind == 'hidden'
+            ? 'background'
+            : (kind == 'resumed' ? 'foreground' : kind),
+        'title': title,
         'at': e['at'],
         'events': [e],
-        'ttffMs': e['ttffMs'] ?? (e['detail'] as Map?)?['ttffMs'],
-        'ttiMs': e['ttiMs'] ?? (e['detail'] as Map?)?['ttiMs'],
-        'engineTtffMs':
-            e['engineTtffMs'] ?? (e['detail'] as Map?)?['engineTtffMs'],
+        'route': d['route'] ?? e['route'],
+        'backgroundMs': d['backgroundMs'],
+        'ttffMs': e['ttffMs'] ?? d['ttffMs'],
+        'ttiMs': e['ttiMs'] ?? d['ttiMs'],
+        'engineTtffMs': e['engineTtffMs'] ?? d['engineTtffMs'],
         'startupPhases': e['startupPhases'],
         'startup': e['startup'],
-        'screenshotDataUri': e['screenshotDataUri'],
-        'screenshotPath': e['screenshotPath'],
         'stepId': e['stepId'],
       });
       continue;
     }
 
     if (type == 'navigate') {
-      flushPage();
+      flushPageThenReport();
       final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
       segments.add({
         'id': 'seg_${segIdx++}',
@@ -415,28 +509,27 @@ List<Map<String, dynamic>> _segmentTimeline(
         'events': [e],
         'stepId': e['stepId'],
       });
+      // Open empty landing page immediately (blank card allowed).
+      final to = d['to']?.toString();
+      if (to != null && to.isNotEmpty) {
+        openPage = newPage(to, e);
+      }
       continue;
     }
 
-    // Alerts / network / action / screenshot attach to current page when possible.
+    if (type == 'alert') {
+      ensureReport(e);
+      (openReport!['events'] as List).add(e);
+      continue;
+    }
+
+    // action / network → current page
     final route = e['route']?.toString();
     final pageKey =
         (route != null && route.isNotEmpty) ? route : '(unknown)';
 
-    if (type == 'alert' && openPage == null && route == null) {
-      segments.add({
-        'id': 'seg_${segIdx++}',
-        'module': 'alert',
-        'title': e['label'] ?? '告警',
-        'at': e['at'],
-        'events': [e],
-        'stepId': e['stepId'],
-      });
-      continue;
-    }
-
     if (openPage == null || openPage!['route'] != pageKey) {
-      flushPage();
+      flushPage(); // keep pending perf until boundary
       openPage = newPage(pageKey, e);
     }
     (openPage!['events'] as List).add(e);
@@ -445,11 +538,8 @@ List<Map<String, dynamic>> _segmentTimeline(
       (openPage!['stepIds'] as Set<String>).add(sid);
     }
   }
-  flushPage();
+  flushPageThenReport();
 
-  // Attach per-page diff summary from steps that *originated* on this page.
-  // A login tap may also capture dest-route nets (home/list); those stepIds
-  // appear under /home#home events but must not show "login_button" here.
   for (final seg in segments) {
     if (seg['module'] != 'page') continue;
     final pageRoute = seg['route']?.toString() ?? '';
