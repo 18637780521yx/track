@@ -93,10 +93,48 @@ void main() {
   });
 
   test('isClosingTransitionKind for modal', () {
-    expect(isClosingTransitionKind('pop'), isTrue);
+    expect(isClosingTransitionKind('pop', fromRoute: '/a', toRoute: '/b'), isTrue);
     expect(isClosingTransitionKind('modal_dialog', fromRoute: '/home'), isFalse);
     expect(
       isClosingTransitionKind('modal_dialog', fromRoute: '#modal/1'),
+      isTrue,
+    );
+  });
+
+  test('tab-only change never probes', () {
+    expect(isTabOnlyRouteChange('/home#home', '/home#mine'), isTrue);
+    expect(
+      isClosingTransitionKind(
+        'remove',
+        fromRoute: '/home#home',
+        toRoute: '/home#mine',
+      ),
+      isFalse,
+    );
+    expect(
+      isClosingTransitionKind(
+        'tab_change',
+        fromRoute: '/home#home',
+        toRoute: '/home#mine',
+      ),
+      isFalse,
+    );
+    expect(
+      TransitionLedger.instance.resolveKind(
+        from: '/home#home',
+        to: '/home#mine',
+      ),
+      'tab_change',
+    );
+  });
+
+  test('shell leave still probes on remove', () {
+    expect(
+      isClosingTransitionKind(
+        'remove',
+        fromRoute: '/login',
+        toRoute: '/home#home',
+      ),
       isTrue,
     );
   });

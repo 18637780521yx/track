@@ -8,8 +8,10 @@ import 'main_controller.dart';
 class MainBinding extends Bindings {
   @override
   void dependencies() {
-    PerfDi.lazyPut(MainController.new);
-    PerfDi.lazyPut(HomeController.new);
-    PerfDi.lazyPut(ProfileController.new);
+    // Tab shell controllers outlive `/home#*` logical switches — do not
+    // WeakRef-track them (avoids false transition_memory_leak on tab change).
+    PerfDi.lazyPut(MainController.new, trackLeak: false);
+    PerfDi.lazyPut(HomeController.new, trackLeak: false);
+    PerfDi.lazyPut(ProfileController.new, trackLeak: false);
   }
 }

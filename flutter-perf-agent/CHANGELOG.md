@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 — Tab 假泄漏与陈旧 transitionKind
+
+- 同源 `#tab` 切换（`/home#home`→`/home#mine`）记 `tab_change`，**不**跑泄漏探针
+- `resolveKind` 不再在 800ms 内复用无关的陈旧 `remove`（GetX offAll 残留）
+- `PerfDi.*(trackLeak: false)`：Tab 壳常驻 Controller 可关闭 WeakRef 登记
+- example `MainBinding`：Main/Home/Profile 不 track
+
 ## 0.9.0 — V3：modal + 门禁 + VM 深挖
 
 - **modal_\***：`TransitionObserver` 识别 Dialog / BottomSheet / `fullscreenDialog`；无名弹层合成 `#modal/N`

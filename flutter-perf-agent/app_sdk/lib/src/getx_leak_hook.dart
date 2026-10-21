@@ -53,15 +53,19 @@ class PerfDi {
     );
   }
 
-  /// Same as [Get.put], then track the instance.
+  /// Same as [Get.put], then optionally track the instance.
+  ///
+  /// Set [trackLeak] false for long-lived shell / Tab controllers that must
+  /// outlive `#tab` logical route changes.
   static S put<S>(
     S dependency, {
     String? tag,
     bool permanent = false,
     String? route,
+    bool trackLeak = true,
   }) {
     final result = Get.put<S>(dependency, tag: tag, permanent: permanent);
-    if (result is Object) {
+    if (trackLeak && result is Object) {
       _track(result as Object, route: route);
     }
     return result;
@@ -73,11 +77,12 @@ class PerfDi {
     String? tag,
     bool fenix = false,
     String? route,
+    bool trackLeak = true,
   }) {
     Get.lazyPut<S>(
       () {
         final instance = builder();
-        if (instance is Object) {
+        if (trackLeak && instance is Object) {
           _track(instance as Object, route: route);
         }
         return instance;
@@ -93,13 +98,14 @@ class PerfDi {
     String? tag,
     bool permanent = false,
     String? route,
+    bool trackLeak = true,
   }) async {
     final result = await Get.putAsync<S>(
       builder,
       tag: tag,
       permanent: permanent,
     );
-    if (result is Object) {
+    if (trackLeak && result is Object) {
       _track(result as Object, route: route);
     }
     return result;

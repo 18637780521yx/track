@@ -475,15 +475,30 @@ class ActionRunner {
     if (routeChanged) {
       String kind = 'route_change';
       Map<String, dynamic>? leakJson;
+      String? metaFrom;
+      String? metaTo;
       try {
         final meta = await bridge.appRoute();
         if (meta.isOk && meta.data != null) {
+          metaFrom = meta.data!.from;
+          metaTo = meta.data!.to;
           final k = meta.data!.transitionKind;
-          if (k != null && k.isNotEmpty) kind = k;
+          // Only trust Bridge last-kind when it describes this edge; otherwise
+          // Tab switches inherited a stale GetX `remove` from offAll.
+          if (k != null &&
+              k.isNotEmpty &&
+              _edgeMatches(metaFrom, metaTo, routeBefore, routeAfter)) {
+            kind = k;
+          }
         }
       } catch (_) {}
+      kind = _inferTransitionKind(
+        routeBefore: routeBefore,
+        routeAfter: routeAfter,
+        metaKind: kind,
+      );
 
-      if (_isClosingTransition(kind, routeBefore)) {
+      if (_isClosingTransition(kind, routeBefore, routeAfter)) {
         try {
           final probe = await bridge.transitionLeakProbe(
             route: routeBefore,
@@ -743,8 +758,55 @@ class ActionRunner {
     return last;
   }
 
-  static bool _isClosingTransition(String kind, String routeBefore) {
-    if (kind == 'pop' || kind == 'remove') return true;
+  static String _routeShell(String? route) {
+    if (route == null || route.isEmpty) return '';
+    return route.split('#').first;
+  }
+
+  static bool _isTabOnly(String? from, String? to) {
+    if (from == null || to == null || from == to) return false;
+    final a = _routeShell(from);
+    final b = _routeShell(to);
+    return a.isNotEmpty && a == b;
+  }
+
+  static bool _sameShellEndpoint(String? a, String? b) {
+    if (a == null || b == null) return a == b;
+    return a == b || _routeShell(a) == _routeShell(b);
+  }
+
+  static bool _edgeMatches(
+    String? metaFrom,
+    String? metaTo,
+    String routeBefore,
+    String routeAfter,
+  ) {
+    return _sameShellEndpoint(metaFrom, routeBefore) &&
+        _sameShellEndpoint(metaTo, routeAfter);
+  }
+
+  static String _inferTransitionKind({
+    required String routeBefore,
+    required String routeAfter,
+    required String metaKind,
+  }) {
+    if (_isTabOnly(routeBefore, routeAfter)) return 'tab_change';
+    if (metaKind != 'route_change' && metaKind.isNotEmpty) return metaKind;
+    return 'route_change';
+  }
+
+  static bool _isClosingTransition(
+    String kind,
+    String routeBefore,
+    String routeAfter,
+  ) {
+    if (_isTabOnly(routeBefore, routeAfter) || kind == 'tab_change') {
+      return false;
+    }
+    if (kind == 'pop' || kind == 'remove') {
+      // Real leave: shells must differ (GetX offAll remove of /login, etc.).
+      return _routeShell(routeBefore) != _routeShell(routeAfter);
+    }
     if (!kind.startsWith('modal_')) return false;
     return routeBefore.startsWith('#modal/') ||
         routeBefore.contains('#modal/');

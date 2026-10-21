@@ -45,9 +45,41 @@ String? classifyModalKind(Route<dynamic> route) {
   return null;
 }
 
+/// Route shell without `#tab` / fragment (e.g. `/home#mine` → `/home`).
+String routeShell(String? route) {
+  if (route == null || route.isEmpty) return '';
+  return route.split('#').first;
+}
+
+/// Same Navigator/GetX page, only logical tab / fragment changed.
+bool isTabOnlyRouteChange(String? from, String? to) {
+  if (from == null || to == null || from == to) return false;
+  final a = routeShell(from);
+  final b = routeShell(to);
+  return a.isNotEmpty && a == b;
+}
+
 /// True when [kind] indicates a closing transition that should run leak probe.
-bool isClosingTransitionKind(String kind, {String? fromRoute}) {
-  if (kind == 'pop' || kind == 'remove') return true;
+///
+/// Tab-only changes (`/home#home` → `/home#mine`) never probe — shell
+/// controllers stay alive by design.
+bool isClosingTransitionKind(
+  String kind, {
+  String? fromRoute,
+  String? toRoute,
+}) {
+  if (isTabOnlyRouteChange(fromRoute, toRoute)) return false;
+  if (kind == 'tab_change') return false;
+  if (kind == 'pop' || kind == 'remove') {
+    // `remove` from GetX offAll is a real leave only when shells differ
+    // (or we lack [toRoute] and must trust kind).
+    if (toRoute != null &&
+        fromRoute != null &&
+        routeShell(fromRoute) == routeShell(toRoute)) {
+      return false;
+    }
+    return true;
+  }
   if (!kind.startsWith('modal_')) return false;
   // Opening a modal uses the same kind; only probe when leaving a modal route.
   final from = fromRoute ?? '';
@@ -198,24 +230,41 @@ class TransitionLedger {
   }
 
   /// Prefer observer kind when from/to match the last record; else infer.
+  ///
+  /// Never reuse a stale [last.kind] for an unrelated edge (that caused
+  /// Tab switches to inherit `remove` from a prior GetX offAll).
   String resolveKind({required String? from, required String? to}) {
+    if (isTabOnlyRouteChange(from, to)) return 'tab_change';
+
     final rec = last;
     if (rec != null &&
-        _same(rec.from, from) &&
-        _same(rec.to, to) &&
+        _edgeMatches(rec.from, rec.to, from, to) &&
         DateTime.now().difference(rec.at).inSeconds < 5) {
       return rec.kind;
     }
     if (from != null && to != null && from != to) {
-      if (rec != null &&
-          DateTime.now().difference(rec.at).inMilliseconds < 800) {
-        return rec.kind;
-      }
       // Closing a synthetic modal without a matching last record.
       if (from.startsWith('#modal/')) return 'modal_dialog';
+      // GetX offAll / replace often surfaces as remove of the leaving page.
+      if (rec != null &&
+          rec.kind == 'remove' &&
+          _same(rec.from, from) &&
+          DateTime.now().difference(rec.at).inSeconds < 5) {
+        return 'remove';
+      }
       return 'route_change';
     }
     return 'route_change';
+  }
+
+  /// Exact edge match (shell-aware on each endpoint).
+  static bool _edgeMatches(
+    String? recFrom,
+    String? recTo,
+    String? from,
+    String? to,
+  ) {
+    return _same(recFrom, from) && _same(recTo, to);
   }
 
   static bool _same(String? a, String? b) {
