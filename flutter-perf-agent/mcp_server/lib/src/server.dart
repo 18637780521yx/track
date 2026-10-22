@@ -24,15 +24,17 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.6.2',
+            version: '0.9.2',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.6.2 auto perf). '
+              'Flutter-Perf-Agent V1 (0.9.2 page-level timeline). '
               'Prefer: flutter run --profile --no-dds. '
               'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
               'session: each action samples Sleuth/RSS, updates live report. '
               'Call stop_perf_test for final HTML/JSON. '
               'Optional explicit start_perf_test. '
+              'Timeline: lifecycle / page / transition / 性能报告; '
+              'screenshots default off. '
               'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
@@ -64,9 +66,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.6.2 bridge=${config.bridgeBaseUrl} '
+        '[flutter-perf-agent-mcp] v0.9.2 bridge=${config.bridgeBaseUrl} '
         'autoSession=true envelope=code/data/msg '
-        'retries=${config.maxRetries}',
+        'retries=${config.maxRetries} '
+        'captureScreenshots=${config.captureScreenshots}',
       );
     }
   }
