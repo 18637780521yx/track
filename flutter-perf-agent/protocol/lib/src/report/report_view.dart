@@ -202,7 +202,7 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
         .compareTo(_eventTypeRank(b['type']?.toString()));
   });
 
-  final timeline = _segmentTimeline(events, stepById);
+  final timeline = _segmentTimeline(events, stepById, slowMs: slowMs);
   final perf = _sessionPerf(steps);
   final netStats = _netStats(events, slowMs);
 
@@ -387,14 +387,60 @@ void _clampNavigateBeforeDestination(List<Map<String, dynamic>> events) {
 /// Walk flat events → chronological module segments (page-level path).
 List<Map<String, dynamic>> _segmentTimeline(
   List<Map<String, dynamic>> events,
-  Map<String, Map<String, dynamic>> stepById,
-) {
+  Map<String, Map<String, dynamic>> stepById, {
+  int slowMs = 300,
+}) {
   final segments = <Map<String, dynamic>>[];
   Map<String, dynamic>? openPage;
   Map<String, dynamic>? openReport;
   String? lastPageRoute;
   String? lastPageId;
   var segIdx = 0;
+
+  Map<String, dynamic> pageSummaryOf(Map<String, dynamic> page) {
+    final evs = (page['events'] as List).cast<Map>();
+    var slow = 0;
+    DateTime? t0;
+    DateTime? t1;
+    for (final e in evs) {
+      final at = DateTime.tryParse(e['at']?.toString() ?? '');
+      if (at != null) {
+        t0 = t0 == null || at.isBefore(t0) ? at : t0;
+        t1 = t1 == null || at.isAfter(t1) ? at : t1;
+      }
+      if (e['type'] == 'network') {
+        final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
+        final dur = (d['durationMs'] as num?)?.toInt();
+        if (dur != null && dur >= slowMs) slow++;
+      }
+    }
+    double? memDelta;
+    final ids = (page['stepIds'] as Set<String>?) ?? {};
+    for (final id in ids) {
+      final s = stepById[id];
+      if (s == null) continue;
+      final diff = (s['diff'] as Map?)?.cast<String, dynamic>() ?? {};
+      final m = (diff['memoryDeltaMb'] as num?)?.toDouble();
+      if (m != null) memDelta = (memDelta ?? 0) + m;
+    }
+    final dwellMs =
+        (t0 != null && t1 != null) ? t1.difference(t0).inMilliseconds : null;
+    return {
+      'dwellMs': dwellMs,
+      'actionCount': page['actionCount'] ?? 0,
+      'networkCount': page['networkCount'] ?? 0,
+      'slowRequestCount': slow,
+      if (memDelta != null) 'memoryDeltaMb': double.parse(memDelta.toStringAsFixed(2)),
+    };
+  }
+
+  bool summaryWorthShowing(Map<String, dynamic>? summary) {
+    if (summary == null) return false;
+    final actions = (summary['actionCount'] as num?)?.toInt() ?? 0;
+    final nets = (summary['networkCount'] as num?)?.toInt() ?? 0;
+    final slow = (summary['slowRequestCount'] as num?)?.toInt() ?? 0;
+    return actions > 0 || nets > 0 || slow > 0 || summary['memoryDeltaMb'] != null;
+  }
 
   void flushPage() {
     final page = openPage;
@@ -417,7 +463,9 @@ List<Map<String, dynamic>> _segmentTimeline(
     final report = openReport;
     if (report == null) return;
     final evs = report['events'] as List;
-    if (evs.isEmpty) {
+    final summary =
+        (report['pageSummary'] as Map?)?.cast<String, dynamic>();
+    if (evs.isEmpty && !summaryWorthShowing(summary)) {
       openReport = null;
       return;
     }
@@ -428,7 +476,34 @@ List<Map<String, dynamic>> _segmentTimeline(
     openReport = null;
   }
 
+  void ensureReport(Map<String, dynamic> first) {
+    openReport ??= {
+      'id': 'seg_${segIdx++}',
+      'module': 'alert',
+      'title': '性能报告',
+      'at': first['at'],
+      'events': <Map<String, dynamic>>[],
+    };
+  }
+
   void flushPageThenReport() {
+    final page = openPage;
+    if (page != null) {
+      page['eventCount'] = (page['events'] as List).length;
+      page['networkCount'] = (page['events'] as List)
+          .where((e) => (e as Map)['type'] == 'network')
+          .length;
+      page['actionCount'] = (page['events'] as List)
+          .where((e) => (e as Map)['type'] == 'action')
+          .length;
+      final summary = pageSummaryOf(page);
+      if (summaryWorthShowing(summary) ||
+          (openReport != null &&
+              ((openReport!['events'] as List).isNotEmpty))) {
+        ensureReport(page);
+        openReport!['pageSummary'] = summary;
+      }
+    }
     flushPage();
     flushReport();
   }
@@ -442,16 +517,6 @@ List<Map<String, dynamic>> _segmentTimeline(
       'at': first['at'],
       'events': <Map<String, dynamic>>[],
       'stepIds': <String>{},
-    };
-  }
-
-  void ensureReport(Map<String, dynamic> first) {
-    openReport ??= {
-      'id': 'seg_${segIdx++}',
-      'module': 'alert',
-      'title': '性能报告',
-      'at': first['at'],
-      'events': <Map<String, dynamic>>[],
     };
   }
 

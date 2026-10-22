@@ -152,7 +152,8 @@ class PerfAgentConfig {
       navigationWaitMs: json['navigationWaitMs'] as int? ?? 800,
       maxRetries: json['maxRetries'] as int? ?? 2,
       retryDelayMs: json['retryDelayMs'] as int? ?? 300,
-      captureScreenshots: json['captureScreenshots'] as bool? ?? true,
+      // Default off: path report is text-first; screenshot strategy deferred.
+      captureScreenshots: json['captureScreenshots'] as bool? ?? false,
       debugLog: json['debugLog'] as bool? ?? false,
       reportsDir: reportsDir,
       maxFrameCostMs: (thresholds['maxFrameCostMs'] as num?)?.toDouble() ?? 16,

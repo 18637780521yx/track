@@ -367,9 +367,38 @@ String _lifecycleExtrasHtml(Map<String, dynamic> seg) {
 String _pageExtrasHtml(Map<String, dynamic> seg) => _pageDiffsHtml(seg);
 
 String _perfReportExtrasHtml(Map<String, dynamic> seg) {
+  final buf = StringBuffer();
   final owner = seg['ownerRoute']?.toString();
-  if (owner == null || owner.isEmpty) return '';
-  return '<p class="seg-meta">所属页面：<code>${_esc(owner)}</code></p>';
+  if (owner != null && owner.isNotEmpty) {
+    buf.writeln(
+      '<p class="seg-meta">所属页面：<code>${_esc(owner)}</code></p>',
+    );
+  }
+  final summary =
+      (seg['pageSummary'] as Map?)?.cast<String, dynamic>() ?? const {};
+  if (summary.isEmpty) return buf.toString();
+  buf.writeln('<div class="metrics">');
+  if (summary['dwellMs'] != null) {
+    buf.writeln(
+      '<div><label>停留</label><b>${_num(summary['dwellMs'])} ms</b></div>',
+    );
+  }
+  buf.writeln(
+    '<div><label>操作</label><b>${summary['actionCount'] ?? 0}</b></div>',
+  );
+  buf.writeln(
+    '<div><label>请求</label><b>${summary['networkCount'] ?? 0}</b></div>',
+  );
+  buf.writeln(
+    '<div><label>慢请求</label><b>${summary['slowRequestCount'] ?? 0}</b></div>',
+  );
+  if (summary['memoryDeltaMb'] != null) {
+    buf.writeln(
+      '<div><label>ΔRSS</label><b>${_num(summary['memoryDeltaMb'])} MB</b></div>',
+    );
+  }
+  buf.writeln('</div>');
+  return buf.toString();
 }
 
 String _transitionExtrasHtml(Map<String, dynamic> seg) {

@@ -6,7 +6,7 @@
   "navigationWaitMs": 800,
   "maxRetries": 2,
   "retryDelayMs": 300,
-  "captureScreenshots": true,
+  "captureScreenshots": false,
   "debugLog": true,
   "reportsDir": "reports",
   "enableNetworkCapture": true,

@@ -158,7 +158,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 | **生命周期** | `lifecycle` | `kind=cold_start\|background\|foreground` 各一段 | App 启动 / App 进入后台 / App 进入前台 | 启动：TTFF/TTI、阶段表；前后台：时间、当时 route、可选 `backgroundMs`/RSS。兼容旧 `module=startup`→`lifecycle+cold_start` |
 | **页面** | `page` | 一次页面停留（边界=转场/生命周期/会话起止）；**转场落地后即使无操作也建卡** | 规范路由名 | 统一格式 `action`（含 `source`）+ `network`；步骤 diff；空卡显示「无操作」 |
 | **转场** | `transition` | 每条 `navigate`（含 `tab_change` / `modal_*`） | `from → to` | `transitionKind`、泄漏一行摘要；全文进性能报告 |
-| **性能报告** | `alert` | **每个页面停留结束 0～1 张**（有告警或页级摘要才出） | 固定「性能报告」（**不带路由作标题**） | 告警列表 + 可选页级指标；`ownerRoute` / `pageSegId` |
+| **性能报告** | `alert` | **每个页面停留结束 0～1 张**（有告警或页级摘要才出） | 固定「性能报告」（**不带路由作标题**） | 告警列表 + `pageSummary`（停留/`actionCount`/`networkCount`/慢请求/ΔRSS）；`ownerRoute` / `pageSegId` |
 
 **段顺序约定：** `… → 页面 → 性能报告? → 转场 → 页面 → …`；生命周期与转场同为路径边界（先 flush 页面+性能报告再插入）。
 
@@ -168,7 +168,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 - **`lifecycle`：** `kind`；启动可选 `ttffMs`/`ttiMs`/`startupPhases`；前后台可选 `route`/`backgroundMs`
 - **`page`：** `route`, `stepIds`, `diffs[]`, `networkCount`, `actionCount`
 - **`transition`：** `from`, `to`, `transitionKind`, `leak?`, `stepId?`
-- **性能报告（`alert`）：** `title=性能报告`, `ownerRoute`, `pageSegId`；`events` 均为 alert
+- **性能报告（`alert`）：** `title=性能报告`, `ownerRoute`, `pageSegId`, `pageSummary?`；`events` 均为 alert
 
 扁平 `view.events` 仅调试；HTML **只渲染** `view.timeline`。
 
