@@ -334,10 +334,12 @@ class ActionRunner {
             error: legacyOk ? null : (legacy.msg),
           );
         } else if (actionResult.success) {
-          await bridge.waitStable(waitStableMs: wait);
-          final settle = (extraSettleMs ?? 0) + config.postActionSettleMs;
+          // Single post-action wait (stable + settle). Nav land wait is
+          // applied once below if the route actually changes — don't stack.
+          final settle =
+              wait + (extraSettleMs ?? 0) + config.postActionSettleMs;
           if (settle > 0) {
-            await Future<void>.delayed(Duration(milliseconds: settle));
+            await bridge.waitStable(waitStableMs: settle);
           }
         }
       } finally {
@@ -373,13 +375,18 @@ class ActionRunner {
         routeAfter != routeBefore;
 
     if (routeChanged && actionResult.success) {
-      await bridge.waitStable(waitStableMs: wait);
-      final landSettle =
-          config.postActionSettleMs > 0 ? config.postActionSettleMs : 300;
-      await Future<void>.delayed(Duration(milliseconds: landSettle));
+      // Extra land settle only (post-action wait already ran above).
+      final landSettle = config.postActionSettleMs > 0
+          ? config.postActionSettleMs
+          : 120;
+      await bridge.waitStable(waitStableMs: landSettle);
     }
 
-    final afterRes = await bridge.snapshot();
+    // Parallel: after snapshot + sleuth issues + network (was sequential).
+    final afterFut = bridge.snapshot();
+    final issuesFut = bridge.sleuthIssues(limit: 30);
+    final netFut = bridge.networkRequests(sinceIso: networkSince, limit: 100);
+    final afterRes = await afterFut;
     if (!afterRes.isOk || afterRes.data == null) {
       return _failChapter(
         chapter,
@@ -403,7 +410,7 @@ class ActionRunner {
 
     SleuthIssuesData? sleuthIssues;
     try {
-      final issuesRes = await bridge.sleuthIssues(limit: 30);
+      final issuesRes = await issuesFut;
       if (issuesRes.isOk) sleuthIssues = issuesRes.data;
     } catch (e) {
       _log('sleuth issues fetch failed: $e');
@@ -411,10 +418,7 @@ class ActionRunner {
 
     var networkRequests = <NetworkRequest>[];
     try {
-      final netRes = await bridge.networkRequests(
-        sinceIso: networkSince,
-        limit: 100,
-      );
+      final netRes = await netFut;
       if (netRes.isOk && netRes.data != null) {
         networkRequests = netRes.data!.requests;
         _log('network ${networkRequests.length} req since $networkSince');

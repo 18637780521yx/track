@@ -44,7 +44,22 @@ class ColdStartLauncher {
       try {
         await bridge.ensureResolved(force: true);
         final health = await bridge.health();
-        if (health.isOk && health.data?.vmServiceUri != null) {
+        final data = health.data;
+        // Prefer App lifecycle signal (cold_start / foreground) over blind sleep.
+        if (health.isOk &&
+            data != null &&
+            data.lifecycleForeground &&
+            (data.vmServiceUri?.isNotEmpty ?? false)) {
+          final life = data.lifecycle;
+          final ms = DateTime.now().difference(t0).inMilliseconds;
+          _log(
+            'cold_start ready in ${ms}ms '
+            'lifecycle=${life?['kind']} route=${life?['route']}',
+          );
+          return ms;
+        }
+        // Fallback for older App SDK without lifecycle on health.
+        if (health.isOk && data?.vmServiceUri != null) {
           final route = await bridge.appRoute();
           if (route.isOk &&
               (route.data?.route.trim().isNotEmpty ?? false)) {
@@ -56,7 +71,7 @@ class ColdStartLauncher {
       } catch (e) {
         _log('cold_start wait: $e');
       }
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await Future<void>.delayed(const Duration(milliseconds: 300));
     }
     throw TimeoutException(
       'cold start timed out after ${config.coldStartMaxWaitMs}ms',

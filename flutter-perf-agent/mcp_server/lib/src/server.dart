@@ -14,6 +14,7 @@ import 'flutter_skill_vm_client.dart';
 import 'report_writer.dart';
 import 'skill_mcp_bindings.dart';
 import 'snapshot_io.dart';
+import 'visibility_assist.dart';
 
 /// MCP tools: UI via flutter_skill (full); metrics via PerfBridge + Sleuth.
 ///
@@ -25,10 +26,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.9.2',
+            version: '0.9.3',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.9.2 page-level timeline). '
+              'Flutter-Perf-Agent V1 (0.9.3 scrollIntoView). '
               'Prefer: flutter run --profile --no-dds. '
               'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
               'session: each action samples Sleuth/RSS, updates live report. '
@@ -36,6 +37,9 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
               'Optional explicit start_perf_test. '
               'Timeline: lifecycle / page / transition / 性能报告; '
               'auto screenshots off; use tool screenshot for on-demand capture. '
+              'tap defaults scrollIntoView (tree≠viewport); '
+              'get_ui_snapshot marks needsScroll/offScreenTexts. '
+              'After flutter run: wait_lifecycle (health.lifecycleForeground). '
               'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
@@ -43,6 +47,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     registerTool(_startTool, _startPerfTest);
     registerTool(_stopTool, _stopPerfTest);
+    registerTool(_waitLifecycleTool, _waitLifecycle);
     registerTool(_tapTool, _tap);
     registerTool(_scrollTool, _scroll);
     registerTool(_inputTool, _inputText);
@@ -295,15 +300,32 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     ),
   );
 
+  final _waitLifecycleTool = Tool(
+    name: 'wait_lifecycle',
+    description:
+        '轮询 Bridge /health 上的 App 生命周期，直到 cold_start 或 foreground '
+        '（非盲等固定秒数）。flutter run / 冷启动后先调此工具再 tap。',
+    inputSchema: Schema.object(
+      properties: {
+        'timeoutMs': Schema.int(description: '超时毫秒，默认 120000'),
+        'pollMs': Schema.int(description: '轮询间隔毫秒，默认 300'),
+      },
+    ),
+  );
+
   final _tapTool = Tool(
     name: 'tap',
     description:
-        'flutter_skill 点击；无会话时自动开会话；前后采 Sleuth/RSS，并更新 live 报告。',
+        'flutter_skill 点击；默认先 scrollIntoView（树里有≠屏上可见，短屏需上滑）。'
+        '无会话时自动开会话；前后采 Sleuth/RSS，并更新 live 报告。',
     inputSchema: Schema.object(
       properties: {
         'targetDesc': Schema.string(description: '文本或 Key'),
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
         'useLegacyTap': Schema.bool(description: '强制 legacy tap'),
+        'scrollIntoView': Schema.bool(
+          description: '点击前滚入视口；默认 true。勿把 hittable=false 当成功能关闭',
+        ),
       },
       required: ['targetDesc'],
     ),
@@ -354,7 +376,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   final _uiTool = Tool(
     name: 'get_ui_snapshot',
-    description: '获取可交互控件（flutter_skill inspect）。',
+    description:
+        '获取可交互控件，并标注 inViewport / needsScroll / offScreenTexts。'
+        '树里能找到但 needsScroll=true 时，应先 scroll/tap(scrollIntoView)，'
+        '不要当成按钮被业务隐藏。',
     inputSchema: Schema.object(properties: {}),
   );
 
@@ -536,11 +561,73 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     return _reply(ApiResponse.ok(summary));
   }
 
+  /// Poll Bridge health until App lifecycle is cold_start / foreground.
+  FutureOr<CallToolResult> _waitLifecycle(CallToolRequest request) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final timeoutMs = (args['timeoutMs'] as num?)?.toInt() ?? 120000;
+    final pollMs = (args['pollMs'] as num?)?.toInt() ?? 300;
+    final t0 = DateTime.now();
+    final deadline = t0.add(Duration(milliseconds: timeoutMs));
+
+    while (DateTime.now().isBefore(deadline)) {
+      try {
+        await _bridge.ensureResolved(force: true);
+        final health = await _bridge.health();
+        final data = health.data;
+        if (health.isOk && data != null && data.lifecycleForeground) {
+          // Warm VM for subsequent tap/screenshot.
+          final rawVm = data.vmServiceUri;
+          if (rawVm != null && rawVm.isNotEmpty) {
+            _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
+          }
+          final ms = DateTime.now().difference(t0).inMilliseconds;
+          return _reply(
+            ApiResponse.ok({
+              'ready': true,
+              'elapsedMs': ms,
+              'lifecycle': data.lifecycle,
+              'lifecycleForeground': true,
+              'vmServiceUri': data.vmServiceUri,
+              'bridge': _bridge.bridgeBaseUrl,
+              'note': 'App lifecycle cold_start/foreground — 可开始 tap',
+            }),
+          );
+        }
+      } catch (e) {
+        if (config.debugLog) {
+          io.stderr.writeln('[flutter-perf-agent-mcp] wait_lifecycle: $e');
+        }
+      }
+      await Future<void>.delayed(Duration(milliseconds: pollMs));
+    }
+
+    // Last health snapshot for diagnosis.
+    Map<String, dynamic>? last;
+    try {
+      final health = await _bridge.health();
+      last = health.data?.toJson();
+    } catch (_) {}
+
+    return _reply(
+      ApiResponse.fail(
+        ApiCodes.unavailable,
+        'wait_lifecycle timeout after ${timeoutMs}ms '
+        '(need health.lifecycleForeground=true)',
+        data: {
+          'ready': false,
+          'elapsedMs': DateTime.now().difference(t0).inMilliseconds,
+          'lastHealth': last,
+        },
+      ),
+    );
+  }
+
   FutureOr<CallToolResult> _tap(CallToolRequest request) async {
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String? ?? '').trim();
     final wait = args['waitStableMs'] as int?;
     final forceLegacy = args['useLegacyTap'] == true;
+    final scrollIntoView = args['scrollIntoView'] != false;
     if (target.isEmpty) {
       return _reply(
         ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
@@ -559,10 +646,18 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       waitStableMs: wait,
       extraSettleMs: looksLikeNav ? config.navigationWaitMs : 0,
       expectNavigation: looksLikeNav,
-      extraStepFields: {'targetDesc': target},
+      extraStepFields: {
+        'targetDesc': target,
+        'scrollIntoView': scrollIntoView,
+      },
       skillAction: forceLegacy
           ? (client) async => {'success': false, 'error': 'forced legacy'}
-          : (client) => client.tap(text: target, key: target),
+          : scrollIntoView
+              ? (client) => VisibilityAssist.tapEnsuringVisible(
+                    client,
+                    target: target,
+                  )
+              : (client) => client.tap(text: target, key: target),
       legacyFallback: () => _bridge.tapLegacy(
         targetDesc: target,
         waitStableMs: wait,
@@ -745,11 +840,23 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final client = await _ensureSkillClient();
     if (client != null) {
       try {
-        final inspected = await client.inspectInteractive();
+        // Prefer interactive() — has bounds for viewport classification.
+        Map<String, dynamic> raw;
+        try {
+          raw = await client.interactive();
+        } catch (_) {
+          raw = await client.inspectInteractive();
+        }
+        final enriched = VisibilityAssist.enrichInteractive(raw);
+        // Warm tap cache so a following tap can skip a second interactive.
+        VisibilityAssist.warmCache(enriched);
         return _reply(
           ApiResponse.ok({
             'driver': 'flutter_skill',
-            'data': inspected,
+            'data': enriched,
+            'note':
+                'needsScroll/offScreenTexts: 控件在树里但可能在屏外；'
+                '请 tap(scrollIntoView) 或 scroll，勿当成业务隐藏。',
           }),
         );
       } catch (e) {

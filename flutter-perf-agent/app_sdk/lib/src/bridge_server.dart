@@ -10,6 +10,7 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
+import 'app_lifecycle_tracker.dart';
 import 'bridge_discovery.dart';
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
@@ -248,11 +249,12 @@ class PerfBridgeServer {
   Future<Response> _health(Request request) async {
     final vmUri = await _vmServiceUri();
     final sleuth = SleuthFacade.diagnose();
+    final life = AppLifecycleTracker.instance.lastEvent;
     return _envelope(
       ApiResponse.ok(
         HealthData(
           bridge: 'flutter-perf-agent',
-          version: '0.7.0',
+          version: '0.7.1',
           sessionId: sessionId ?? SessionJournal.instance.sessionId,
           testName: testName ?? SessionJournal.instance.testName,
           vmServiceUri: vmUri,
@@ -261,6 +263,8 @@ class PerfBridgeServer {
           mode: kReleaseMode
               ? 'release'
               : (kProfileMode ? 'profile' : 'debug'),
+          lifecycle: life,
+          lifecycleForeground: AppLifecycleTracker.instance.isForegroundish,
         ),
       ),
     );

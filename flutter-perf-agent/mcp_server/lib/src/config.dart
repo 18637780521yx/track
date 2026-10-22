@@ -147,11 +147,11 @@ class PerfAgentConfig {
     return PerfAgentConfig(
       bridgeHost: json['bridgeHost'] as String? ?? '127.0.0.1',
       bridgePort: json['bridgePort'] as int? ?? 19288,
-      waitStableMs: json['waitStableMs'] as int? ?? 500,
-      postActionSettleMs: json['postActionSettleMs'] as int? ?? 400,
-      navigationWaitMs: json['navigationWaitMs'] as int? ?? 800,
-      maxRetries: json['maxRetries'] as int? ?? 2,
-      retryDelayMs: json['retryDelayMs'] as int? ?? 300,
+      waitStableMs: json['waitStableMs'] as int? ?? 200,
+      postActionSettleMs: json['postActionSettleMs'] as int? ?? 120,
+      navigationWaitMs: json['navigationWaitMs'] as int? ?? 350,
+      maxRetries: json['maxRetries'] as int? ?? 1,
+      retryDelayMs: json['retryDelayMs'] as int? ?? 150,
       // Default off: path report is text-first; screenshot strategy deferred.
       captureScreenshots: json['captureScreenshots'] as bool? ?? false,
       debugLog: json['debugLog'] as bool? ?? false,

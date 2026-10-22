@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.3 — tap 滚入视口 + 生命周期就绪信号
+
+- `tap` 默认 `scrollIntoView`（几何判定，无 App 文案白名单）；interactive 短缓存；屏内直 tap
+- Bridge `/health` 暴露 `lifecycle` / `lifecycleForeground`；MCP `wait_lifecycle` 轮询至启动/前台（非盲等）
+- 默认等待下调；操作后 snapshot/sleuth/network 并行
+- 原则：树有 ≠ 屏可见；生命周期信号给 MCP 用，不另造 AppReady
+
 ## 0.9.2 — 页面级时间线（生命周期 / 性能报告）
 
 - PRD §4.3.2：四模块 `lifecycle | page | transition | 性能报告`；`view.timeline` 字段最小集；操作 `tap:`/`input:`/`scroll:` + `mcp|manual`

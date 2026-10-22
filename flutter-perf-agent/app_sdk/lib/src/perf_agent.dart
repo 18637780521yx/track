@@ -209,6 +209,9 @@ class PerfAgent {
     if (bridge == null) return;
     try {
       await bridge.start();
+      AppLifecycleTracker.instance.noteColdStart(
+        route: PerfNetworkCapture.currentRoute(),
+      );
       debugPrint(
         '[PerfAgent] bridge ready at http://${bridge.host}:${bridge.boundPort}',
       );
