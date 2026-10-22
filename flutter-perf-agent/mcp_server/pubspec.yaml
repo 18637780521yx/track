@@ -1,6 +1,6 @@
 name: flutter_perf_agent_mcp
 description: Flutter-Perf-Agent MCP — full flutter_skill UI + full Sleuth + reports.
-version: 0.9.1
+version: 0.9.2
 publish_to: none
 
 environment:
