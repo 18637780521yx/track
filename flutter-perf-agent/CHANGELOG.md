@@ -5,7 +5,8 @@
 - PRD §4.3.2：四模块 `lifecycle | page | transition | 性能报告`；`view.timeline` 字段最小集；操作 `tap:`/`input:`/`scroll:` + `mcp|manual`
 - 分段：转场落地即建页卡（允许空白「无操作」）；`页面 → 性能报告? → 转场`；截图退出路径主叙事
 - HTML：筛选「生命周期」；性能报告显示所属页面 + 页级指标（停留/操作/慢请求/ΔRSS）；操作行来源 chip
-- 默认 `captureScreenshots=false`（操作/落页不再采图；可配置打开）
+- 默认 `captureScreenshots=false`（操作/落页不再自动采图）
+- MCP 一等工具 `screenshot`：按需全屏截图落盘；**移除** `skill_screenshot` 注册
 - App SDK：`AppLifecycleTracker` 写入进后台/进前台事件
 
 ## 0.9.1 — Tab 假泄漏与陈旧 transitionKind

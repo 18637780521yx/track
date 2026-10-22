@@ -9,7 +9,7 @@ import 'flutter_skill_client.dart';
 /// 将 flutter_skill 全量能力收成少量 MCP 工具（避免 40+ `skill_*`）。
 ///
 /// - [skill_call]：`method` + `args` 调度 [FlutterSkillClient]
-/// - [skill_screenshot]：截图单独暴露（载荷大）
+/// - 全屏截图用 server 一等工具 `screenshot`（不再注册 `skill_screenshot`）
 ///
 /// 高频动作仍用 server 上的 `tap` / `input_text` / `scroll`。
 /// 手势类 method 自动开会话并走 [ActionRunner]（Sleuth/RSS + live 报告）。
@@ -184,33 +184,12 @@ void registerFlutterSkillTools({
     },
   );
 
-  registerTool(
-    Tool(
-      name: 'skill_screenshot',
-      description: '全屏截图（base64 image）。区域/控件截图用 skill_call '
-          'method=screenshotRegion|screenshotElement。',
-      inputSchema: Schema.object(
-        properties: {
-          'quality': Schema.num(description: '0–1，默认 0.65'),
-          'maxWidth': Schema.int(description: '默认 720'),
-        },
-      ),
-    ),
-    (req) {
-      final a = req.arguments ?? const <String, Object?>{};
-      final quality = (a['quality'] as num?)?.toDouble() ?? 0.65;
-      final maxWidth = (a['maxWidth'] as num?)?.toInt() ?? 720;
-      return onDemand(
-        (c) => c.screenshot(quality: quality, maxWidth: maxWidth),
-      );
-    },
-  );
-
   // 列出可用 method，方便模型/人类查阅（轻量）。
   registerTool(
     Tool(
       name: 'skill_list_methods',
-      description: '列出 skill_call 可用的 method 名与分类。',
+      description: '列出 skill_call 可用的 method 名与分类。'
+          '全屏截图请用工具 screenshot（非 skill_screenshot）。',
       inputSchema: Schema.object(properties: {}),
     ),
     (_) => reply(
@@ -219,7 +198,9 @@ void registerFlutterSkillTools({
         'readonly': _readonlyMethods,
         'note':
             'Prefer tap/input_text/scroll for common flows; '
-            'use skill_call for the rest.',
+            'use screenshot for full-screen capture; '
+            'use skill_call for the rest '
+            '(screenshotRegion / screenshotElement via skill_call).',
       }),
     ),
   );

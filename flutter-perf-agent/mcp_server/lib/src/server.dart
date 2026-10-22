@@ -4,6 +4,7 @@ import 'dart:io' as io;
 
 import 'package:dart_mcp/server.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
+import 'package:path/path.dart' as p;
 
 import 'action_runner.dart';
 import 'bridge_client.dart';
@@ -34,7 +35,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
               'Call stop_perf_test for final HTML/JSON. '
               'Optional explicit start_perf_test. '
               'Timeline: lifecycle / page / transition / 性能报告; '
-              'screenshots default off. '
+              'auto screenshots off; use tool screenshot for on-demand capture. '
               'All tool JSON: {code, data, msg} (code=0 ok).',
         ) {
     _bridge = BridgeClient(config);
@@ -45,6 +46,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     registerTool(_tapTool, _tap);
     registerTool(_scrollTool, _scroll);
     registerTool(_inputTool, _inputText);
+    registerTool(_screenshotTool, _screenshot);
     registerTool(_uiTool, _getUiSnapshot);
     registerTool(_thresholdTool, _getThresholdConfig);
     registerTool(_exportTool, _exportSnapshot);
@@ -330,6 +332,23 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'waitStableMs': Schema.int(description: '操作后等待稳定毫秒'),
       },
       required: ['targetDesc', 'text'],
+    ),
+  );
+
+  final _screenshotTool = Tool(
+    name: 'screenshot',
+    description:
+        '按需全屏截图（与 tap 自动截图无关；captureScreenshots 默认关闭不影响本工具）。'
+        '保存 PNG 到 reports/screenshots，返回路径；可选附带 base64。'
+        '区域/控件截图用 skill_call method=screenshotRegion|screenshotElement。',
+    inputSchema: Schema.object(
+      properties: {
+        'maxWidth': Schema.int(description: '默认 720'),
+        'includeDataUri': Schema.bool(
+          description: '是否在 data 中返回 data:image/png;base64,...（默认 false，载荷大）',
+        ),
+        'name': Schema.string(description: '文件名（不含扩展名），可选'),
+      },
     ),
   );
 
@@ -642,6 +661,86 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     return _stepReply(step);
   }
 
+  /// On-demand full-screen capture. Independent of [PerfAgentConfig.captureScreenshots].
+  FutureOr<CallToolResult> _screenshot(CallToolRequest request) async {
+    final args = request.arguments ?? const <String, Object?>{};
+    final maxWidth = (args['maxWidth'] as num?)?.toInt() ?? 720;
+    final includeDataUri = args['includeDataUri'] == true;
+    final nameArg = (args['name'] as String?)?.trim();
+
+    final client = await _ensureSkillClient();
+    if (client == null) {
+      return _reply(
+        ApiResponse.fail(
+          ApiCodes.skillError,
+          'flutter_skill not connected — ensure App Bridge is up '
+          '(PerfAgent with VM URI)',
+        ),
+      );
+    }
+
+    try {
+      await client.ensureConnected();
+      var b64 = await client.screenshotBase64(maxWidth: maxWidth);
+      if (b64 == null || b64.isEmpty) {
+        await _bridge.waitStable(waitStableMs: config.waitStableMs);
+        await Future<void>.delayed(const Duration(milliseconds: 400));
+        b64 = await client.screenshotBase64(maxWidth: maxWidth);
+      }
+      if (b64 == null || b64.isEmpty) {
+        return _reply(
+          ApiResponse.fail(ApiCodes.skillError, 'screenshot empty'),
+        );
+      }
+
+      String? route;
+      try {
+        final r = await client.getCurrentRoute();
+        route = r['route']?.toString() ??
+            r['current']?.toString() ??
+            r['name']?.toString();
+      } catch (_) {}
+
+      final sessionId = _session?.sessionId ??
+          'adhoc_${DateTime.now().millisecondsSinceEpoch}';
+      final dir = io.Directory(
+        p.join(config.reportsDir, 'screenshots', sessionId),
+      );
+      if (!await dir.exists()) {
+        await dir.create(recursive: true);
+      }
+      final safeName = (nameArg != null && nameArg.isNotEmpty)
+          ? nameArg.replaceAll(RegExp(r'[^\w\-]+'), '_')
+          : 'shot_${DateTime.now().millisecondsSinceEpoch}';
+      final path = p.join(dir.path, '$safeName.png');
+      await io.File(path).writeAsBytes(base64Decode(b64));
+
+      return _reply(
+        ApiResponse.ok({
+          'driver': 'flutter_skill',
+          'path': path,
+          'route': route,
+          'at': DateTime.now().toIso8601String(),
+          'sessionId': _session?.sessionId,
+          'maxWidth': maxWidth,
+          'autoCapture': false,
+          'note':
+              'On-demand only; tap/input do not auto-screenshot '
+              '(captureScreenshots=${config.captureScreenshots}).',
+          if (includeDataUri) 'dataUri': 'data:image/png;base64,$b64',
+        }),
+      );
+    } catch (e) {
+      return _reply(
+        ApiResponse.fail(
+          ApiCodes.skillError,
+          'screenshot failed: $e',
+          data: {'driver': 'flutter_skill'},
+        ),
+      );
+    }
+  }
+
   FutureOr<CallToolResult> _getUiSnapshot(CallToolRequest request) async {
     final client = await _ensureSkillClient();
     if (client != null) {
@@ -693,7 +792,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'version': '0.6.0',
         'note':
             'Full Sleuth via Bridge. flutter_skill via tap/scroll/input + '
-            'skill_call / skill_screenshot. '
+            'screenshot (on-demand) + skill_call. '
+            'Auto screenshots off by default (captureScreenshots=false). '
             'For GC/heap: flutter run --profile --no-dds.',
         'thresholds': {
           'maxFrameCostMs': config.maxFrameCostMs,
