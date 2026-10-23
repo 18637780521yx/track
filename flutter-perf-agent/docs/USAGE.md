@@ -1,5 +1,7 @@
 # 使用教程
 
+报告时间线里能出现哪些操作 / 网络 / 告警事件，见仓库文档 [perf-events.md](../../doc/perf-events.md)。
+
 ## 前置
 
 1. 已接入 `PerfAgent` + `Sleuth`（见 [INTEGRATION.md](INTEGRATION.md)）
@@ -185,7 +187,7 @@ HTML 结构（schemaVersion 9）：
 
 - Dialog / BottomSheet / `fullscreenDialog` → `transitionKind`=`modal_dialog`|`modal_sheet`|`modal_page`；无名弹层合成 `#modal/N`
 - 关闭弹层（`from` 为 `#modal/…`）才会跑泄漏探针（与打开弹层区分）
-- example：我的 →「打开泄漏 Dialog」→ 关闭 → 应出现 `transition_memory_leak`（`DialogLeakHolder`）
+- example：我的 →「打开泄漏 Dialog」→ 关闭 → 应出现 `memory_leak`（`DialogLeakHolder`，挂在转场段）
 - `requireMultiRound: true`：单轮 pop 不出主告警，二轮确认后出
 - `leakVmDeepProbe: true`：WeakRef 泄漏时探针附带 `vmDeep`（无 VM 则 `skipped`）；**不得**单独作 CI 红线
 

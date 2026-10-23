@@ -179,7 +179,7 @@ class TransitionLeakTracker {
     }
   }
 
-  /// Whether the gate policy allows a main `transition_memory_leak` alert.
+  /// Whether the gate policy allows a main `memory_leak` alert.
   bool shouldAlertLeak(TransitionLeakProbe probe) {
     if (probe.hasWeakRefLeak) {
       if (!alertOnWeakRef) return false;
@@ -325,7 +325,7 @@ class TransitionLeakTracker {
           : '';
       out.add(
         AlertItem(
-          type: 'transition_memory_leak',
+          type: 'memory_leak',
           stepId: stepId,
           action: action,
           message:
@@ -339,7 +339,7 @@ class TransitionLeakTracker {
     if (alertOnRssRetain && delta != null && delta >= rssRetainMb) {
       out.add(
         AlertItem(
-          type: 'transition_memory_retain_rss',
+          type: 'memory_retain_rss',
           stepId: stepId,
           action: action,
           message:
@@ -353,11 +353,11 @@ class TransitionLeakTracker {
     if (p90FrameMs != null && p90FrameMs > maxFrameCostMs) {
       out.add(
         AlertItem(
-          type: 'transition_jank',
+          type: 'slow_frame',
           stepId: stepId,
           action: action,
           message:
-              '转场窗 P90 ${p90FrameMs.toStringAsFixed(1)}ms > ${maxFrameCostMs}ms',
+              'P90 ${p90FrameMs.toStringAsFixed(1)}ms > ${maxFrameCostMs}ms',
           value: p90FrameMs,
           threshold: maxFrameCostMs,
         ),
@@ -365,10 +365,10 @@ class TransitionLeakTracker {
     } else if (jankDelta != null && jankDelta > 0) {
       out.add(
         AlertItem(
-          type: 'transition_jank',
+          type: 'jank',
           stepId: stepId,
           action: action,
-          message: '转场窗新增 Jank $jankDelta 次',
+          message: '新增 Jank $jankDelta 次',
           value: jankDelta,
         ),
       );

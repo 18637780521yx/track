@@ -143,17 +143,24 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
     final stepAlerts =
         (s['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
     for (final a in stepAlerts) {
+      final alertType = _normalizeAlertType(a['type']?.toString());
       events.add({
         'id': 'ev_${idx++}',
         'type': 'alert',
         'at': s['at']?.toString() ?? '',
-        'label': a['message']?.toString() ?? a['type']?.toString() ?? 'alert',
+        'label': _alertLabel(a),
         'ok': false,
         'stepId': sid,
         'route': route,
-        'source': source,
-        'module': 'alert',
-        'detail': a,
+        'source': _normalizeSource(source),
+        'module': _moduleForAlertType(alertType),
+        'detail': {
+          ...a,
+          'type': alertType,
+          'alertType': alertType,
+          if (a['type'] != null && a['type'].toString() != alertType)
+            'legacyType': a['type'],
+        },
       });
     }
   }
@@ -170,17 +177,27 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
   for (final a in alerts) {
     final key = '${a['type']}|${a['stepId']}|${a['message']}';
     if (seenAlertKeys.contains(key)) continue;
+    final alertType = _normalizeAlertType(a['type']?.toString());
+    final sid = a['stepId']?.toString();
+    final stepRoute =
+        sid != null && stepById.containsKey(sid) ? _stepRoute(stepById[sid]!) : null;
     events.add({
       'id': 'ev_${idx++}',
       'type': 'alert',
       'at': _alertAt(a, steps, report),
-      'label': a['message']?.toString() ?? a['type']?.toString() ?? 'alert',
+      'label': _alertLabel(a),
       'ok': false,
-      'stepId': a['stepId']?.toString(),
-      'route': null,
+      'stepId': sid,
+      'route': stepRoute,
       'source': null,
-      'module': 'alert',
-      'detail': a,
+      'module': _moduleForAlertType(alertType),
+      'detail': {
+        ...a,
+        'type': alertType,
+        'alertType': alertType,
+        if (a['type'] != null && a['type'].toString() != alertType)
+          'legacyType': a['type'],
+      },
     });
   }
 
@@ -202,7 +219,7 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
         .compareTo(_eventTypeRank(b['type']?.toString()));
   });
 
-  final timeline = _segmentTimeline(events, stepById, slowMs: slowMs);
+  final timeline = _segmentTimeline(events, stepById);
   final perf = _sessionPerf(steps);
   final netStats = _netStats(events, slowMs);
 
@@ -226,11 +243,72 @@ String _moduleForEventType(String type) {
     case 'navigate':
       return 'transition';
     case 'alert':
-      return 'alert';
+      return 'page'; // refined by _moduleForAlertType when building
     case 'network':
       return 'network';
     default:
       return 'page';
+  }
+}
+
+/// Canonical alert types — problem kind only; where it sits is the segment.
+/// Legacy `transition_*` names map here for old reports.
+String _normalizeAlertType(String? raw) {
+  final t = (raw ?? 'alert').trim();
+  switch (t) {
+    case 'transition_jank':
+      // Old reports mixed P90 + jank under one name; keep as jank for display.
+      return 'jank';
+    case 'transition_memory_leak':
+      return 'memory_leak';
+    case 'transition_memory_retain_rss':
+      return 'memory_retain_rss';
+    default:
+      return t.isEmpty ? 'alert' : t;
+  }
+}
+
+String _moduleForAlertType(String alertType) {
+  final t = _normalizeAlertType(alertType);
+  if (t == 'slow_cold_start') return 'lifecycle';
+  // memory_leak / memory_retain_rss usually on navigate steps → transition seg
+  // via stepId; flat module hint only.
+  if (t == 'memory_leak' || t == 'memory_retain_rss') return 'transition';
+  return 'page';
+}
+
+/// Short timeline label for an alert map (`type` / `value` / `message`).
+String _alertLabel(Map<String, dynamic> a) {
+  final type = _normalizeAlertType(a['type']?.toString());
+  final value = a['value'];
+  switch (type) {
+    case 'jank':
+      return value != null ? 'jank:+$value' : 'jank';
+    case 'memory_increase':
+    case 'memory_retain_rss':
+      if (value is num) {
+        return '$type:+${value.toStringAsFixed(1)}MB';
+      }
+      return type;
+    case 'slow_frame':
+      if (value is num) {
+        return 'slow_frame:${value.toStringAsFixed(0)}ms';
+      }
+      return type;
+    case 'slow_cold_start':
+      if (value is num) {
+        return 'slow_cold_start:${value.toStringAsFixed(0)}ms';
+      }
+      return type;
+    case 'memory_leak':
+      return 'memory_leak';
+    case 'sleuth_issues':
+    case 'sleuth_detector':
+      return type;
+    default:
+      final msg = a['message']?.toString();
+      if (msg != null && msg.isNotEmpty && msg.length <= 80) return msg;
+      return type;
   }
 }
 
@@ -291,6 +369,7 @@ String _normalizeActionLabel(String? raw, {Map<String, dynamic>? detail}) {
 }
 
 /// Tie-break only when two events share the same [at] timestamp.
+/// Prefer: action → network → alert → navigate (same step).
 int _eventTypeRank(String? type) {
   switch (type) {
     case 'cold_start':
@@ -298,13 +377,13 @@ int _eventTypeRank(String? type) {
       return 0;
     case 'action':
       return 1;
-    case 'navigate':
-      return 2;
     case 'network':
-      return 3;
-    case 'screenshot':
-      return 4;
+      return 2;
     case 'alert':
+      return 3;
+    case 'navigate':
+      return 4;
+    case 'screenshot':
       return 5;
     default:
       return 6;
@@ -385,127 +464,35 @@ void _clampNavigateBeforeDestination(List<Map<String, dynamic>> events) {
 }
 
 /// Walk flat events → chronological module segments (page-level path).
+///
+/// Modules: `lifecycle` | `page` | `transition` only. Performance issues are
+/// `type=alert` events inlined into page / transition (no `module=alert` card).
 List<Map<String, dynamic>> _segmentTimeline(
   List<Map<String, dynamic>> events,
-  Map<String, Map<String, dynamic>> stepById, {
-  int slowMs = 300,
-}) {
+  Map<String, Map<String, dynamic>> stepById,
+) {
   final segments = <Map<String, dynamic>>[];
   Map<String, dynamic>? openPage;
-  Map<String, dynamic>? openReport;
-  String? lastPageRoute;
-  String? lastPageId;
+  Map<String, dynamic>? lastTransition;
   var segIdx = 0;
 
-  Map<String, dynamic> pageSummaryOf(Map<String, dynamic> page) {
-    final evs = (page['events'] as List).cast<Map>();
-    var slow = 0;
-    DateTime? t0;
-    DateTime? t1;
-    for (final e in evs) {
-      final at = DateTime.tryParse(e['at']?.toString() ?? '');
-      if (at != null) {
-        t0 = t0 == null || at.isBefore(t0) ? at : t0;
-        t1 = t1 == null || at.isAfter(t1) ? at : t1;
-      }
-      if (e['type'] == 'network') {
-        final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
-        final dur = (d['durationMs'] as num?)?.toInt();
-        if (dur != null && dur >= slowMs) slow++;
-      }
-    }
-    double? memDelta;
-    final ids = (page['stepIds'] as Set<String>?) ?? {};
-    for (final id in ids) {
-      final s = stepById[id];
-      if (s == null) continue;
-      final diff = (s['diff'] as Map?)?.cast<String, dynamic>() ?? {};
-      final m = (diff['memoryDeltaMb'] as num?)?.toDouble();
-      if (m != null) memDelta = (memDelta ?? 0) + m;
-    }
-    final dwellMs =
-        (t0 != null && t1 != null) ? t1.difference(t0).inMilliseconds : null;
-    return {
-      'dwellMs': dwellMs,
-      'actionCount': page['actionCount'] ?? 0,
-      'networkCount': page['networkCount'] ?? 0,
-      'slowRequestCount': slow,
-      if (memDelta != null) 'memoryDeltaMb': double.parse(memDelta.toStringAsFixed(2)),
-    };
-  }
-
-  bool summaryWorthShowing(Map<String, dynamic>? summary) {
-    if (summary == null) return false;
-    final actions = (summary['actionCount'] as num?)?.toInt() ?? 0;
-    final nets = (summary['networkCount'] as num?)?.toInt() ?? 0;
-    final slow = (summary['slowRequestCount'] as num?)?.toInt() ?? 0;
-    return actions > 0 || nets > 0 || slow > 0 || summary['memoryDeltaMb'] != null;
+  void finalizeCounts(Map<String, dynamic> seg) {
+    final evs = seg['events'] as List;
+    seg['eventCount'] = evs.length;
+    seg['networkCount'] =
+        evs.where((e) => (e as Map)['type'] == 'network').length;
+    seg['actionCount'] =
+        evs.where((e) => (e as Map)['type'] == 'action').length;
+    seg['alertCount'] =
+        evs.where((e) => (e as Map)['type'] == 'alert').length;
   }
 
   void flushPage() {
     final page = openPage;
     if (page == null) return;
-    final evs = page['events'] as List;
-    // Empty page cards are kept (path continuity after navigate).
-    page['eventCount'] = evs.length;
-    page['networkCount'] =
-        evs.where((e) => (e as Map)['type'] == 'network').length;
-    page['actionCount'] =
-        evs.where((e) => (e as Map)['type'] == 'action').length;
-    page['alertCount'] = 0;
-    lastPageRoute = page['route']?.toString();
-    lastPageId = page['id']?.toString();
+    finalizeCounts(page);
     segments.add(page);
     openPage = null;
-  }
-
-  void flushReport() {
-    final report = openReport;
-    if (report == null) return;
-    final evs = report['events'] as List;
-    final summary =
-        (report['pageSummary'] as Map?)?.cast<String, dynamic>();
-    if (evs.isEmpty && !summaryWorthShowing(summary)) {
-      openReport = null;
-      return;
-    }
-    report['eventCount'] = evs.length;
-    report['ownerRoute'] = lastPageRoute;
-    report['pageSegId'] = lastPageId;
-    segments.add(report);
-    openReport = null;
-  }
-
-  void ensureReport(Map<String, dynamic> first) {
-    openReport ??= {
-      'id': 'seg_${segIdx++}',
-      'module': 'alert',
-      'title': '性能报告',
-      'at': first['at'],
-      'events': <Map<String, dynamic>>[],
-    };
-  }
-
-  void flushPageThenReport() {
-    final page = openPage;
-    if (page != null) {
-      page['eventCount'] = (page['events'] as List).length;
-      page['networkCount'] = (page['events'] as List)
-          .where((e) => (e as Map)['type'] == 'network')
-          .length;
-      page['actionCount'] = (page['events'] as List)
-          .where((e) => (e as Map)['type'] == 'action')
-          .length;
-      final summary = pageSummaryOf(page);
-      if (summaryWorthShowing(summary) ||
-          (openReport != null &&
-              ((openReport!['events'] as List).isNotEmpty))) {
-        ensureReport(page);
-        openReport!['pageSummary'] = summary;
-      }
-    }
-    flushPage();
-    flushReport();
   }
 
   Map<String, dynamic> newPage(String route, Map<String, dynamic> first) {
@@ -520,6 +507,47 @@ List<Map<String, dynamic>> _segmentTimeline(
     };
   }
 
+  void appendToPage(Map<String, dynamic> e) {
+    final route = e['route']?.toString();
+    final pageKey =
+        (route != null && route.isNotEmpty) ? route : '(unknown)';
+    if (openPage == null || openPage!['route'] != pageKey) {
+      flushPage();
+      openPage = newPage(pageKey, e);
+    }
+    (openPage!['events'] as List).add(e);
+    final sid = e['stepId']?.toString();
+    if (sid != null) {
+      (openPage!['stepIds'] as Set<String>).add(sid);
+    }
+  }
+
+  Map<String, dynamic>? transitionForAlert(Map<String, dynamic> e) {
+    final sid = e['stepId']?.toString();
+    if (sid != null) {
+      for (var i = segments.length - 1; i >= 0; i--) {
+        final seg = segments[i];
+        if (seg['module'] == 'transition' &&
+            seg['stepId']?.toString() == sid) {
+          return seg;
+        }
+      }
+      if (lastTransition != null &&
+          lastTransition!['stepId']?.toString() == sid) {
+        return lastTransition;
+      }
+    }
+    // Leak / RSS-retain are only emitted on navigate/pop steps.
+    final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
+    final alertType = _normalizeAlertType(
+      d['alertType']?.toString() ?? d['type']?.toString(),
+    );
+    if (alertType == 'memory_leak' || alertType == 'memory_retain_rss') {
+      return lastTransition;
+    }
+    return null;
+  }
+
   for (final e in events) {
     final type = e['type']?.toString() ?? 'action';
 
@@ -527,7 +555,8 @@ List<Map<String, dynamic>> _segmentTimeline(
     if (type == 'screenshot') continue;
 
     if (type == 'cold_start' || type == 'lifecycle') {
-      flushPageThenReport();
+      flushPage();
+      lastTransition = null;
       final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
       final kind = type == 'cold_start'
           ? 'cold_start'
@@ -538,6 +567,7 @@ List<Map<String, dynamic>> _segmentTimeline(
         'foreground' || 'resumed' => 'App 进入前台',
         _ => e['label']?.toString() ?? '生命周期',
       };
+      final lifeEvents = <Map<String, dynamic>>[e];
       segments.add({
         'id': 'seg_${segIdx++}',
         'module': 'lifecycle',
@@ -546,7 +576,7 @@ List<Map<String, dynamic>> _segmentTimeline(
             : (kind == 'resumed' ? 'foreground' : kind),
         'title': title,
         'at': e['at'],
-        'events': [e],
+        'events': lifeEvents,
         'route': d['route'] ?? e['route'],
         'backgroundMs': d['backgroundMs'],
         'ttffMs': e['ttffMs'] ?? d['ttffMs'],
@@ -560,9 +590,9 @@ List<Map<String, dynamic>> _segmentTimeline(
     }
 
     if (type == 'navigate') {
-      flushPageThenReport();
+      flushPage();
       final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
-      segments.add({
+      final transition = <String, dynamic>{
         'id': 'seg_${segIdx++}',
         'module': 'transition',
         'title': e['label'] ?? '${d['from'] ?? '?'} → ${d['to'] ?? '?'}',
@@ -571,9 +601,11 @@ List<Map<String, dynamic>> _segmentTimeline(
         'to': d['to'],
         'transitionKind': d['transitionKind'] ?? 'unknown',
         'leak': d['leak'],
-        'events': [e],
+        'events': <Map<String, dynamic>>[e],
         'stepId': e['stepId'],
-      });
+      };
+      lastTransition = transition;
+      segments.add(transition);
       // Open empty landing page immediately (blank card allowed).
       final to = d['to']?.toString();
       if (to != null && to.isNotEmpty) {
@@ -583,29 +615,40 @@ List<Map<String, dynamic>> _segmentTimeline(
     }
 
     if (type == 'alert') {
-      ensureReport(e);
-      (openReport!['events'] as List).add(e);
+      final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? {};
+      final alertType = _normalizeAlertType(
+        d['alertType']?.toString() ?? d['type']?.toString(),
+      );
+      // Cold-start alerts sit on the latest lifecycle segment when possible.
+      if (alertType == 'slow_cold_start') {
+        Map<String, dynamic>? life;
+        for (var i = segments.length - 1; i >= 0; i--) {
+          if (segments[i]['module'] == 'lifecycle') {
+            life = segments[i];
+            break;
+          }
+        }
+        if (life != null) {
+          (life['events'] as List).add(e);
+          continue;
+        }
+      }
+      final tSeg = transitionForAlert(e);
+      if (tSeg != null) {
+        (tSeg['events'] as List).add(e);
+        continue;
+      }
+      appendToPage(e);
       continue;
     }
 
     // action / network → current page
-    final route = e['route']?.toString();
-    final pageKey =
-        (route != null && route.isNotEmpty) ? route : '(unknown)';
-
-    if (openPage == null || openPage!['route'] != pageKey) {
-      flushPage(); // keep pending perf until boundary
-      openPage = newPage(pageKey, e);
-    }
-    (openPage!['events'] as List).add(e);
-    final sid = e['stepId']?.toString();
-    if (sid != null) {
-      (openPage!['stepIds'] as Set<String>).add(sid);
-    }
+    appendToPage(e);
   }
-  flushPageThenReport();
+  flushPage();
 
   for (final seg in segments) {
+    finalizeCounts(seg);
     if (seg['module'] != 'page') continue;
     final pageRoute = seg['route']?.toString() ?? '';
     final ids = (seg['stepIds'] as Set<String>?) ?? {};

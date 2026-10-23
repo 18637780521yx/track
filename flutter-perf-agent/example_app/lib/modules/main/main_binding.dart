@@ -9,7 +9,7 @@ class MainBinding extends Bindings {
   @override
   void dependencies() {
     // Tab shell controllers outlive `/home#*` logical switches — do not
-    // WeakRef-track them (avoids false transition_memory_leak on tab change).
+    // WeakRef-track them (avoids false memory_leak on tab change).
     PerfDi.lazyPut(MainController.new, trackLeak: false);
     PerfDi.lazyPut(HomeController.new, trackLeak: false);
     PerfDi.lazyPut(ProfileController.new, trackLeak: false);

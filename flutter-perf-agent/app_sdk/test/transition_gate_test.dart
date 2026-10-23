@@ -44,7 +44,7 @@ void main() {
     expect(t.shouldAlertLeak(single), isFalse);
     final alerts = t.alertsForProbe(probe: single, stepId: '1', action: 'a');
     expect(
-      alerts.where((a) => a.type == 'transition_memory_leak'),
+      alerts.where((a) => a.type == 'memory_leak'),
       isEmpty,
     );
 

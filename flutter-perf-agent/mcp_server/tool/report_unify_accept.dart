@@ -139,7 +139,9 @@ Future<void> main() async {
   }
   final multi = ((report['alerts'] as List?) ?? const []).where((a) {
     if (a is! Map) return false;
-    if (a['type'] != 'transition_memory_leak') return false;
+    if (a['type'] != 'memory_leak' && a['type'] != 'transition_memory_leak') {
+      return false;
+    }
     final v = a['value'];
     return v is Map && v['multiRoundConfirmed'] == true;
   }).length;

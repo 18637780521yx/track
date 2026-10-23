@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.4 — 性能问题内联到页面/转场事件
+
+- 去掉独立「性能报告」模块卡（`module=alert`）；`alert` 按 step 紧跟操作，嵌进 **页面** / **转场** 事件流
+- HTML 筛选仅：全部 / 生命周期 / 页面 / 转场；页/转场卡显示告警数 badge
+- **告警类型统一（不区分转场/窗口）**：`jank` / `slow_frame` / `memory_leak` / `memory_retain_rss`；旧名 `transition_*` 派生时规范
+- 设计稿：[doc/design/report-timeline-v4-inline-alerts.jpg](../doc/design/report-timeline-v4-inline-alerts.jpg)
+- 事件目录：[doc/perf-events.md](../doc/perf-events.md)
+
 ## 0.9.3 — tap 滚入视口 + 生命周期就绪信号
 
 - `tap` 默认 `scrollIntoView`（几何判定，无 App 文案白名单）；interactive 短缓存；屏内直 tap

@@ -557,7 +557,7 @@ class ActionRunner {
                 leakJson['evidence'] = evidence;
               }
               final leakAlert = AlertItem(
-                type: 'transition_memory_leak',
+                type: 'memory_leak',
                 stepId: chapter.stepId,
                 action: actionLabel,
                 message:
@@ -573,7 +573,7 @@ class ActionRunner {
                 rssDelta != null &&
                 rssDelta >= config.leakRssRetainMb) {
               final rssAlert = AlertItem(
-                type: 'transition_memory_retain_rss',
+                type: 'memory_retain_rss',
                 stepId: chapter.stepId,
                 action: actionLabel,
                 message:
@@ -593,11 +593,11 @@ class ActionRunner {
       final p90 = diff.p90FrameMsAfter;
       if (p90 != null && p90 > config.maxFrameCostMs) {
         final jankAlert = AlertItem(
-          type: 'transition_jank',
+          type: 'slow_frame',
           stepId: chapter.stepId,
           action: actionLabel,
           message:
-              '转场窗 P90 ${p90.toStringAsFixed(1)}ms > ${config.maxFrameCostMs}ms',
+              'P90 ${p90.toStringAsFixed(1)}ms > ${config.maxFrameCostMs}ms',
           value: p90,
           threshold: config.maxFrameCostMs,
         );
@@ -605,10 +605,10 @@ class ActionRunner {
         session.addAlert(jankAlert);
       } else if ((diff.jankDelta ?? 0) > 0) {
         final jankAlert = AlertItem(
-          type: 'transition_jank',
+          type: 'jank',
           stepId: chapter.stepId,
           action: actionLabel,
-          message: '转场窗新增 Jank ${diff.jankDelta} 次',
+          message: '新增 Jank ${diff.jankDelta} 次',
           value: diff.jankDelta,
         );
         alerts.add(jankAlert);

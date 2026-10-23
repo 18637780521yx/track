@@ -2,9 +2,12 @@
 > 项目代号：Flutter-Perf-Agent
 版本：V1.1
 编写日期：2026-10-15
-最近更新：2026-10-21
+最近更新：2026-10-23
 目标：一套贯穿 **开发 / 测试 / 线上** 的 Flutter 性能与质量 SDK +（开发/测试期）AI 编排能力。
 一句话目标：开发期用 flutter_skill + Sleuth 辅助定位；测试期自动跑场景出报告；线上轻量采集性能、崩溃与埋点日志——**同一套 App SDK 账本与路由/转场模型，能力按阶段降级，不绑死 VM。**
+
+> **完整 APM（开发 vs 线上能力矩阵、云端控制台、里程碑）** 见独立 PRD：[APM-PRD.md](APM-PRD.md)。本文侧重当前 MCP + 会话报告实现。  
+> **下一刀（D0 + D0m + D0s / M0.5）**：实时卡顿（含 VM 诱因）+ 内存压力 + Sleuth detector（含 **Widget 树静态扫描**）**latch→时间线**。见 [APM-PRD.md](APM-PRD.md)、[perf-events.md](perf-events.md) §2。
 
 ## 1. 产品概述
 ### 1.1 背景
@@ -111,6 +114,8 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 - Widget检测：Widget重建风暴、缺少RepaintBoundary、SaveLayer检测告警
 - 每条指标附带时间戳，绑定对应的操作步骤
 
+> **可读目录（时间线事件 + 告警类型 + 未覆盖项）：** [perf-events.md](perf-events.md)
+
 ### 4.3 测试报告输出
 输出2种产物（**由 App SDK 生成**，MCP / 手动共用；`schemaVersion ≥ 9`）：
 1. JSON原始报告：机器可读，用于CI对比回归
@@ -140,58 +145,60 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
 | 文件 | 说明 |
 |------|------|
-| [design/report-timeline-v3-empty-page-source.jpg](design/report-timeline-v3-empty-page-source.jpg) | **当前方案**：无截图主叙事；空白页建卡；`tap:`/`input:` + `mcp`/`manual`；生命周期 / 页面 / 转场 / 性能报告 |
+| [design/report-timeline-v4-inline-alerts.jpg](design/report-timeline-v4-inline-alerts.jpg) | **目标方案（讨论中）**：无独立「性能报告」卡；`alert` 紧跟触发操作，内联在页面 / 转场事件流；筛选仅生命周期 / 页面 / 转场 |
+| [design/report-timeline-v3-empty-page-source.jpg](design/report-timeline-v3-empty-page-source.jpg) | 上一版：空白页建卡；生命周期 / 页面 / 转场 / **性能报告**（独立卡，将被取代） |
 | [design/report-timeline-no-screenshot-mock.jpg](design/report-timeline-no-screenshot-mock.jpg) | 中间稿：去掉截图后的模块示意 |
 | [design/report-timeline-design-mock.jpg](design/report-timeline-design-mock.jpg) | 初稿：曾含页面截图封面（截图策略已后置） |
 
-![页面级时间线设计稿](design/report-timeline-v3-empty-page-source.jpg)
+![页面级时间线 v4：问题内联](design/report-timeline-v4-inline-alerts.jpg)
 
 **HTML 页面结构（自上而下）：**
 1. **摘要条**：会话名、总耗时、步骤/成功/告警/网络数、会话级 avg FPS / RSS 峰值等
-2. **全会话时间线（主视图）**：按时间排列的**模块段**；筛选 chips：`全部 | 生命周期 | 页面 | 转场 | 性能报告`
+2. **全会话时间线（主视图）**：按时间排列的**模块段**；筛选 chips：`全部 | 生命周期 | 页面 | 转场`
 3. **环境与阈值**（页脚轻量区）：阈值、Sleuth diagnose、说明文案
 
 **模块类型（`view.timeline[].module`）：**
 
 | 模块 | `module` | 何时成段 | 标题 | 段内内容 |
 |------|----------|----------|------|----------|
-| **生命周期** | `lifecycle` | `kind=cold_start\|background\|foreground` 各一段 | App 启动 / App 进入后台 / App 进入前台 | 启动：TTFF/TTI、阶段表；前后台：时间、当时 route、可选 `backgroundMs`/RSS。兼容旧 `module=startup`→`lifecycle+cold_start` |
-| **页面** | `page` | 一次页面停留（边界=转场/生命周期/会话起止）；**转场落地后即使无操作也建卡** | 规范路由名 | 统一格式 `action`（含 `source`）+ `network`；步骤 diff；空卡显示「无操作」 |
-| **转场** | `transition` | 每条 `navigate`（含 `tab_change` / `modal_*`） | `from → to` | `transitionKind`、泄漏一行摘要；全文进性能报告 |
-| **性能报告** | `alert` | **每个页面停留结束 0～1 张**（有告警或页级摘要才出） | 固定「性能报告」（**不带路由作标题**） | 告警列表 + `pageSummary`（停留/`actionCount`/`networkCount`/慢请求/ΔRSS）；`ownerRoute` / `pageSegId` |
+| **生命周期** | `lifecycle` | `kind=cold_start\|background\|foreground` 各一段 | App 启动 / App 进入后台 / App 进入前台 | 启动：TTFF/TTI、阶段表；前后台：时间、当时 route、可选 `backgroundMs`/RSS。兼容旧 `module=startup`→`lifecycle+cold_start`；`slow_cold_start` 等告警作段内 `alert` 事件 |
+| **页面** | `page` | 一次页面停留（边界=转场/生命周期/会话起止）；**转场落地后即使无操作也建卡** | 规范路由名 | `action`（含 `source`）+ `network` + **`alert`（紧跟触发 step）**；步骤 diff；空卡显示「无操作」 |
+| **转场** | `transition` | 每条 `navigate`（含 `tab_change` / `modal_*`） | `from → to` | `navigate` + **同 step 的 `alert`**（如 `memory_leak` / `jank`）；可选 `leak` 摘要字段 |
 
-**段顺序约定：** `… → 页面 → 性能报告? → 转场 → 页面 → …`；生命周期与转场同为路径边界（先 flush 页面+性能报告再插入）。
+**不再产出**独立 `module=alert`「性能报告」卡（旧 JSON 渲染时标「性能报告(旧)」兼容）。
+
+**段顺序约定：** `… → 页面 → 转场 → 页面 → …`；生命周期与转场同为路径边界（先 flush 页面再插入）。
 
 **`view.timeline` 段字段最小集（MCP / SDK 共用，唯一派生入口 `protocol.buildReportView`）：**
 
-- **公共：** `id`, `module`, `title`, `at`, `events[]`, `eventCount?`
+- **公共：** `id`, `module`, `title`, `at`, `events[]`, `eventCount?`, `alertCount?`
 - **`lifecycle`：** `kind`；启动可选 `ttffMs`/`ttiMs`/`startupPhases`；前后台可选 `route`/`backgroundMs`
-- **`page`：** `route`, `stepIds`, `diffs[]`, `networkCount`, `actionCount`
-- **`transition`：** `from`, `to`, `transitionKind`, `leak?`, `stepId?`
-- **性能报告（`alert`）：** `title=性能报告`, `ownerRoute`, `pageSegId`, `pageSummary?`；`events` 均为 alert
+- **`page`：** `route`, `stepIds`, `diffs[]`, `networkCount`, `actionCount`, `alertCount`
+- **`transition`：** `from`, `to`, `transitionKind`, `leak?`, `stepId?`, `alertCount`
 
 扁平 `view.events` 仅调试；HTML **只渲染** `view.timeline`。
 
-**操作文案 `label` 统一格式：**
+**操作 / 告警文案 `label`：**
 
 | 类型 | 格式 | 例 |
 |------|------|-----|
 | 点击 | `tap:{target}` | `tap:登录` / `tap:profile_button` |
 | 输入 | `input:{field}={value}` | `input:password=***`（敏感打码） |
 | 滚动 | `scroll:{dir}{delta}` | `scroll:↓320` |
+| 告警 | `{alertType}` 或短度量 | `jank:+2` / `memory_increase:+6.2MB` / `memory_leak` |
 | 其它 | `{action}:{detail}` | 与 cause 对齐 |
 | 失败 | 同上 + `ok=false` | UI 标「失败」 |
 
-事件至少含：`type`, `label`, `at`, `ok`, `source`（`mcp`\|`manual`）, `route`, `stepId`, `detail?`。
+事件至少含：`type`, `label`, `at`, `ok`, `source`（`mcp`\|`manual`，操作类）, `route`, `stepId`, `detail?`。
 
 **事件归属：**
 - `action` → 动作发生页（step 起点 route）
 - `network` → 请求发起时 route（`detail.route` 优先）
 - `navigate` → 仅转场段
-- `alert` → 该页性能报告（转场缝告警归 **from 页**）；泄漏可在转场卡一行摘要
+- `alert` → **内联**到页面或转场段（类型只表示问题种类，如 `jank`/`memory_leak`；同 navigate 的 `stepId` 或泄漏类 → 转场，其余 → 页面；`slow_cold_start` → 生命周期）；同 step 排序：`action` → `network` → `alert`
 - `screenshot` → **本迭代不做路径主叙事**（截图策略后置；HTML 可忽略旧字段）
 
-**事件类型：** `cold_start` / `lifecycle` / `action` / `network` / `navigate` / `alert`（`screenshot` 保留兼容、不作为主路径）
+**事件类型：** `cold_start` / `lifecycle` / `action` / `network` / `navigate` / `alert`（`screenshot` 保留兼容、不作为主路径）。告警类型目录见 [perf-events.md](perf-events.md)。
 
 **明确不做（本迭代）：**
 - 截图就绪策略（`page_ready` / `network_quiet` / 离页取消等）整块后置
@@ -231,10 +238,10 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
    | 结果 | 含义 | 告警 |
    |------|------|------|
-   | settle 后 WeakRef **仍指向对象** | 仍被持有 → **真泄漏（高置信）** | `transition_memory_leak` |
+   | settle 后 WeakRef **仍指向对象** | 仍被持有 → **真泄漏（高置信）** | `memory_leak`（挂转场段） |
    | WeakRef 已空 / Finalizer 已触发 | 已可回收 | 通过 |
-   | 一时仍在、稍后多轮观察仍在 | 持续可达 | `transition_memory_leak` |
-   | 仅 RSS 涨、无登记对象存活 | 缓存或未登记泄漏 | `transition_memory_retain_rss`（辅证） |
+   | 一时仍在、稍后多轮观察仍在 | 持续可达 | `memory_leak` |
+   | 仅 RSS 涨、无登记对象存活 | 缓存或未登记泄漏 | `memory_retain_rss`（辅证，挂转场段） |
 
    - settle 用于等 dispose 链路跑完，**不是**等强制 GC  
    - 自然 GC 未跑时：不可达对象可能暂时「还在堆上」，但 WeakRef 在对象回收前仍可能非空——因此 **以「是否仍被强引用图握住」为准**；实现上优先检查业务登记的强引用是否按生命周期 `untrack`，并对 `track` 的对象看 WeakRef；对「已 untrack 但仍被别的根抓住」用 WeakRef 在后续帧/下一次同路由进入时复检  
@@ -246,17 +253,17 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
 4. **Sleuth（开发/测试增强，非线上必选）**  
    - 绑定 `stream_resource_growth` / `heap_growing` 等，`sourceRoute` 归因到转场段  
-   - 与 WeakRef 结果合并；Sleuth 单独 hit 时可出 `transition_memory_leak`（注明 `evidence=sleuth`）  
+   - 与 WeakRef 结果合并；Sleuth 单独 hit 时可出 `memory_leak`（注明 `evidence=sleuth`）  
 
 5. **VM 深挖（opt-in，仅开发/测试）**  
    - 开关：`leakVmDeepProbe=false`（默认）  
    - 开启后才：可选 `collectAllGarbage` + `getAllocationProfile` 类 Δ，结果 `evidence=vm_deep`  
    - **不得**作为线上或默认测试门禁的唯一条件  
 
-6. **告警分级**  
-   - `transition_memory_leak`：主告警（仍可达 / 多轮阶梯 / Sleuth 高置信）  
-   - `transition_memory_retain_rss`：辅证  
-   - `transition_jank`：转场卡顿  
+6. **告警分级（类型不区分「转场/窗口」，位置由时间线段决定）**  
+   - `memory_leak`：主告警（仍可达 / 多轮阶梯 / Sleuth 高置信）  
+   - `memory_retain_rss`：辅证  
+   - `jank` / `slow_frame`：卡顿（含转场窗检出）  
 
 #### B. 分阶段怎么用
 
@@ -276,7 +283,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| **V1** | push/pop；资源 track/WeakRef；pop 后仍可达 → `transition_memory_leak`；转场 jank；RSS 辅证；**默认不做强制 GC** | 已实现（0.8.0） |
+| **V1** | push/pop；资源 track/WeakRef；pop 后仍可达 → `memory_leak`；卡顿 `jank`/`slow_frame`；RSS 辅证 `memory_retain_rss`；**默认不做强制 GC** | 已实现（0.8.0；类型名 0.9.4 起统一） |
 | **V2** | **多轮确认**（0.8.2）+ **GetX/Navigator 自动 hook**（0.8.3）+ **Sleuth 转场窗绑定**（0.8.6）+ **线上采样首刀**（本机事件+采样率，0.8.7） | **首刀已实现**；多会话聚合仍规划 |
 | **V3** | opt-in VM 深挖；modal_\* 种类；门禁策略（0.9.0） | **已实现**；Hero flight 归因仍规划 |
 
@@ -353,7 +360,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 5. 示例流程：登录 -> 进入列表页 -> 滑动列表，完整跑完，无崩溃，指标正常采集
 6. **统一账本**：仅手动操作（不经 MCP）也能开会话、记录点击目标、停止后得到 JSON/HTML；MCP 与手动步骤可出现在同一份报告，步骤带 `source`
 7. **报告信息架构**：HTML 主视图为全会话时间线；模块（启动/页面/转场/告警）作为时间线内的段，段内嵌事件；无时间线外独立「模块大区」堆叠；JSON 含派生 `view.timeline`
-8. **转场真泄漏（4.3.3 V1 + V2 多轮）**：pop 后基于资源 track/WeakRef（仍可达）产出 `transition_memory_leak`；同路由 ≥`leakConfirmRounds` 次进出存活数非递减 → `evidence=weak_ref_multi`；**不依赖强制 GC**；RSS 仅辅证；VM 深挖为 opt-in；另有 `transition_jank`
+8. **转场真泄漏（4.3.3 V1 + V2 多轮）**：pop 后基于资源 track/WeakRef（仍可达）产出 `memory_leak`（挂转场段）；同路由 ≥`leakConfirmRounds` 次进出存活数非递减 → `evidence=weak_ref_multi`；**不依赖强制 GC**；RSS 仅辅证 `memory_retain_rss`；VM 深挖为 opt-in；卡顿用统一类型 `jank` / `slow_frame`
 
 ## 9. 未来迭代路线（大项规划；转场多轮确认已在 0.8.2 / §4.3.3 V2 部分落地）
 1. 性能指标回归对比：对比上一版本测试指标，自动判断性能退化

@@ -71,13 +71,12 @@ ${_css()}
   </div>
 
   <h2 id="timeline">全会话时间线</h2>
-  <p class="muted">页面级操作路径：生命周期 / 页面 / 转场 / 性能报告。筛选按模块类型。</p>
+  <p class="muted">页面级操作路径：生命周期 / 页面 / 转场。性能问题作为事件内联在对应段内（见 <code>type=alert</code>）。</p>
   <div class="filters" id="tl-filters">
     <button type="button" class="chip active" data-filter="all">全部</button>
     <button type="button" class="chip" data-filter="lifecycle">生命周期</button>
     <button type="button" class="chip" data-filter="page">页面</button>
     <button type="button" class="chip" data-filter="transition">转场</button>
-    <button type="button" class="chip" data-filter="alert">性能报告</button>
   </div>
   ${_segmentedTimelineHtml(timeline)}
 
@@ -227,9 +226,16 @@ String _css() => r'''
   .phases .bar.engine { background: #1e4a8c; }
   .phases .bar.post { background: #6b5b95; }
   .phases .note { color: var(--muted); font-size: 12px; }
+  .inner-timeline li.alert {
+    margin-left: 12px;
+    border-left: 3px solid #f3b4ae;
+    padding-left: 10px;
+    background: var(--warn-bg);
+    border-radius: 8px;
+  }
   .alert-inline {
-    background: var(--warn-bg); border: 1px solid #f3b4ae; border-radius: 8px;
-    padding: 8px 10px; margin-top: 6px; display:grid; gap: 4px;
+    background: transparent; border: none;
+    padding: 4px 0 0; margin-top: 2px; display:grid; gap: 4px;
   }
   .alert-inline ul.alert-values {
     margin: 4px 0 0; padding-left: 1.2em; font-size: 12px; color: var(--text);
@@ -284,7 +290,7 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
   final modLabel = switch (module) {
     'startup' || 'lifecycle' => '生命周期',
     'transition' => '转场',
-    'alert' => '性能报告',
+    'alert' => '性能报告(旧)', // legacy JSON only
     _ => '页面',
   };
   final badges = StringBuffer()
@@ -298,26 +304,29 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
   if (module == 'page') {
     final actions = seg['actionCount'] ?? 0;
     final nets = seg['networkCount'] ?? 0;
+    final alerts = seg['alertCount'] ?? 0;
     badges
       ..write('<span class="badge net">$actions 操作</span> ')
       ..write('<span class="badge net">$nets 请求</span>');
+    if (alerts is num && alerts > 0) {
+      badges.write(' <span class="badge bad">$alerts 告警</span>');
+    }
   }
   if (module == 'transition') {
     badges.write(
       '<span class="badge net">${_esc(seg['transitionKind']?.toString() ?? 'unknown')}</span>',
     );
-  }
-  if (module == 'alert') {
-    badges.write(
-      '<span class="badge bad">${seg['eventCount'] ?? (seg['events'] as List?)?.length ?? 0} 条</span>',
-    );
+    final alerts = seg['alertCount'] ?? 0;
+    if (alerts is num && alerts > 0) {
+      badges.write(' <span class="badge bad">$alerts 告警</span>');
+    }
   }
 
   final headerExtra = switch (module) {
     'startup' || 'lifecycle' => _lifecycleExtrasHtml(seg),
     'page' => _pageExtrasHtml(seg),
     'transition' => _transitionExtrasHtml(seg),
-    'alert' => _perfReportExtrasHtml(seg),
+    'alert' => _perfReportExtrasHtml(seg), // legacy view.timeline
     _ => '',
   };
 

@@ -29,13 +29,13 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
             version: '0.9.3',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.9.3 scrollIntoView). '
+              'Flutter-Perf-Agent V1 (0.9.4 inline alerts). '
               'Prefer: flutter run --profile --no-dds. '
               'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
               'session: each action samples Sleuth/RSS, updates live report. '
               'Call stop_perf_test for final HTML/JSON. '
               'Optional explicit start_perf_test. '
-              'Timeline: lifecycle / page / transition / 性能报告; '
+              'Timeline: lifecycle / page / transition; alerts inline after actions; '
               'auto screenshots off; use tool screenshot for on-demand capture. '
               'tap defaults scrollIntoView (tree≠viewport); '
               'get_ui_snapshot marks needsScroll/offScreenTexts. '
