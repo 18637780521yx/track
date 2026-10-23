@@ -51,64 +51,66 @@
 
 | `alertType` | 检测什么 | 默认门槛（可配置） | 挂载位置 |
 |-------------|----------|-------------------|----------|
-| `jank` | 单帧超预算（红帧） | `maxFrameCostMs` = **16** ms | 按事件 `at` 落入当时 **页面/转场**；靠近最近操作 |
-| `slow_frame` | 单帧严重超预算或窗口摘要 P90（见下） | 可配倍数或仍用 `maxFrameCostMs` | 同上 / 步摘要 |
-| `gc_pressure` | GC 过于频繁 | Sleuth MemoryPressure（开发 VM） | **目标：触发即发**（D0m）；现状未一等接入 |
-| `heap_growing` | Dart 堆持续上涨 | 同上 | **目标：触发即发**（D0m）；现状多在转场 `sleuthHits` |
-| `heap_near_capacity` | 堆/预算逼近上限 | 需 `memoryBudgetBytes` | **目标：触发即发**（D0m） |
-| `native_memory_growing` | 原生/外部内存斜率异常 | 同上 | 可选同批 D0m |
-| `shader_compilation` | 着色器/管线编译卡顿 | ShaderJank；**Impeller Metal 无效** | **目标：触发即发**（D0s） |
-| `heavy_compute` | UI 线程长时间同步计算 | HeavyCompute；VM | **目标：触发即发**（D0s）；兼作 event-loop 阻塞邻近信号 |
-| `platform_channel_traffic` | PlatformChannel 过频/过重 | PlatformChannel；VM | **目标：触发即发**（D0s） |
-| `stream_resource_growth` | StreamSubscription 等资源增长（含忘 cancel） | StreamResource | **目标：触发即发**（D0s） |
-| `rebuild_activity` | Widget 频繁重建 | RebuildDetector | **目标：触发即发**（D0s） |
-| `excessive_repaint` | RenderObject 反复重绘（运行时） | RepaintDetector | **目标：触发即发**（D0s） |
-| `missing_repaint_boundary` 等 | Widget **树静态扫描**命中 | structural detectors | **目标：扫描命中即发**（D0s#9）；按 stableId 去重 |
-| `layout_bottleneck` / `non_lazy_list` / `setstate_scope` / … | 同上 | 见 APM-PRD D0s 结构表 | 同上 |
-| `memory_increase` | 单步 **RSS** 上涨过大 | `memoryIncreaseWarningMB` = **5** MB | 多为 **页面**（操作窗 diff）；≠ 堆增长 |
-| `memory_leak` | 登记对象仍可达 / 多轮仍存活 | WeakRef 等主判定（不依赖强制 GC） | 多为 **转场**（pop 后探针） |
-| `memory_retain_rss` | 无存活登记对象但 RSS 滞留 | `leakRssRetainMb` = **5** MB；**辅证**，RSS 不单独定罪 | 多为 **转场** |
-| `sleuth_issues` | 本步新增 Sleuth issue 条数 | 有增量即报 | 笼统汇总；逐步被上表一等类型替代 |
-| `sleuth_detector` | 当前存在 warning+ 级 Sleuth issue | 有即汇总 | 同上 |
-| `slow_cold_start` | 冷启动偏慢（如 TTFF） | `ttffWarningMs` | **生命周期**（启动） |
+| `jank` | 单帧超预算（Sleuth capture + FrameVerdict） | 帧预算（默认 ~16ms） | **实时**（App SDK `FrameJankLatch`，MCP/手动共用）；按 `at` 挂页面/转场 |
+| `slow_frame` | 单帧严重超预算（≥ 预算×2） | 同上 | 同上 |
+| `gc_pressure` | GC 过于频繁 | Sleuth MemoryPressure（开发 VM） | **实时**（0.9.6 `SleuthIssueLatch`）；页面/转场 |
+| `heap_growing` | Dart 堆持续上涨 | 同上 | 同上；转场 `sleuthHits` 仍可作泄漏辅证 |
+| `heap_near_capacity` | 堆/预算逼近上限 | 需 `memoryBudgetBytes` | 同上 |
+| `native_memory_growing` | 原生/外部内存斜率异常 | 同上 | 同上 |
+| `shader_compilation` | 着色器/管线编译卡顿 | ShaderJank；**Impeller Metal 无效** | **实时**（0.9.7 D0s） |
+| `heavy_compute` | UI 线程长时间同步计算 | HeavyCompute；VM | **实时**；兼作 event-loop 邻近信号 |
+| `platform_channel_traffic` | PlatformChannel 过频/过重 | PlatformChannel；VM | **实时** |
+| `stream_resource_growth` | StreamSubscription 等资源增长（含忘 cancel） | StreamResource | **实时** |
+| `rebuild_activity` | Widget 频繁重建 | RebuildDetector | **实时** |
+| `excessive_repaint` | RenderObject 反复重绘（运行时） | RepaintDetector | **实时** |
+| `missing_repaint_boundary` 等 | Widget **树静态扫描**命中 | structural detectors | **实时**（0.9.7 D0s#9）；stableId 去重 |
+| `layout_bottleneck` / `non_lazy_list` / `setstate_scope` / … | 同上 | 见 APM-PRD D0s 结构表 | **实时** |
+| `memory_increase` | 单步 **RSS** 上涨过大 | `memoryIncreaseWarningMB` = **5** MB | **仅 MCP** 操作窗 diff → **页面**；≠ 堆增长；手动路径当前不发 |
+| `memory_leak` | 登记对象仍可达 / 多轮仍存活 | WeakRef 等主判定（不依赖强制 GC） | **转场**（pop 后探针；MCP + 手动共用） |
+| `memory_retain_rss` | 无存活登记对象但 RSS 滞留 | `leakRssRetainMb` = **5** MB；**辅证**，RSS 不单独定罪 | **转场** |
+| `sleuth_issues` | 本步新增 Sleuth issue 条数 | 有增量即报 | **仅 MCP**；笼统汇总；逐步被上表一等类型替代 |
+| `sleuth_detector` | 当前存在 warning+ 级 Sleuth issue | 有即汇总 | **仅 MCP**；同上 |
+| `slow_cold_start` | 冷启动偏慢（如 TTFF） | `ttffWarningMs` | **生命周期**（启动；MCP 路径） |
+| `crash` | FlutterError / Zone / PlatformDispatcher 未捕获 | 会话进行中即记 | **页面**（D1 `CrashCapture`）；`value.kind`=`flutter_error`\|`uncaught`\|`zone`；含截断 stack |
 
 旧报告若仍写 `transition_jank` / `transition_memory_leak` / `transition_memory_retain_rss`，派生层会规范成上表名称（`detail.legacyType` 保留原名）。
 
 ### 2.1 卡顿：现状 vs 目标
 
-| | **现状（不准确，将降级）** | **目标（D0 / 下一刀）** |
-|--|---------------------------|-------------------------|
-| 怎么发现 | 操作前后读 Sleuth **累计** `jankCount` / `p90`，做差 | 本帧超预算 → **立刻发事件** |
-| 时间线 | 一条「本步新增 Jank N 次」 | 按真实 `at` 多条（或轻合并） |
-| 和操作关系 | 窗口内帧都算到该操作 | 按时间靠近操作；可带 `stepId` |
-| **诱因（有 VM）** | **未进报告** | **必须尽量展示**：`suspectedPhase`（build/layout/paint/raster）、Verdict `reason`、`relatedIssues`、有则 `topFunctions`（Sleuth `FrameVerdict`） |
-| **诱因（无 VM / 线上）** | — | 仅 ui/raster 耗时等基础字段；不假装有阶段拆分 |
+| | **现状（0.9.5 D0 首刀）** | **仍改进** |
+|--|--------------------------|------------|
+| 怎么发现 | Sleuth `capturedFrames`（最差 jank 缓冲）→ **立刻** `alert` | 非缓冲内的轻红帧可能漏；理想 push 订阅需 Sleuth 公开 `verdictNotifier` |
+| 时间线 | 按帧真实 `at` 多条；标签如 `jank:32ms@build` | 可选轻合并 |
+| 和操作关系 | 挂当前页面/转场章；带 `stepId` | — |
+| **诱因（有 VM）** | **已进报告**：`suspectedPhase` / `reason` / `relatedIssues` / `topFunctions`（异步升级）/ `vmMode` | — |
+| **诱因（无 VM）** | `uiMs`/`rasterMs` + `vmMode=basic` | — |
+| 旧窗口 diff | `jankDelta`/`p90` **仅留 step.diff 摘要**，不再发 AlertItem | — |
 
-产品原则：开发/测试能连 VM 时 **能用就用满**；UI bound 时报告里要能读出「卡在哪段、关联哪些 issue」，而不是只有计数。详见 [APM-PRD.md](APM-PRD.md) §1.2、§6.1 D0、**M0.5**。
+产品原则：开发/测试能连 VM 时 **能用就用满**。详见 [APM-PRD.md](APM-PRD.md) §6.1 D0；**下一刀**转 D0m / D0s。
 
 ### 2.2 内存压力：现状 vs 目标（D0m）
 
-| | **现状** | **目标（D0m）** |
-|--|----------|-----------------|
-| `gc_pressure` / `heap_growing` / `heap_near_capacity` | Sleuth 能检出；报告侧几乎无独立事件 | Detector 触发 → **立刻** `alert` 进时间线 |
-| 转场 `sleuthHits` | 仅 pop 窗偶然带上 heap_growing 等 | 保留作泄漏辅证，**不替代**实时事件 |
-| `memory_increase` | RSS 步差 | 保留；与堆事件并存、语义分开 |
+| | **现状（0.9.6 D0m）** | **仍改进** |
+|--|----------------------|------------|
+| `gc_pressure` / `heap_growing` / `heap_near_capacity` / `native_memory_growing` | Sleuth issue 增量 → **立刻** `alert`（stableId 去重 / severity 升级再发） | 轮询非 push；数值字段依赖 issue raw |
+| 转场 `sleuthHits` | 保留作泄漏辅证 | **不替代**实时事件 |
+| `memory_increase` | RSS 步差（MCP） | 与堆事件并存、语义分开 |
 
 ### 2.3 其它 Sleuth 能力 → 事件（D0s）
 
-下列 **Sleuth 均具备**（除「独立 Event Loop Stall」）；**报告侧现状大多未一等接入**，目标与卡顿/内存压力相同：latch → 时间线。
+**0.9.7**：经 `SleuthIssueLatch` **已一等接入**（与 D0m 同管道）。`jank_detected` 排除（避免与 D0 帧 latch 重复）。
 
-| 你列的能力 | 有无 | 事件名 | 进时间线（目标） |
-|------------|------|--------|------------------|
-| Shader Jank | 有（Metal Impeller 静默） | `shader_compilation` | D0s |
-| Heavy Compute | 有 | `heavy_compute` | D0s |
-| PlatformChannel 高频 | 有 | `platform_channel_traffic` | D0s |
-| GC / 堆涨 / 逼近上限 | 有 | 见 §2 / D0m | D0m |
-| StreamSubscription 泄漏 | 有（增长检测） | `stream_resource_growth` | D0s |
-| Event Loop Stall | **无独立 detector** | 用 `heavy_compute` + 帧 stall 相位 | 映射覆盖；一等名后置 |
-| Widget 重建统计 | 有 | `rebuild_activity` | D0s |
-| Excessive Repaint（运行时） | 有 | `excessive_repaint` | D0s |
-| **Widget 树静态扫描** | 有（structural ≈1Hz） | `missing_repaint_boundary` / `layout_bottleneck` / `non_lazy_list` / `setstate_scope` / … | **D0s#9 须进事件**（stableId 去重） |
+| 能力 | 事件名 | 状态 |
+|------|--------|------|
+| Shader Jank | `shader_compilation` | 已接入（Metal Impeller 静默） |
+| Heavy Compute | `heavy_compute` | 已接入 |
+| PlatformChannel 高频 | `platform_channel_traffic` | 已接入 |
+| GC / 堆涨 / 逼近上限 | 见 §2 / D0m | 0.9.6 |
+| StreamSubscription 泄漏 | `stream_resource_growth` | 已接入 |
+| Event Loop Stall | `heavy_compute` + `sustained_jank` | 映射覆盖；无一等名 |
+| Widget 重建 / Excessive Repaint | `rebuild_activity` / `excessive_repaint` | 已接入 |
+| Widget 树静态扫描 | `missing_repaint_boundary` / `layout_bottleneck` / `non_lazy_list` / `setstate_scope` / … | **已接入** |
+| 网络升一等 | `slow_request` / `large_response` / … | 已接入（与 `network` 事件并存） |
 
 详见 [APM-PRD.md](APM-PRD.md) §6.1 D0s。
 
@@ -132,8 +134,8 @@
 |----|------|
 | 人手键盘输入 | 未记为 `input:` |
 | 长按 / 双指等复杂手势 | 非目标 |
-| 崩溃 / 未捕获异常流水 | 无独立崩溃事件流；仅操作失败等弱信号 |
-| Platform Channel 耗时 | 不采集 |
+| 崩溃 / 未捕获异常流水 | **已接入** `crash`（0.9.8）；致命退出前尽量写 live 报告；完整线上上报见 APM O7 |
+| Platform Channel 耗时 | **无一等事件进账本**；Sleuth 有 `platform_channel_traffic` detector，待 D0s latch |
 | WebSocket / 非 HttpOverrides 流量 | 不采集 |
 | 连续 FPS / RSS 曲线 | 仅有步骤窗口差值与会话摘要峰值 |
 | 业务埋点 / 自定义分析事件 | 不进本报告账本 |
@@ -148,7 +150,7 @@
 3. 页脚：阈值与 Sleuth diagnose。  
 4. JSON：`alerts[]` 为告警权威列表；`view.timeline[].events` 为展示用内联结果。
 
-阈值字段示例：`maxFrameCostMs`、`memoryIncreaseWarningMB`、`slowRequestMs`、`ttffWarningMs`、`leakRssRetainMb`、`leakConfirmRounds`（详见报告「环境与阈值」或 MCP `get_thresholds`）。
+阈值字段示例：`maxFrameCostMs`、`memoryIncreaseWarningMB`、`slowRequestMs`、`ttffWarningMs`、`leakRssRetainMb`、`leakConfirmRounds`（详见报告「环境与阈值」或 MCP `get_perf_threshold_config`）。
 
 ---
 

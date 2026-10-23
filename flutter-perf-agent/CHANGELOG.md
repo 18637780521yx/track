@@ -1,5 +1,35 @@
 # Changelog
 
+## 0.9.8 — D1 崩溃进会话
+
+- **CrashCapture**：挂钩 `FlutterError.onError` + `PlatformDispatcher.onError`（链式保留原 handler）
+- 会话中写入 `alertType=crash`（`kind`=`flutter_error`\|`uncaught`\|`zone`，截断 stack）；触发 live 报告
+- example `main` 用 `runZonedGuarded` 转发 Zone 错误
+- HTML 展开 error / stack；2s 去重同指纹
+
+## 0.9.7 — D0s Sleuth detector 一等进时间线
+
+- `SleuthIssueLatch` allowlist 扩展：runtime（`shader_compilation` / `heavy_compute` / `platform_channel_traffic` / `stream_resource_growth` / `rebuild_activity` / `excessive_repaint` / …）+ structural（`missing_repaint_boundary` / `layout_bottleneck` / `non_lazy_list` / `setstate_scope` / …）+ 网络升一等
+- 排除 `jank_detected`（避免与 D0 `FrameJankLatch` 重复）
+- 实例型 stableId（`excessive_keep_alive:*`）按完整 id 去重
+- 文档：[doc/perf-events.md](../doc/perf-events.md) §2.3
+
+## 0.9.6 — D0m 实时内存压力事件
+
+- **SleuthIssueLatch**：轮询 Sleuth issues，allowlist 命中即写账本
+- 一等类型：`gc_pressure` / `heap_growing` / `heap_near_capacity` / `native_memory_growing`
+- 同 `stableId` 去重；severity 升级再发；issue 消失后可再触发
+- HTML 展开 severity / 数值屑 / fixHint；管道可复用到 D0s
+- 文档：[doc/perf-events.md](../doc/perf-events.md) §2.2
+
+## 0.9.5 — D0 实时卡顿 + FrameVerdict 诱因
+
+- **FrameJankLatch**（App SDK）：轮询 Sleuth `capturedFrames`，红帧立刻写入账本 `jank` / `severe→slow_frame`
+- `AlertItem.at` + `value`：`frameMs` / `uiMs`/`rasterMs` / `suspectedPhase` / `reason` / `relatedIssues` / `topFunctions` / `vmMode`
+- HTML 展开诱因；时间线按帧真实 `at` 内联（MCP/手动共用）
+- MCP `evaluateDiff` / 转场窗 **不再**发窗口 diff 版 jank/slow_frame（`jankDelta`/`p90` 仍留在 step.diff 作摘要）
+- 文档：[doc/perf-events.md](../doc/perf-events.md) §2.1
+
 ## 0.9.4 — 性能问题内联到页面/转场事件
 
 - 去掉独立「性能报告」模块卡（`module=alert`）；`alert` 按 step 紧跟操作，嵌进 **页面** / **转场** 事件流

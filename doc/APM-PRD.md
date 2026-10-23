@@ -3,7 +3,7 @@
 | 项 | 内容 |
 |----|------|
 | 产品 | Flutter-Perf-Agent → **完整 APM** |
-| 版本 | Draft 0.1 |
+| 版本 | Draft 0.2（对齐实现 0.9.4） |
 | 日期 | 2026-10-23 |
 | 关联 | 现有会话报告与工具见 [Flutter-Perf-Agent.md](Flutter-Perf-Agent.md)；事件目录见 [perf-events.md](perf-events.md) |
 | 一句话 | **同一套 App SDK 内核**，开发/测试有 VM 就吃满（实时红帧 + UI bound 诱因尽量展示），线上无 VM 轻量采样；问题类型统一，能力按阶段降级、**有则用满**。 |
@@ -41,11 +41,11 @@
 
 ### 1.3 与现有产品的关系
 
-| 现有（已落地/进行中） | 本 PRD 扩展 |
-|----------------------|-------------|
-| 会话账本、页面时间线、内联 `alert` | 仍是 **开发/测试** 主交互 |
-| `jank` / `slow_frame` / `memory_leak` 等统一类型 | **开发与线上共用类型名**；线上子集 + 采样 |
-| `leakOnlineEnabled` 首刀 | 扩展为完整线上管道 |
+| 现有（已落地 / 0.9.4） | 本 PRD 扩展 |
+|--------------------------|-------------|
+| 会话账本、页面时间线、**内联 `alert`（无独立告警卡）** | 仍是 **开发/测试** 主交互 |
+| `jank` / `slow_frame` / `memory_leak` 等统一类型（MCP diff 为主） | **开发与线上共用类型名**；线上子集 + 采样；D0 实时+诱因 |
+| `leakOnlineEnabled` 本机首刀（0.8.7） | 扩展为完整线上管道（O1/O9） |
 | 无完整云端控制台（旧非目标） | **本 PRD 把控制台纳入范围**（分里程碑） |
 
 本地测试自动化（MCP 跑场景）归入 **开发阶段的一种用法**（Profile + VM），不单列第三产品线；验收与门禁仍可叫「测试模式」。
@@ -153,17 +153,19 @@
 - 时间线：`lifecycle` / `page` / `transition`；性能问题 **内联**为 `alert`  
 - 告警：`jank`、`slow_frame`、`memory_increase`、`memory_leak`、`memory_retain_rss`、`slow_cold_start`、`sleuth_*`  
 - 转场泄漏主路径：WeakRef / 多轮；VM 深挖 opt-in  
-- **卡顿（现状）**：MCP/手动路径对操作前后 Sleuth `jankCount`/`p90` 做差 → 近似归因，**不够准**  
-- **内存压力（现状）**：Sleuth 有 `gc_pressure` / `heap_growing` / `heap_near_capacity`，**未**作一等实时事件；最多操作窗 `sleuth_*` 或转场 `sleuthHits`  
+- **卡顿（0.9.5 D0 首刀）**：`FrameJankLatch` 轮询 Sleuth `capturedFrames` → 实时 `jank`/`slow_frame` + FrameVerdict 诱因；MCP/手动共用；窗口 `jankDelta` 仅留 step.diff  
+- **内存压力（0.9.6 D0m）+ detector（0.9.7 D0s）**：`SleuthIssueLatch` → 内存压力 / runtime / structural / 网络升一等；转场 `sleuthHits` 仍作泄漏辅证；`jank_detected` 排除（归 D0）  
+
+- **线上采样首刀（0.8.7）**：`leakOnlineEnabled` 本机事件 + 回调；**无**远程 collector（O1/O9 仍属后续）
 
 **本 PRD 增量**
 
 | ID | 需求 | 优先级 |
 |----|------|--------|
-| **D0** | **实时卡顿 + 有 VM 时诱因尽可能展示（下一刀）** | **P0** |
-| **D0m** | **实时内存压力事件（与 D0 同刀/紧随）** | **P0** |
-| **D0s** | **Sleuth 一等 detector → 触发即进时间线（清单见下，与 D0 同批）** | **P0** |
-| D1 | 崩溃/断言捕获写入会话（与操作时间线对齐） | P0 |
+| **D0** | 实时卡顿 + FrameVerdict 诱因 | **P0 · 0.9.5 已交付** |
+| **D0m** | 实时内存压力事件 | **P0 · 0.9.6 已交付** |
+| **D0s** | Sleuth 一等 detector → 时间线 | **P0 · 0.9.7 已交付** |
+| D1 | 崩溃/断言捕获写入会话（与操作时间线对齐） | **P0 · 0.9.8 已交付** |
 | D2 | 可选整段 Timeline/CPU 导出归档（D0 已含帧级诱因；本项为原始 trace 附件） | P2 |
 | D3 | 会话对比（相对 baseline JSON：告警数、P90、RSS） | P1 |
 | D4 | CI 门禁配置文件（哪些 `alertType` 失败构建） | P0 |
@@ -253,7 +255,7 @@
 | O2 | 冷启动、前后台、路由面包屑（采样） | P0 |
 | O3 | 卡顿：与 D0 同模型的实时/合并 jank 事件 + 采样上报（非「仅会话结束吐一个计数」） | P0 |
 | O4 | 内存采样：周期 RSS / 与 D0m 同类型的降级事件（无 VM 细项） | P1 |
-| O5 | `memory_leak` 线上采样（登记对象 + 采样率；无 GC） | P1 |
+| O5 | `memory_leak` 线上采样（登记对象 + 采样率；无 GC）——**本机首刀 0.8.7 已有**；本项余量为上报/聚合 | P1 |
 | O6 | HTTP：耗时、状态码、域名；慢请求/失败率 | P0 |
 | O7 | 崩溃 + FlutterError + Isolate 未捕获；ANR（Android） | P0 |
 | O8 | 自定义 `track(name, props)` / 面包屑 | P0 |
@@ -273,22 +275,25 @@
 
 ### 6.4 统一问题类型（跨阶段）
 
-沿用 [perf-events.md](perf-events.md) 的类型哲学，线上增加但不改名：
+沿用 [perf-events.md](perf-events.md) 的类型哲学，线上增加但不改名。
+
+> **下表为规划态能力矩阵**（开发列带 D0/D0m/D0s 标注的「● 实时」= **目标**，截至 0.9.4 **尚未** latch→账本）。  
+> **已交付一等 `alertType`：** `jank` / `slow_frame`（MCP diff）· `memory_increase`（MCP）· `memory_leak` / `memory_retain_rss` · `sleuth_*`（MCP）· `slow_cold_start`。
 
 | 类型 | 开发 | 线上 |
 |------|------|------|
-| `jank` / `slow_frame` | ● 实时 + VM 诱因 | ● 采样 |
-| `gc_pressure` / `heap_growing` / `heap_near_capacity` | ● 实时（D0m） | ◐ 降级采样 |
-| `native_memory_growing` | ◐ | ◐ |
-| `shader_compilation` / `heavy_compute` / `platform_channel_traffic` | ● 实时（D0s，多需 VM） | ○ |
-| `stream_resource_growth` | ● 实时（D0s） | ◐ |
-| `rebuild_activity` / `excessive_repaint` | ● 实时（D0s） | ○ |
-| Widget 树静态扫描（`missing_repaint_boundary` / `layout_bottleneck` / …） | ● 扫描命中即事件（D0s#9） | ◐ 可关 |
-| `memory_increase`（RSS 步差） | ● | ◐ |
-| `memory_leak` / `memory_retain_rss` | ● | ◐ |
-| `slow_cold_start` | ● | ● |
-| `sleuth_*`（笼统汇总，逐步被一等类型替代） | ◐ | ○ |
-| `crash` / `anr` | ● | ● |
+| `jank` / `slow_frame` | ● 实时 + VM 诱因（**0.9.5 已交付**） | ● 采样 |
+| `gc_pressure` / `heap_growing` / `heap_near_capacity` | ● 实时（**0.9.6 已交付**） | ◐ 降级采样 |
+| `native_memory_growing` | ● 实时（**0.9.6 已交付**） | ◐ |
+| `shader_compilation` / `heavy_compute` / `platform_channel_traffic` | ● 实时（**0.9.7 已交付**，多需 VM） | ○ |
+| `stream_resource_growth` | ● 实时（**0.9.7 已交付**） | ◐ |
+| `rebuild_activity` / `excessive_repaint` | ● 实时（**0.9.7 已交付**） | ○ |
+| Widget 树静态扫描（`missing_repaint_boundary` / `layout_bottleneck` / …） | ● 扫描命中即事件（**0.9.7 已交付**） | ◐ 可关 |
+| `memory_increase`（RSS 步差） | ●（已交付，MCP） | ◐ |
+| `memory_leak` / `memory_retain_rss` | ●（已交付） | ◐（O5 首刀本机；完整管道后置） |
+| `slow_cold_start` | ●（已交付） | ● |
+| `sleuth_*`（笼统汇总，逐步被一等类型替代） | ◐（已交付） | ○ |
+| `crash` / `anr` | ● `crash`（**0.9.8 已交付**）；`anr` 后置 | ● |
 | `slow_request` / `http_error`（可升一等类型，或仍经 network+规则） | ● | ● |
 | `custom` | ● | ● |
 
@@ -328,11 +333,11 @@ detail{}, sampleRate?
 
 | 里程碑 | 范围 | 验收要点 |
 |--------|------|----------|
-| **M0**（现状锚定） | 开发会话报告 + 内联告警 + 泄漏主路径 | 已具备；文档与类型统一完成 |
-| **M0.5 实时卡顿/内存/Sleuth 一等事件（下一刀）** | **D0 + D0m + D0s** | 红帧+诱因；内存压力；runtime/VM detector + **Widget 树静态扫描** **latch→时间线**（不再只靠 sleuth_*） |
-| **M1 开发加固** | D1 崩溃进会话、D4 CI 门禁 | 一次失败用例报告含 crash；CI 可红 |
+| **M0**（现状锚定） | 开发会话报告 + 内联告警（0.9.4）+ 泄漏主路径 | 已具备；`track/doc` 与实现对齐（本轮） |
+| **M0.5 实时卡顿/内存/Sleuth 一等事件** | **D0 + D0m + D0s** | **0.9.5–0.9.7 已交付**；红帧+诱因；内存压力；runtime/structural latch→时间线 |
+| **M1 开发加固** | D1 崩溃进会话、D4 CI 门禁 | **D1 0.9.8 已交付**；余 D4 CI 门禁 |
 | **M2 线上 SDK** | O1–O3、O6–O10 | Release Demo 可上报启动/卡顿/HTTP/崩溃到 collector mock |
-| **M3 泄漏线上采样** | O4–O5 | 采样开关下 WeakRef 泄漏事件可见且无 GC |
+| **M3 泄漏线上采样** | O4–O5 | **O5 本机首刀已交付（0.8.7）**；本里程碑验收 = 采样开关下可见 + **远程管道**（collector）且无 GC |
 | **M4 控制台 MVP** | C1–C3 | 看板 + 崩溃列表可演示 |
 | **M5 告警与回放** | C4–C5、D3 | 版本回归告警；面包屑回放 |
 | **M6 深挖增强** | D2、可选 CPU | 开发期 trace 与 step 对齐 |

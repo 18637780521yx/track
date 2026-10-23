@@ -26,16 +26,17 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.9.3',
+            version: '0.9.8',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.9.4 inline alerts). '
+              'Flutter-Perf-Agent V1 (0.9.8 + crash-in-session). '
               'Prefer: flutter run --profile --no-dds. '
               'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
               'session: each action samples Sleuth/RSS, updates live report. '
               'Call stop_perf_test for final HTML/JSON. '
               'Optional explicit start_perf_test. '
               'Timeline: lifecycle / page / transition; alerts inline after actions; '
+              'jank/slow_frame emit realtime from App FrameJankLatch (not window diff); '
               'auto screenshots off; use tool screenshot for on-demand capture. '
               'tap defaults scrollIntoView (tree≠viewport); '
               'get_ui_snapshot marks needsScroll/offScreenTexts. '

@@ -590,30 +590,7 @@ class ActionRunner {
         }
       }
 
-      final p90 = diff.p90FrameMsAfter;
-      if (p90 != null && p90 > config.maxFrameCostMs) {
-        final jankAlert = AlertItem(
-          type: 'slow_frame',
-          stepId: chapter.stepId,
-          action: actionLabel,
-          message:
-              'P90 ${p90.toStringAsFixed(1)}ms > ${config.maxFrameCostMs}ms',
-          value: p90,
-          threshold: config.maxFrameCostMs,
-        );
-        alerts.add(jankAlert);
-        session.addAlert(jankAlert);
-      } else if ((diff.jankDelta ?? 0) > 0) {
-        final jankAlert = AlertItem(
-          type: 'jank',
-          stepId: chapter.stepId,
-          action: actionLabel,
-          message: '新增 Jank ${diff.jankDelta} 次',
-          value: diff.jankDelta,
-        );
-        alerts.add(jankAlert);
-        session.addAlert(jankAlert);
-      }
+      // D0: jank/slow_frame from App SDK FrameJankLatch; keep diff on step only.
 
       newEvents.add(
         StepEvent(

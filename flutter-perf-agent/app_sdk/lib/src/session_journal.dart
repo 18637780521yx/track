@@ -1,8 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
+import 'frame_jank_latch.dart';
 import 'manual_gesture_recorder.dart';
 import 'sdk_report_writer.dart';
+import 'sleuth_issue_latch.dart';
 import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
@@ -73,11 +75,108 @@ class SessionJournal {
     TransitionLedger.instance.reset();
     TransitionLeakTracker.instance.clear();
     SleuthTransitionBinder.instance.clear();
+    FrameJankLatch.instance.onSessionStart();
+    SleuthIssueLatch.instance.onSessionStart();
     ManualGestureRecorder.instance.ensureStarted();
     debugPrint(
       '[SessionJournal] start $sessionId ($testName) '
       'manual=$manualRecording reportsDir=${this.reportsDir}',
     );
+  }
+
+  /// Attach a realtime alert (D0 frame jank, later D0m/D0s) to the current
+  /// page/transition chapter. Fills [AlertItem.stepId] from the target step.
+  void appendRealtimeAlert(AlertItem alert, {String? routeHint}) {
+    if (!isActive) return;
+
+    var idx = _bestStepIndexForRealtime(routeHint);
+    if (idx < 0) {
+      final stepId = nextStepId();
+      final at = alert.at ?? DateTime.now().toIso8601String();
+      addStep(
+        StepResult(
+          stepId: stepId,
+          action: 'perf:realtime',
+          route: routeHint,
+          ok: true,
+          driver: 'app_sdk',
+          at: at,
+          alerts: [alert.copyWith(stepId: stepId)],
+          extra: const {'source': 'frame_jank_latch'},
+        ),
+      );
+      return;
+    }
+
+    final step = steps[idx];
+    final filled = alert.copyWith(stepId: step.stepId);
+    // Replace same frameNumber (D0) or same alertType/stableId (D0m).
+    final frameNo = _frameNumberOf(filled.value);
+    final typeKey = filled.type;
+    final nextAlerts = <AlertItem>[
+      for (final a in step.alerts)
+        if (!_replacesRealtime(a, frameNo: frameNo, typeKey: typeKey)) a,
+      filled,
+    ];
+    steps[idx] = step.copyWith(alerts: nextAlerts);
+    _rebuildAlerts();
+  }
+
+  static bool _replacesRealtime(
+    AlertItem existing, {
+    required int? frameNo,
+    required String typeKey,
+  }) {
+    final existingFrame = _frameNumberOf(existing.value);
+    if (frameNo != null && existingFrame == frameNo) return true;
+    if (frameNo == null && existing.type == typeKey) return true;
+    return false;
+  }
+
+  /// Enrich an existing frame alert when Sleuth upgrades the verdict
+  /// (e.g. async [topFunctions]).
+  void upgradeRealtimeFrameAlert({
+    required int frameNumber,
+    required Map<String, dynamic> value,
+  }) {
+    if (!isActive) return;
+    for (var i = 0; i < steps.length; i++) {
+      final step = steps[i];
+      var changed = false;
+      final next = <AlertItem>[];
+      for (final a in step.alerts) {
+        if (_frameNumberOf(a.value) == frameNumber) {
+          next.add(a.copyWith(value: value));
+          changed = true;
+        } else {
+          next.add(a);
+        }
+      }
+      if (changed) {
+        steps[i] = step.copyWith(alerts: next);
+        _rebuildAlerts();
+        return;
+      }
+    }
+  }
+
+  int _bestStepIndexForRealtime(String? routeHint) {
+    if (steps.isEmpty) return -1;
+    // Prefer last non-lifecycle step (page / navigate chapter).
+    for (var i = steps.length - 1; i >= 0; i--) {
+      final a = steps[i].action;
+      if (a.startsWith('lifecycle:')) continue;
+      if (a == 'perf:realtime') continue;
+      return i;
+    }
+    return steps.length - 1;
+  }
+
+  static int? _frameNumberOf(Object? value) {
+    if (value is Map && value['frameNumber'] is num) {
+      return (value['frameNumber'] as num).toInt();
+    }
+    return null;
   }
 
   /// Start a manual-only session if none is active.
@@ -179,6 +278,8 @@ class SessionJournal {
     steps.clear();
     alerts.clear();
     mcpGuardDepth = 0;
+    FrameJankLatch.instance.onSessionEnd();
+    SleuthIssueLatch.instance.onSessionEnd();
   }
 
   Map<String, dynamic> toJson() => {

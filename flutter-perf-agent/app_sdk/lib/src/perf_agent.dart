@@ -5,11 +5,14 @@ import 'package:get/get.dart';
 
 import 'app_lifecycle_tracker.dart';
 import 'bridge_server.dart';
+import 'crash_capture.dart';
+import 'frame_jank_latch.dart';
 import 'getx_leak_hook.dart' as getx_hook;
 import 'leak_online.dart';
 import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
 import 'session_journal.dart';
+import 'sleuth_issue_latch.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
 
@@ -150,6 +153,9 @@ class PerfAgent {
     }
 
     AppLifecycleTracker.instance.ensureStarted();
+    FrameJankLatch.instance.ensureStarted();
+    SleuthIssueLatch.instance.ensureStarted();
+    CrashCapture.instance.ensureStarted();
 
     _bridge = PerfBridgeServer(
       host: host,
@@ -221,6 +227,9 @@ class PerfAgent {
   }
 
   static Future<void> shutdown() async {
+    CrashCapture.instance.stop();
+    SleuthIssueLatch.instance.stop();
+    FrameJankLatch.instance.stop();
     AppLifecycleTracker.instance.stop();
     await _bridge?.stop();
     _bridge = null;

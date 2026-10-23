@@ -1,13 +1,14 @@
 # PRD：Flutter AI性能测试Agent
 > 项目代号：Flutter-Perf-Agent
-版本：V1.1
+版本：V1.6（对齐实现 **0.9.8**）
 编写日期：2026-10-15
 最近更新：2026-10-23
 目标：一套贯穿 **开发 / 测试 / 线上** 的 Flutter 性能与质量 SDK +（开发/测试期）AI 编排能力。
 一句话目标：开发期用 flutter_skill + Sleuth 辅助定位；测试期自动跑场景出报告；线上轻量采集性能、崩溃与埋点日志——**同一套 App SDK 账本与路由/转场模型，能力按阶段降级，不绑死 VM。**
 
 > **完整 APM（开发 vs 线上能力矩阵、云端控制台、里程碑）** 见独立 PRD：[APM-PRD.md](APM-PRD.md)。本文侧重当前 MCP + 会话报告实现。  
-> **下一刀（D0 + D0m + D0s / M0.5）**：实时卡顿（含 VM 诱因）+ 内存压力 + Sleuth detector（含 **Widget 树静态扫描**）**latch→时间线**。见 [APM-PRD.md](APM-PRD.md)、[perf-events.md](perf-events.md) §2。
+> **已落地（0.9.4–0.9.8）**：M0.5 实时事件 + **D1 崩溃进会话**（`CrashCapture`）。  
+> **下一刀**：D4 CI 告警门禁。见 [APM-PRD.md](APM-PRD.md)。
 
 ## 1. 产品概述
 ### 1.1 背景
@@ -27,9 +28,9 @@
 - MCP 只负责开发/测试期编排，不独占数据所有权
 
 ### 1.3 非目标（当前 V1 迭代不做；路线图另述）
-1. V1 **先做**开发 + 测试本地闭环；线上采集为明确路线图，接口预留、实现后置
+1. V1 **先做**开发 + 测试本地闭环；线上 **完整**上报/控制台后置——**本机采样首刀已有**（0.8.7 `LeakOnline`：本机事件 + 回调，无云端管道）
 2. 不支持跨App操作
-3. V1 不做完整云端 APM 控制台（线上只定义 SDK 侧采集与上报契约）
+3. V1 不做完整云端 APM 控制台（线上只定义 SDK 侧采集与上报契约；见 [APM-PRD.md](APM-PRD.md)）
 4. V1不支持多设备并发测试
 5. 不做完整堆快照 Diff **图形化**；泄漏见 4.3.3（**不依赖 VM 强制 GC 作为主路径**）
 6. 不支持iOS真机深度无障碍（优先Android模拟器/本地桌面Flutter）
@@ -75,37 +76,51 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 
 ## 4. 功能需求（V1.0）
 ### 4.1 MCP工具集（暴露给Cursor）
-> 所有工具通过MCP注册，Cursor大模型可自动调用
-1. `start_perf_test`
-    - 描述：启动性能测试会话，初始化连接App，重置Sleuth采集器
-    - 参数：testName（测试名称）、waitStableMs（页面稳定等待时间，默认500ms）
-    - 返回：会话ID
-2. `stop_perf_test`
-    - 描述：停止测试，停止性能采集，汇总全部指标，生成报告
-    - 参数：sessionId
-    - 返回：报告路径、指标摘要、告警列表
-3. `tap`
-    - 描述：点击控件（优先语义树定位，失败降级无障碍）
-    - 参数：targetDesc（控件描述，例如“登录按钮”）
-    - 内部逻辑：
-      1. 操作前：读取Sleuth性能快照(before)
-      2. 执行flutter-skill点击动作
-      3. 等待页面稳定（waitStableMs）
-      4. 操作后：读取Sleuth性能快照(after)
-      5. 计算指标diff，上报到MCP服务
-    - 返回：操作结果、截图、本次操作性能指标diff
-4. `scroll`
-    - 描述：滑动页面
-    - 参数：targetDesc、direction、distance
-    - 打点逻辑同tap，前后采集性能快照
-5. `input_text`
-    - 描述：输入文字到输入框
-    - 参数：targetDesc、text
-    - 打点逻辑同上
-6. `get_ui_snapshot`
-    - 描述：获取当前页面UI树+截图，供LLM分析页面状态
-7. `get_perf_threshold_config`
-    - 描述：读取性能阈值配置（可自定义告警阈值）
+> 所有工具通过 MCP 注册（实现约 **0.9.4**）。`tap`/`scroll`/`input_text`/`skill_call` 在无会话时会**自动开会话**并更新 live 报告。默认 **`captureScreenshots=false`**（操作不自动截图；按需用 `screenshot`）。
+
+**会话与编排**
+
+| 工具 | 作用 |
+|------|------|
+| `start_perf_test` | 显式开会话（可选）；参数 `testName`、`waitStableMs` |
+| `stop_perf_test` | 结束会话，写出最终 JSON/HTML；可选 `exportSnapshot` |
+| `wait_lifecycle` | 轮询 Bridge `/health` 至 cold_start/foreground（`flutter run` 后先调再 tap） |
+
+**UI 操作（前后采 Sleuth/RSS → `evaluateDiff` 写告警）**
+
+| 工具 | 作用 |
+|------|------|
+| `tap` | 点击；默认 **`scrollIntoView=true`**（树里有 ≠ 屏上可见） |
+| `scroll` | 滑动 / 滚到目标 |
+| `input_text` | 输入文字 |
+
+**观测与配置**
+
+| 工具 | 作用 |
+|------|------|
+| `screenshot` | **按需**全屏截图落盘（**非**已移除的 `skill_screenshot`） |
+| `get_ui_snapshot` | 可交互控件 + `inViewport` / `needsScroll` / `offScreenTexts` |
+| `get_perf_threshold_config` | 读取阈值与配置 |
+| `export_session_snapshot` / `import_session_snapshot` | 会话快照导出 / 导入只读报告 |
+
+**Sleuth 透传**
+
+| 工具 | 作用 |
+|------|------|
+| `get_sleuth_snapshot` | 完整会话快照（可 `compact`） |
+| `get_sleuth_issues` | detector issues 列表 |
+| `get_sleuth_diagnose` | initialized / vmConnected / captureMode |
+| `get_sleuth_summary` | markdown 摘要 |
+| `get_sleuth_route_health` | 路由健康分 |
+
+**flutter_skill 扩展**
+
+| 工具 | 作用 |
+|------|------|
+| `skill_call` | `method` + `args` 调度全量 skill（区域截图等用 `screenshotRegion` / `screenshotElement`） |
+| `skill_list_methods` | 列出可用 method |
+
+> 操作类告警（`jank` / `memory_increase` / `sleuth_*`）走 MCP `evaluateDiff`；手动路径仅转场泄漏类一等告警。详见 [perf-events.md](perf-events.md)。
 
 ### 4.2 性能采集指标（Sleuth输出）
 - 帧率：平均FPS、P90帧耗时、Jank卡顿次数
@@ -141,12 +156,12 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 > 核心原则：**模块不是时间线外的独立分区，而是时间线上的段（segment）；事件嵌在模块段内部。**  
 > 目标：自上而下**复述用户操作路径（页面级）** + App 生命周期；性能/告警是路径注解，不得把同一页拆碎。
 
-**设计稿（讨论定稿）：**
+**设计稿与落地状态：**
 
 | 文件 | 说明 |
 |------|------|
-| [design/report-timeline-v4-inline-alerts.jpg](design/report-timeline-v4-inline-alerts.jpg) | **目标方案（讨论中）**：无独立「性能报告」卡；`alert` 紧跟触发操作，内联在页面 / 转场事件流；筛选仅生命周期 / 页面 / 转场 |
-| [design/report-timeline-v3-empty-page-source.jpg](design/report-timeline-v3-empty-page-source.jpg) | 上一版：空白页建卡；生命周期 / 页面 / 转场 / **性能报告**（独立卡，将被取代） |
+| [design/report-timeline-v4-inline-alerts.jpg](design/report-timeline-v4-inline-alerts.jpg) | **已实现（0.9.4）**：无独立「性能报告」卡；`alert` 紧跟触发操作，内联在页面 / 转场事件流；筛选仅生命周期 / 页面 / 转场 |
+| [design/report-timeline-v3-empty-page-source.jpg](design/report-timeline-v3-empty-page-source.jpg) | **已取代（0.9.2）**：曾含独立「性能报告」卡 |
 | [design/report-timeline-no-screenshot-mock.jpg](design/report-timeline-no-screenshot-mock.jpg) | 中间稿：去掉截图后的模块示意 |
 | [design/report-timeline-design-mock.jpg](design/report-timeline-design-mock.jpg) | 初稿：曾含页面截图封面（截图策略已后置） |
 
@@ -359,7 +374,7 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 4. 生成JSON+HTML报告，包含操作步骤、截图、性能指标
 5. 示例流程：登录 -> 进入列表页 -> 滑动列表，完整跑完，无崩溃，指标正常采集
 6. **统一账本**：仅手动操作（不经 MCP）也能开会话、记录点击目标、停止后得到 JSON/HTML；MCP 与手动步骤可出现在同一份报告，步骤带 `source`
-7. **报告信息架构**：HTML 主视图为全会话时间线；模块（启动/页面/转场/告警）作为时间线内的段，段内嵌事件；无时间线外独立「模块大区」堆叠；JSON 含派生 `view.timeline`
+7. **报告信息架构**：HTML 主视图为全会话时间线；模块仅 **生命周期 / 页面 / 转场**；`alert` **内联**进页面或转场段（无独立「告警/性能报告」模块卡，0.9.4）；JSON 含派生 `view.timeline`
 8. **转场真泄漏（4.3.3 V1 + V2 多轮）**：pop 后基于资源 track/WeakRef（仍可达）产出 `memory_leak`（挂转场段）；同路由 ≥`leakConfirmRounds` 次进出存活数非递减 → `evidence=weak_ref_multi`；**不依赖强制 GC**；RSS 仅辅证 `memory_retain_rss`；VM 深挖为 opt-in；卡顿用统一类型 `jank` / `slow_frame`
 
 ## 9. 未来迭代路线（大项规划；转场多轮确认已在 0.8.2 / §4.3.3 V2 部分落地）
@@ -376,11 +391,11 @@ Cursor(LLM Client) ←MCP(stdio JSON-RPC)→ Flutter-Perf-Agent MCP Server
 ```
 flutter-perf-agent/
 ├── mcp_server/          # PC端MCP服务（dart）
-├── app_sdk/             # flutter-skill增强SDK（内含Sleuth打点封装）
+├── app_sdk/             # App 内 PerfAgent / SessionJournal / Bridge
+├── protocol/            # 共享模型 + buildReportView + HTML 报告生成
 ├── example_app/         # 演示Flutter被测Demo工程
-├── docs/                # 文档
-├── report_template/     # HTML报告模板
-└── perf_agent_config.json # 默认配置文件
+├── docs/                # USAGE / INTEGRATION 等
+└── perf_agent_config.json # 默认配置文件（仓库根或 mcp_server）
 ```
 
 ## 11. 术语表
@@ -393,12 +408,13 @@ flutter-perf-agent/
 | 打点 | 在UI动作前后捕获性能快照，绑定操作和性能指标 |
 | Profile包 | Flutter性能测试包，保留调试信息，性能数据接近线上 |
 | 统一操作账本 | App SDK `SessionJournal`，MCP 与手动共用的步骤权威来源 |
-| 模块段 | 时间线上的一段（启动/页面/转场/告警），内嵌该段事件；非报告底部独立分区 |
+| 模块段 | 时间线上的一段（**生命周期 / 页面 / 转场**），内嵌该段事件；`alert` 为段内事件而非独立模块 |
 | `view.timeline` | JSON 派生字段：按时间排序的模块段列表 |
-| `transitionKind` | 转场种类：push/pop/replace/modal_* / route_change |
+| `transitionKind` | 转场种类：push/pop/replace/modal_* / route_change / tab_change |
 | 转场时间窗 | T0 路由将变 → T1 落地稳定 →（pop）T2 settle，专用于转场卡顿与泄漏采样 |
 | 真泄漏 | 主路径：资源 track + WeakRef/多轮仍可达；RSS 辅证；VM 深挖 opt-in |
 | 三阶段 | 开发（skill+Sleuth）/ 测试（自动场景）/ 线上（轻量性能·崩溃·埋点） |
+| LeakOnline | 0.8.7 线上采样首刀：Release 本机 WeakRef 转场事件 + 回调；无远程管道 |
 
 ---
 

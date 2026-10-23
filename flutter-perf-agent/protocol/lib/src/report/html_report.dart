@@ -242,6 +242,11 @@ String _css() => r'''
   }
   .alert-inline ul.alert-values li { margin: 2px 0; }
   .alert-inline .alert-metric { font-size: 12px; color: var(--muted); }
+  .alert-inline pre.alert-stack {
+    margin: 6px 0 0; padding: 8px 10px; font-size: 11px; line-height: 1.35;
+    overflow: auto; max-height: 180px; white-space: pre-wrap; word-break: break-all;
+    background: rgba(0,0,0,.25); border-radius: 6px; color: var(--muted);
+  }
 ''';
 
 String _filterScript() => r'''
@@ -544,6 +549,149 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
   return '<ol class="inner-timeline">${items.join('\n')}</ol>';
 }
 
+/// D1 crash / FlutterError fields.
+String _crashAlertHtml(
+  Map<String, dynamic> m,
+  String Function(String, [int]) clip,
+) {
+  final bits = <String>[];
+  void add(String key, String label) {
+    final v = m[key];
+    if (v == null) return;
+    bits.add('$label=${_esc(v.toString())}');
+  }
+
+  add('kind', 'kind');
+  add('fatal', 'fatal');
+  add('library', 'lib');
+  add('route', 'route');
+  final head = bits.isEmpty
+      ? ''
+      : '<div class="alert-metric">${bits.join(' · ')}</div>';
+  final err = m['error']?.toString();
+  final ctx = m['context']?.toString();
+  final stack = m['stack']?.toString();
+  final errHtml = (err != null && err.isNotEmpty)
+      ? '<div class="alert-metric">${_esc(clip(err, 200))}</div>'
+      : '';
+  final ctxHtml = (ctx != null && ctx.isNotEmpty)
+      ? '<div class="alert-metric muted">${_esc(clip(ctx, 160))}</div>'
+      : '';
+  final stackHtml = (stack != null && stack.isNotEmpty)
+      ? '<pre class="alert-stack">${_esc(clip(stack, 1200))}</pre>'
+      : '';
+  return '$head$errHtml$ctxHtml$stackHtml';
+}
+
+/// D0m MemoryPressure issue fields.
+String _memoryPressureHtml(
+  Map<String, dynamic> m,
+  String Function(String, [int]) clip,
+) {
+  final bits = <String>[];
+  void add(String key, String label) {
+    final v = m[key];
+    if (v == null) return;
+    bits.add('$label=${_esc(v.toString())}');
+  }
+
+  add('stableId', 'id');
+  add('severity', 'sev');
+  add('bytesPerSecond', 'B/s');
+  add('heapBytes', 'heap');
+  add('rssBytes', 'rss');
+  add('usageRatio', 'usage');
+  add('gcCount', 'gc');
+  add('gcPerMinute', 'gc/min');
+  final head = bits.isEmpty
+      ? ''
+      : '<div class="alert-metric">${bits.join(' · ')}</div>';
+  final title = m['title']?.toString();
+  final detail = m['detail']?.toString() ?? m['message']?.toString();
+  final fix = m['fixHint']?.toString();
+  final titleHtml = (title != null && title.isNotEmpty)
+      ? '<div class="alert-metric">${_esc(clip(title, 160))}</div>'
+      : '';
+  final detailHtml = (detail != null && detail.isNotEmpty && detail != title)
+      ? '<div class="alert-metric muted">${_esc(clip(detail, 220))}</div>'
+      : '';
+  final fixHtml = (fix != null && fix.isNotEmpty)
+      ? '<div class="alert-metric muted">fix: ${_esc(clip(fix, 180))}</div>'
+      : '';
+  return '$head$titleHtml$detailHtml$fixHtml';
+}
+
+/// D0 FrameVerdict fields for realtime jank / slow_frame.
+String _jankVerdictHtml(
+  Map<String, dynamic> m,
+  String Function(String, [int]) clip,
+) {
+  final bits = <String>[];
+  void add(String key, String label) {
+    final v = m[key];
+    if (v == null) return;
+    bits.add('$label=${_esc(v.toString())}');
+  }
+
+  add('frameMs', 'frame');
+  add('uiMs', 'ui');
+  add('rasterMs', 'raster');
+  add('buildMs', 'build');
+  add('layoutMs', 'layout');
+  add('paintMs', 'paint');
+  add('suspectedPhase', 'phase');
+  add('vmMode', 'vm');
+  final reason = m['reason']?.toString();
+  final head = bits.isEmpty
+      ? ''
+      : '<div class="alert-metric">${bits.join(' · ')}</div>';
+  final reasonHtml = (reason != null && reason.isNotEmpty)
+      ? '<div class="alert-metric muted">${_esc(clip(reason, 220))}</div>'
+      : '';
+
+  final related = m['relatedIssues'];
+  var relatedHtml = '';
+  if (related is List && related.isNotEmpty) {
+    final items = <String>[];
+    for (final e in related.take(6)) {
+      if (e is! Map) continue;
+      final title = e['title']?.toString() ??
+          e['stableId']?.toString() ??
+          e.toString();
+      final sev = e['severity']?.toString();
+      final line = sev != null && sev.isNotEmpty
+          ? '${clip(title)} · $sev'
+          : clip(title);
+      items.add('<li>${_esc(line)}</li>');
+    }
+    if (items.isNotEmpty) {
+      relatedHtml =
+          '<div class="alert-metric">相关 issue</div><ul class="alert-values">${items.join()}</ul>';
+    }
+  }
+
+  final tops = m['topFunctions'];
+  var topHtml = '';
+  if (tops is List && tops.isNotEmpty) {
+    final items = <String>[];
+    for (final e in tops.take(5)) {
+      if (e is Map) {
+        final name = e['name']?.toString() ??
+            e['function']?.toString() ??
+            e['uri']?.toString() ??
+            e.toString();
+        items.add('<li>${_esc(clip(name, 100))}</li>');
+      } else {
+        items.add('<li>${_esc(clip(e.toString(), 100))}</li>');
+      }
+    }
+    topHtml =
+        '<div class="alert-metric">Top 函数</div><ul class="alert-values">${items.join()}</ul>';
+  }
+
+  return '$head$reasonHtml$relatedHtml$topHtml';
+}
+
 /// Expand alert `detail.value` under the message (sleuth titles, MB, leak…).
 String _alertValueHtml(Map<String, dynamic> detail) {
   final value = detail['value'];
@@ -586,6 +734,30 @@ String _alertValueHtml(Map<String, dynamic> detail) {
 
   if (value is Map) {
     final m = Map<String, dynamic>.from(value);
+    final alertType = detail['type']?.toString() ?? detail['alertType']?.toString();
+    if (alertType == 'jank' || alertType == 'slow_frame') {
+      return _jankVerdictHtml(m, clip);
+    }
+    if (alertType == 'crash' || m['source']?.toString() == 'crash_capture') {
+      return _crashAlertHtml(m, clip);
+    }
+    if (m['source']?.toString() == 'sleuth_issue_latch' ||
+        alertType == 'gc_pressure' ||
+        alertType == 'heap_growing' ||
+        alertType == 'heap_near_capacity' ||
+        alertType == 'native_memory_growing' ||
+        alertType == 'shader_compilation' ||
+        alertType == 'heavy_compute' ||
+        alertType == 'platform_channel_traffic' ||
+        alertType == 'stream_resource_growth' ||
+        alertType == 'rebuild_activity' ||
+        alertType == 'excessive_repaint' ||
+        alertType == 'missing_repaint_boundary' ||
+        alertType == 'layout_bottleneck' ||
+        alertType == 'non_lazy_list' ||
+        alertType == 'setstate_scope') {
+      return _memoryPressureHtml(m, clip);
+    }
     final bits = <String>[];
     final evidence = m['evidence']?.toString();
     if (evidence != null && evidence.isNotEmpty) {

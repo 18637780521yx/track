@@ -144,10 +144,13 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
         (s['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
     for (final a in stepAlerts) {
       final alertType = _normalizeAlertType(a['type']?.toString());
+      final alertAt = a['at']?.toString();
       events.add({
         'id': 'ev_${idx++}',
         'type': 'alert',
-        'at': s['at']?.toString() ?? '',
+        'at': (alertAt != null && alertAt.isNotEmpty)
+            ? alertAt
+            : (s['at']?.toString() ?? ''),
         'label': _alertLabel(a),
         'ok': false,
         'stepId': sid,
@@ -283,16 +286,60 @@ String _alertLabel(Map<String, dynamic> a) {
   final value = a['value'];
   switch (type) {
     case 'jank':
-      return value != null ? 'jank:+$value' : 'jank';
+    case 'slow_frame':
+      if (value is Map) {
+        final ms = value['frameMs'];
+        final phase = value['suspectedPhase']?.toString();
+        final msStr = ms is num ? ms.toStringAsFixed(0) : '?';
+        if (phase != null && phase.isNotEmpty && phase != 'unknown') {
+          return '$type:${msStr}ms@$phase';
+        }
+        return '$type:${msStr}ms';
+      }
+      if (type == 'slow_frame' && value is num) {
+        return 'slow_frame:${value.toStringAsFixed(0)}ms';
+      }
+      // Legacy window-diff count (pre-D0).
+      return value != null ? '$type:+$value' : type;
+    case 'gc_pressure':
+    case 'heap_growing':
+    case 'heap_near_capacity':
+    case 'native_memory_growing':
+    case 'shader_compilation':
+    case 'heavy_compute':
+    case 'platform_channel_traffic':
+    case 'stream_resource_growth':
+    case 'rebuild_activity':
+    case 'excessive_repaint':
+    case 'missing_repaint_boundary':
+    case 'excessive_repaint_boundary':
+    case 'layout_bottleneck':
+    case 'wrap_layout_bottleneck':
+    case 'non_lazy_list':
+    case 'non_lazy_shrinkwrap':
+    case 'setstate_scope':
+    case 'sustained_jank':
+    case 'slow_request':
+    case 'large_response':
+    case 'request_frequency':
+      if (value is Map) {
+        final sev = value['severity']?.toString();
+        if (sev != null && sev.isNotEmpty) return '$type:$sev';
+      }
+      return type;
+    case 'crash':
+      if (value is Map) {
+        final err = value['error']?.toString();
+        if (err != null && err.isNotEmpty) {
+          final short = err.length > 48 ? '${err.substring(0, 48)}…' : err;
+          return 'crash:$short';
+        }
+      }
+      return 'crash';
     case 'memory_increase':
     case 'memory_retain_rss':
       if (value is num) {
         return '$type:+${value.toStringAsFixed(1)}MB';
-      }
-      return type;
-    case 'slow_frame':
-      if (value is num) {
-        return 'slow_frame:${value.toStringAsFixed(0)}ms';
       }
       return type;
     case 'slow_cold_start':
@@ -306,6 +353,11 @@ String _alertLabel(Map<String, dynamic> a) {
     case 'sleuth_detector':
       return type;
     default:
+      if (value is Map) {
+        final sev = value['severity']?.toString();
+        if (sev != null && sev.isNotEmpty) return '$type:$sev';
+        if (value['source']?.toString() == 'sleuth_issue_latch') return type;
+      }
       final msg = a['message']?.toString();
       if (msg != null && msg.isNotEmpty && msg.length <= 80) return msg;
       return type;
@@ -756,6 +808,9 @@ String _alertAt(
   List<Map<String, dynamic>> steps,
   Map<String, dynamic> report,
 ) {
+  // D0 realtime frame alerts carry their own wall-clock `at`.
+  final own = a['at']?.toString();
+  if (own != null && own.isNotEmpty) return own;
   final sid = a['stepId']?.toString();
   if (sid != null) {
     for (final s in steps) {

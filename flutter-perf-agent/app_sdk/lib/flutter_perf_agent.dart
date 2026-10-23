@@ -26,5 +26,8 @@ export 'src/recording_overlay.dart';
 export 'src/transition_ledger.dart';
 export 'src/transition_leak_tracker.dart';
 export 'src/sleuth_transition_binder.dart';
+export 'src/frame_jank_latch.dart';
+export 'src/sleuth_issue_latch.dart';
+export 'src/crash_capture.dart';
 export 'src/getx_leak_hook.dart';
 export 'src/leak_online.dart';

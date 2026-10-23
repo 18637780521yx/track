@@ -350,29 +350,8 @@ class TransitionLeakTracker {
         ),
       );
     }
-    if (p90FrameMs != null && p90FrameMs > maxFrameCostMs) {
-      out.add(
-        AlertItem(
-          type: 'slow_frame',
-          stepId: stepId,
-          action: action,
-          message:
-              'P90 ${p90FrameMs.toStringAsFixed(1)}ms > ${maxFrameCostMs}ms',
-          value: p90FrameMs,
-          threshold: maxFrameCostMs,
-        ),
-      );
-    } else if (jankDelta != null && jankDelta > 0) {
-      out.add(
-        AlertItem(
-          type: 'jank',
-          stepId: stepId,
-          action: action,
-          message: '新增 Jank $jankDelta 次',
-          value: jankDelta,
-        ),
-      );
-    }
+    // D0: frame jank/slow_frame come from FrameJankLatch (realtime).
+    // p90FrameMs / jankDelta kept on call sites for step.diff only.
     return out;
   }
 

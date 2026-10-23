@@ -1,5 +1,6 @@
+import 'dart:async';
+
 import 'package:flutter_skill/flutter_skill.dart';
-import 'package:flutter/foundation.dart'; // For kDebugMode
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_perf_agent/flutter_perf_agent.dart';
@@ -16,6 +17,16 @@ import 'sleuth_demos/custom_detectors/02_runtime_callback_detector.dart';
 import 'sleuth_demos/custom_detectors/03_hybrid_vm_structural_detector.dart';
 
 Future<void> main() async {
+  // D1: Zone errors → CrashCapture (FlutterError / PlatformDispatcher
+  // are hooked inside PerfAgent.ensureInitialized).
+  await runZonedGuarded(() async {
+    await _bootstrap();
+  }, (Object error, StackTrace stack) {
+    CrashCapture.instance.report(error, stack, kind: 'zone', fatal: true);
+  });
+}
+
+Future<void> _bootstrap() async {
   // Capture TTFF from Dart entry → first frame (before runApp).
   Sleuth.init();
 

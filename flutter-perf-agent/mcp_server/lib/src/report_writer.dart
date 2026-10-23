@@ -229,33 +229,9 @@ class ReportWriter {
       );
     }
 
-    final p90After = diff.p90FrameMsAfter;
-    if (p90After != null && p90After > config.maxFrameCostMs) {
-      alerts.add(
-        AlertItem(
-          type: 'slow_frame',
-          stepId: stepId,
-          action: action,
-          message:
-              'P90帧耗时 ${p90After.toStringAsFixed(2)} ms > 阈值 ${config.maxFrameCostMs} ms',
-          value: p90After,
-          threshold: config.maxFrameCostMs,
-        ),
-      );
-    }
-
-    final jankDelta = diff.jankDelta;
-    if (jankDelta != null && jankDelta > 0) {
-      alerts.add(
-        AlertItem(
-          type: 'jank',
-          stepId: stepId,
-          action: action,
-          message: '本次操作新增 Jank $jankDelta 次',
-          value: jankDelta,
-        ),
-      );
-    }
+    // D0 (0.9.5+): jank / slow_frame are emitted realtime by App SDK
+    // FrameJankLatch (FrameVerdict). Keep jankDelta / p90 on step.diff as
+    // window summary only — do not duplicate as AlertItem here.
 
     if (diff.issuesAfter.length > diff.issuesBefore.length) {
       final added =
