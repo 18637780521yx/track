@@ -13,6 +13,7 @@ import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
 import 'session_journal.dart';
 import 'sleuth_issue_latch.dart';
+import 'sleuth_perf_flags.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
 
@@ -21,6 +22,10 @@ class PerfAgent {
   static PerfBridgeServer? _bridge;
   static bool _initialized = false;
   static Future<void>? _startFuture;
+
+  /// Sleuth-backed perf capture (FrameJankLatch / SleuthIssueLatch / transition
+  /// sleuth bind). Default **off** until product re-enables.
+  static bool get sleuthPerfEnabled => SleuthPerfFlags.enabled;
 
   static PerfBridgeServer? get bridge => _bridge;
 
@@ -76,17 +81,22 @@ class PerfAgent {
     /// RSS retain (MB) auxiliary alert threshold.
     double leakRssRetainMb = 5,
     /// Bind Sleuth heap_growing / stream_resource_growth to transition windows.
+    /// Ignored when [sleuthPerfEnabled] is false.
     bool sleuthBindEnabled = true,
     /// Gate: WeakRef alive → main leak alert.
     bool alertOnWeakRef = true,
     /// Gate: only alert WeakRef when multi-round confirmed.
     bool requireMultiRound = false,
     /// Gate: Sleuth-only hits → main leak alert.
+    /// Forced off when [sleuthPerfEnabled] is false.
     bool alertOnSleuthOnly = true,
     /// Gate: RSS retain auxiliary alert.
     bool alertOnRssRetain = true,
     /// Opt-in VM deep probe (MCP lab; ignored in release).
     bool leakVmDeepProbe = false,
+    /// Sleuth perf → journal: FrameJankLatch / SleuthIssueLatch / sleuth bind.
+    /// Default **false** (crash / network / WeakRef leak still work).
+    bool sleuthPerfEnabled = false,
     /// Allow lightweight leak sampling in release (no Bridge / Sleuth).
     bool leakOnlineEnabled = false,
     /// Session sample probability 0..1 (`0` off, `1` always).
@@ -96,6 +106,7 @@ class PerfAgent {
   }) async {
     if (_initialized) return;
     _initialized = true;
+    SleuthPerfFlags.enabled = sleuthPerfEnabled;
 
     LeakOnline.instance.configure(
       enabled: leakOnlineEnabled,
@@ -130,15 +141,16 @@ class PerfAgent {
     SessionJournal.instance.autoSessionOnManual = autoSessionOnManual;
     SessionJournal.instance.reportsDir = reportsDir;
 
+    final bindSleuth = sleuthPerfEnabled && sleuthBindEnabled;
     TransitionLeakTracker.instance.configure(
       enabled: leakTrackEnabled,
       settleMs: transitionSettleMs,
       leakConfirmRounds: leakConfirmRounds,
       rssRetainMb: leakRssRetainMb,
-      sleuthBindEnabled: sleuthBindEnabled,
+      sleuthBindEnabled: bindSleuth,
       alertOnWeakRef: alertOnWeakRef,
       requireMultiRound: requireMultiRound,
-      alertOnSleuthOnly: alertOnSleuthOnly,
+      alertOnSleuthOnly: sleuthPerfEnabled && alertOnSleuthOnly,
       alertOnRssRetain: alertOnRssRetain,
       leakVmDeepProbe: leakVmDeepProbe,
     );
@@ -153,9 +165,18 @@ class PerfAgent {
     }
 
     AppLifecycleTracker.instance.ensureStarted();
-    FrameJankLatch.instance.ensureStarted();
-    SleuthIssueLatch.instance.ensureStarted();
+    if (sleuthPerfEnabled) {
+      FrameJankLatch.instance.ensureStarted();
+      SleuthIssueLatch.instance.ensureStarted();
+    } else {
+      FrameJankLatch.instance.stop();
+      SleuthIssueLatch.instance.stop();
+    }
     CrashCapture.instance.ensureStarted();
+    debugPrint(
+      '[PerfAgent] sleuthPerfEnabled=$sleuthPerfEnabled '
+      '(jank/issue latch ${sleuthPerfEnabled ? "on" : "off"})',
+    );
 
     _bridge = PerfBridgeServer(
       host: host,

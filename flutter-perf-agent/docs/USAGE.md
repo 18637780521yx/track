@@ -151,6 +151,14 @@ HTML 结构（schemaVersion 9）：
 | `captureScreenshots` | 是否截图 |
 | `thresholds.*` | 告警阈值 |
 
+Sleuth 性能采集总开关（0.9.9+，**默认关**）：
+
+| 字段 | 含义 | 默认 |
+|------|------|------|
+| `sleuthPerfEnabled` | `FrameJankLatch` / `SleuthIssueLatch` / transition sleuth bind；MCP 侧 Sleuth issue 告警 | `false` |
+
+关闭时仍采集：`crash`、网络、WeakRef 泄漏、RSS `memory_increase`。App：`ensureInitialized(sleuthPerfEnabled: true)`；MCP：顶层或 `transition.sleuthPerfEnabled`。
+
 转场泄漏（App SDK `ensureInitialized` **或** MCP `perf_agent_config.json` → `transition`，开会话下推）：
 
 | 字段 | 含义 | 默认 |
@@ -164,16 +172,18 @@ HTML 结构（schemaVersion 9）：
 | `onLeakOnlineEvent` | 线上事件回调（面包屑 / `transition_leak`） | `null` |
 | `alertOnWeakRef` | WeakRef 存活出主告警 | `true` |
 | `requireMultiRound` | 仅多轮确认后出 WeakRef 主告警（CI 友好） | `false` |
-| `alertOnSleuthOnly` | 仅 Sleuth hit 也出主告警 | `true` |
+| `alertOnSleuthOnly` | 仅 Sleuth hit 也出主告警（`sleuthPerfEnabled=false` 时强制关） | `true` |
 | `alertOnRssRetain` | RSS 辅证告警 | `true` |
 | `leakVmDeepProbe` | MCP opt-in VM GC/allocation 注记（不作唯一门禁） | `false` |
 
 ```json
+"sleuthPerfEnabled": false,
 "transition": {
   "leakTrackEnabled": true,
   "transitionSettleMs": 1500,
   "leakConfirmRounds": 2,
   "leakRssRetainMb": 5,
+  "sleuthPerfEnabled": false,
   "sleuthBindEnabled": true,
   "alertOnWeakRef": true,
   "requireMultiRound": false,

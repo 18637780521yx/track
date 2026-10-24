@@ -7,23 +7,12 @@ import 'report_view.dart';
 ///
 /// Layout: summary → **timeline of module segments** (events nested inside) → env.
 String buildHtmlReport(Map<String, dynamic> report) {
-  final view = (report['view'] as Map?)?.cast<String, dynamic>() ??
-      buildReportView(report);
-  // Prefer segmented timeline; fall back if old view only had flat events.
-  var timeline =
+  // Always re-derive view so bag alerts (sleuth_detector) expand into
+  // first-class timeline events even when JSON embeds a stale `view`.
+  final view = buildReportView(report);
+  final timeline =
       (view['timeline'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-  final looksFlat = timeline.isNotEmpty &&
-      timeline.first['module'] == null &&
-      timeline.first['type'] != null;
-  if (looksFlat || timeline.isEmpty) {
-    // Re-derive so modules sit inside the timeline.
-    final rebuilt = buildReportView(report);
-    timeline =
-        (rebuilt['timeline'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-  }
-  final stats = (view['stats'] as Map?)?.cast<String, dynamic>() ??
-      (buildReportView(report)['stats'] as Map?)?.cast<String, dynamic>() ??
-      const {};
+  final stats = (view['stats'] as Map?)?.cast<String, dynamic>() ?? const {};
 
   final testName = _esc(report['testName']?.toString() ?? 'unnamed');
   final sessionId = _esc(report['sessionId']?.toString() ?? '');
@@ -42,28 +31,50 @@ String buildHtmlReport(Map<String, dynamic> report) {
   final schemaVersion = report['schemaVersion'] ?? '-';
   final steps =
       (report['steps'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  final isLive = report['live'] == true;
+  final updatedAt = _esc(_fmtTime(
+    report['updatedAt']?.toString() ?? report['endedAt']?.toString(),
+  ));
+  final liveBanner = isLive
+      ? '''
+  <div class="live-banner" id="live-banner">
+    <span class="live-dot"></span>
+    LIVE · 会话进行中 · 更新于 $updatedAt
+    <span class="muted">（每 2s 自动刷新；结束会话后写带时间戳终稿）</span>
+    <button type="button" class="btn-clear" id="btn-clear" title="清空当前会话账本">Clear</button>
+  </div>'''
+      : '''
+  <div class="toolbar">
+    <button type="button" class="btn-clear btn-clear-light" id="btn-clear" title="清空 App 内进行中的会话账本（需 Bridge）">Clear</button>
+  </div>''';
+  final liveMeta = isLive
+      ? '<meta http-equiv="refresh" content="2"/>\n'
+      : '';
+  final liveLog = isLive ? _liveEventLogHtml(view) : '';
 
   return '''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Perf Report · $testName</title>
+$liveMeta<title>Perf Report · $testName${isLive ? ' · LIVE' : ''}</title>
 <style>
 ${_css()}
 </style>
 </head>
 <body>
 <main>
+  $liveBanner
   <h1>$testName</h1>
   <p class="sub">session $sessionId · $mode · owner $reportOwner · schema $schemaVersion<br/>
-  $startedAt → $endedAt</p>
+  $startedAt → ${isLive ? updatedAt : endedAt}</p>
+  $liveLog
 
   <div class="grid">
     <div class="stat"><label>总耗时</label><b>$durationMs ms</b></div>
     <div class="stat"><label>步骤</label><b>${summary['stepCount'] ?? steps.length}</b></div>
     <div class="stat"><label>成功</label><b>${summary['okSteps'] ?? '-'}</b></div>
-    <div class="stat"><label>告警</label><b>${summary['alertCount'] ?? 0}</b></div>
+    <div class="stat"><label>告警</label><b>${stats['alertCount'] ?? summary['alertCount'] ?? 0}</b></div>
     <div class="stat"><label>网络</label><b>${summary['networkRequestCount'] ?? stats['networkCount'] ?? '-'}</b></div>
     <div class="stat"><label>模块段</label><b>${timeline.length}</b></div>
     <div class="stat"><label>avg FPS</label><b>${_num(stats['avgFps'])}</b></div>
@@ -98,9 +109,41 @@ ${_css()}
 </main>
 <script>
 ${_filterScript()}
+${_clearScript()}
 </script>
 </body>
 </html>''';
+}
+
+/// Recent flat events as a compact live log (newest last).
+String _liveEventLogHtml(Map<String, dynamic> view) {
+  final events =
+      (view['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  if (events.isEmpty) {
+    return '<section class="live-log"><h2>实时事件</h2>'
+        '<p class="muted">尚无事件 — 操作 App 后将出现在此</p></section>';
+  }
+  final take = events.length > 40 ? events.sublist(events.length - 40) : events;
+  final lines = <String>[];
+  for (final e in take) {
+    final type = e['type']?.toString() ?? '?';
+    final label = e['label']?.toString() ?? '';
+    final at = _fmtTime(e['at']?.toString());
+    final ok = e['ok'] != false;
+    final cls = (!ok || type == 'alert') ? 'log-fail' : 'log-ok';
+    lines.add(
+      '<div class="log-line $cls">'
+      '<span class="log-at">${_esc(at)}</span> '
+      '<span class="log-type">${_esc(type)}</span> '
+      '${_esc(label)}'
+      '</div>',
+    );
+  }
+  return '''
+<section class="live-log">
+  <h2>实时事件 <span class="muted">（最近 ${take.length} 条）</span></h2>
+  <div class="log-scroll">${lines.join('\n')}</div>
+</section>''';
 }
 
 String _css() => r'''
@@ -121,6 +164,49 @@ String _css() => r'''
     color: var(--ink); line-height: 1.5;
   }
   main { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+  .live-banner {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    background: #14231b; color: #e8f2ec; border-radius: 10px;
+    padding: 10px 14px; margin: 0 0 16px; font-size: 13px; font-weight: 600;
+  }
+  .live-banner .muted { color: #9bb0a4; font-weight: 400; }
+  .live-banner .btn-clear { margin-left: auto; }
+  .toolbar { display: flex; justify-content: flex-end; margin: 0 0 12px; }
+  .btn-clear {
+    border: 1px solid rgba(232,242,236,.45); background: transparent;
+    color: #e8f2ec; border-radius: 8px; padding: 4px 12px; font-size: 12px;
+    font-weight: 600; cursor: pointer; letter-spacing: 0.02em;
+  }
+  .btn-clear:hover { background: rgba(232,242,236,.12); }
+  .btn-clear:disabled { opacity: .5; cursor: wait; }
+  .btn-clear-light {
+    border-color: var(--line); color: var(--ink); background: var(--card);
+  }
+  .btn-clear-light:hover { background: #eef3f0; }
+  .live-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #3dd68c;
+    box-shadow: 0 0 0 3px rgba(61,214,140,.25);
+    animation: live-pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes live-pulse {
+    50% { opacity: .45; box-shadow: 0 0 0 5px rgba(61,214,140,.12); }
+  }
+  .live-log {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 12px 14px; margin: 0 0 20px;
+  }
+  .live-log h2 { margin: 0 0 8px; font-size: 1rem; }
+  .log-scroll {
+    max-height: 220px; overflow: auto; font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; line-height: 1.45;
+  }
+  .log-line { padding: 2px 0; border-bottom: 1px solid #eef3f0; }
+  .log-line.log-fail { color: var(--bad); }
+  .log-at { color: var(--muted); margin-right: 6px; }
+  .log-type {
+    display: inline-block; min-width: 72px; font-weight: 700;
+    letter-spacing: 0.02em;
+  }
   h1 { font-size: 1.75rem; margin: 0 0 8px; letter-spacing: -0.02em; }
   h2 { margin: 36px 0 12px; font-size: 1.15rem; scroll-margin-top: 16px; }
   h3 { margin: 0; font-size: 1rem; }
@@ -187,15 +273,20 @@ String _css() => r'''
     content: ""; position: absolute; left: -4px; top: 6px;
     width: 6px; height: 6px; border-radius: 50%; background: #8aa396;
   }
-  .inner-timeline li.fail::before, .inner-timeline li.alert::before { background: var(--bad); }
+  .inner-timeline li.fail::before,
+  .inner-timeline li.alert::before,
+  .inner-timeline li.crash::before { background: var(--bad); }
   .inner-timeline li.network::before { background: #6b5b95; }
   .inner-timeline li.navigate::before { background: #1e4a8c; }
   .inner-timeline .ev-type {
     font-size: 11px; font-weight: 700; letter-spacing: 0.04em;
     text-transform: uppercase; color: var(--muted);
   }
-  .inner-timeline .ev-label { font-weight: 600; margin: 2px 0; }
+  .inner-timeline .ev-label { font-weight: 600; margin: 2px 0; word-break: break-word; }
   .inner-timeline .ev-meta { font-size: 12px; color: var(--muted); }
+  .badge.crash-kind { background: #fdecec; color: var(--bad); }
+  .badge.crash-fatal { background: #fdecec; color: var(--bad); }
+  .badge.crash-soft { background: #fff4e5; color: #9a5b00; }
   .net-card { margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: #fafcfb; }
   .net-card summary { cursor: pointer; font-size: 13px; }
   .net-url { word-break: break-all; font-size: 12px; color: var(--muted); }
@@ -226,26 +317,41 @@ String _css() => r'''
   .phases .bar.engine { background: #1e4a8c; }
   .phases .bar.post { background: #6b5b95; }
   .phases .note { color: var(--muted); font-size: 12px; }
-  .inner-timeline li.alert {
-    margin-left: 12px;
-    border-left: 3px solid #f3b4ae;
-    padding-left: 10px;
-    background: var(--warn-bg);
-    border-radius: 8px;
+  /* Alerts / crashes are peer events (same indent as action). */
+  .inner-timeline li.alert,
+  .inner-timeline li.crash {
+    margin-left: 0;
+    border-left: none;
+    padding-left: 16px;
+    background: transparent;
+    border-radius: 0;
   }
   .alert-inline {
     background: transparent; border: none;
-    padding: 4px 0 0; margin-top: 2px; display:grid; gap: 4px;
+    padding: 2px 0 0; margin-top: 0; display:grid; gap: 2px;
   }
   .alert-inline ul.alert-values {
     margin: 4px 0 0; padding-left: 1.2em; font-size: 12px; color: var(--text);
   }
   .alert-inline ul.alert-values li { margin: 2px 0; }
   .alert-inline .alert-metric { font-size: 12px; color: var(--muted); }
+  .alert-inline details.alert-stack-card {
+    margin: 4px 0 0; border: none; border-radius: 0;
+    background: transparent; padding: 0;
+  }
+  .alert-inline details.alert-stack-card > summary {
+    cursor: pointer; font-size: 12px; color: var(--muted); padding: 2px 0;
+    list-style: none; user-select: none;
+  }
+  .alert-inline details.alert-stack-card > summary::-webkit-details-marker { display: none; }
+  .alert-inline details.alert-stack-card > summary::before {
+    content: "▸ "; font-size: 11px;
+  }
+  .alert-inline details.alert-stack-card[open] > summary::before { content: "▾ "; }
   .alert-inline pre.alert-stack {
-    margin: 6px 0 0; padding: 8px 10px; font-size: 11px; line-height: 1.35;
-    overflow: auto; max-height: 180px; white-space: pre-wrap; word-break: break-all;
-    background: rgba(0,0,0,.25); border-radius: 6px; color: var(--muted);
+    margin: 4px 0 0; padding: 8px 10px; font-size: 11px; line-height: 1.35;
+    overflow: auto; max-height: 220px; white-space: pre-wrap; word-break: break-all;
+    background: #0f1a14; color: #d7ece1; border-radius: 6px;
   }
 ''';
 
@@ -266,6 +372,43 @@ String _filterScript() => r'''
         (filter === 'lifecycle' && (m === 'lifecycle' || m === 'startup'));
       li.classList.toggle('hidden', !show);
     });
+  });
+})();
+''';
+
+String _clearScript() => r'''
+(function () {
+  var btn = document.getElementById('btn-clear');
+  if (!btn) return;
+  function clearUrl() {
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      return location.origin + '/report/clear';
+    }
+    return 'http://127.0.0.1:19288/report/clear';
+  }
+  btn.addEventListener('click', function () {
+    if (!confirm('清空当前会话报告？步骤与告警将从 App 账本抹掉（会话 id 保留）。')) {
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Clearing…';
+    fetch(clearUrl(), { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok || (res.j && res.j.code !== 0 && res.j.code !== undefined && res.j.code !== '0')) {
+          var msg = (res.j && (res.j.msg || res.j.message)) || 'clear failed';
+          alert(msg);
+          btn.disabled = false;
+          btn.textContent = 'Clear';
+          return;
+        }
+        location.reload();
+      })
+      .catch(function (e) {
+        alert('Clear 需要 App Bridge（默认 :19288）。\n' + e);
+        btn.disabled = false;
+        btn.textContent = 'Clear';
+      });
   });
 })();
 ''';
@@ -506,9 +649,20 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
     final detail =
         (t['detail'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
     final source = t['source']?.toString();
+    final alertType = type == 'alert'
+        ? (detail['alertType']?.toString() ??
+            detail['type']?.toString() ??
+            'alert')
+        : null;
+    final value = detail['value'];
+    final valueMap = value is Map ? Map<String, dynamic>.from(value) : null;
+    final isCrash = alertType == 'crash' ||
+        valueMap?['source']?.toString() == 'crash_capture';
+
     final cls = [
-      type,
-      if (!ok || type == 'alert') 'fail',
+      if (isCrash) 'crash' else type,
+      if (!ok && !isCrash) 'fail',
+      if (type == 'alert' && !isCrash) 'fail',
     ].join(' ');
     final meta = <String>[];
     if (at.isNotEmpty) meta.add(at);
@@ -523,23 +677,59 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
         meta.add(detail['transitionKind'].toString());
       }
     }
+    String displayType = type;
+    var displayLabel = label;
+    var typeBadges = '';
+    if (type == 'alert') {
+      displayType = isCrash ? 'exception' : (alertType ?? 'alert');
+      if (isCrash) {
+        final kind = valueMap?['kind']?.toString() ?? 'crash';
+        final fatal = valueMap?['fatal'] == true;
+        typeBadges =
+            ' <span class="badge crash-kind">${_esc(kind)}</span>'
+            ' <span class="badge ${fatal ? 'crash-fatal' : 'crash-soft'}">'
+            '${fatal ? 'fatal' : 'non-fatal'}</span>';
+        if (valueMap?['route'] != null) {
+          meta.add(valueMap!['route'].toString());
+        }
+        if (valueMap?['library'] != null) {
+          meta.add('lib=${valueMap!['library']}');
+        }
+        // Prefer error text as the main line (already cleaned in view label).
+        if (displayLabel.startsWith('crash ·') ||
+            displayLabel == 'crash' ||
+            displayLabel.startsWith('FlutterError') ||
+            displayLabel.startsWith('未捕获异常')) {
+          final err = valueMap?['error']?.toString();
+          if (err != null && err.isNotEmpty) displayLabel = err;
+        }
+      } else {
+        final sev = _shortSevFromDetail(detail);
+        if (sev != null) meta.add(sev);
+        if (displayLabel == alertType ||
+            displayLabel.startsWith('$alertType:')) {
+          if (valueMap?['title'] != null) {
+            displayLabel = valueMap!['title'].toString();
+          } else if (detail['message'] != null) {
+            displayLabel = detail['message'].toString();
+          }
+        }
+      }
+    }
     final srcBadge = (type == 'action' && source != null && source.isNotEmpty)
         ? ' <span class="badge src-$source">${_esc(source)}</span>'
         : '';
-    final failBadge = !ok ? ' <span class="badge bad">失败</span>' : '';
+    // Crash uses kind/fatal badges; other failed actions keep 「失败」.
+    final failBadge =
+        (!ok && !isCrash) ? ' <span class="badge bad">失败</span>' : '';
     final netExpand = type == 'network' ? _networkExpandHtml(detail) : '';
     final alertBox = type == 'alert'
-        ? '''
-<div class="alert-inline">
-  <strong>${_esc(detail['type']?.toString() ?? 'alert')}</strong>
-  <span>${_esc(t['label']?.toString())}</span>
-  ${_alertValueHtml(detail)}
-</div>'''
+        ? '<div class="alert-inline">${_alertValueHtml(detail)}</div>'
         : '';
     items.add('''
-<li id="$id" class="$cls" data-type="${_esc(type)}">
-  <div class="ev-type">$i · ${_esc(type)}$srcBadge$failBadge</div>
-  <div class="ev-label">${_esc(label)}</div>
+<li id="$id" class="$cls" data-type="${_esc(isCrash ? 'exception' : type)}">
+  <div class="ev-type">$i · ${_esc(displayType)}$srcBadge$typeBadges$failBadge</div>
+  <div class="ev-label">${_esc(displayLabel)}</div>
   ${meta.isEmpty ? '' : '<div class="ev-meta">${_esc(meta.join(' · '))}</div>'}
   $netExpand
   $alertBox
@@ -549,76 +739,72 @@ String _innerEventsHtml(List<Map<String, dynamic>> events) {
   return '<ol class="inner-timeline">${items.join('\n')}</ol>';
 }
 
-/// D1 crash / FlutterError fields.
+/// D1 crash body — kind/fatal/route live in the event header; here only extras.
 String _crashAlertHtml(
   Map<String, dynamic> m,
   String Function(String, [int]) clip,
 ) {
-  final bits = <String>[];
-  void add(String key, String label) {
-    final v = m[key];
-    if (v == null) return;
-    bits.add('$label=${_esc(v.toString())}');
-  }
-
-  add('kind', 'kind');
-  add('fatal', 'fatal');
-  add('library', 'lib');
-  add('route', 'route');
-  final head = bits.isEmpty
-      ? ''
-      : '<div class="alert-metric">${bits.join(' · ')}</div>';
-  final err = m['error']?.toString();
   final ctx = m['context']?.toString();
   final stack = m['stack']?.toString();
-  final errHtml = (err != null && err.isNotEmpty)
-      ? '<div class="alert-metric">${_esc(clip(err, 200))}</div>'
-      : '';
   final ctxHtml = (ctx != null && ctx.isNotEmpty)
-      ? '<div class="alert-metric muted">${_esc(clip(ctx, 160))}</div>'
+      ? '<div class="alert-metric muted">${_esc(clip(ctx, 120))}</div>'
       : '';
-  final stackHtml = (stack != null && stack.isNotEmpty)
-      ? '<pre class="alert-stack">${_esc(clip(stack, 1200))}</pre>'
-      : '';
-  return '$head$errHtml$ctxHtml$stackHtml';
+  var stackHtml = '';
+  if (stack != null && stack.isNotEmpty) {
+    final n = stack
+        .trimRight()
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty)
+        .length;
+    final label = n > 0 ? '堆栈 · $n 行' : '堆栈';
+    stackHtml = '<details class="alert-stack-card">'
+        '<summary>$label</summary>'
+        '<pre class="alert-stack">${_esc(clip(stack, 1200))}</pre>'
+        '</details>';
+  }
+  return '$ctxHtml$stackHtml';
 }
 
-/// D0m MemoryPressure issue fields.
+/// Sleuth / latch issue body — title lives in ev-label; here detail + fix only.
 String _memoryPressureHtml(
   Map<String, dynamic> m,
   String Function(String, [int]) clip,
 ) {
-  final bits = <String>[];
-  void add(String key, String label) {
-    final v = m[key];
-    if (v == null) return;
-    bits.add('$label=${_esc(v.toString())}');
-  }
-
-  add('stableId', 'id');
-  add('severity', 'sev');
-  add('bytesPerSecond', 'B/s');
-  add('heapBytes', 'heap');
-  add('rssBytes', 'rss');
-  add('usageRatio', 'usage');
-  add('gcCount', 'gc');
-  add('gcPerMinute', 'gc/min');
-  final head = bits.isEmpty
-      ? ''
-      : '<div class="alert-metric">${bits.join(' · ')}</div>';
   final title = m['title']?.toString();
   final detail = m['detail']?.toString() ?? m['message']?.toString();
   final fix = m['fixHint']?.toString();
-  final titleHtml = (title != null && title.isNotEmpty)
-      ? '<div class="alert-metric">${_esc(clip(title, 160))}</div>'
-      : '';
-  final detailHtml = (detail != null && detail.isNotEmpty && detail != title)
+  final detailHtml = (detail != null &&
+          detail.isNotEmpty &&
+          detail != title)
       ? '<div class="alert-metric muted">${_esc(clip(detail, 220))}</div>'
       : '';
   final fixHtml = (fix != null && fix.isNotEmpty)
-      ? '<div class="alert-metric muted">fix: ${_esc(clip(fix, 180))}</div>'
+      ? '<div class="alert-metric muted">fix: ${_esc(clip(fix, 160))}</div>'
       : '';
-  return '$head$titleHtml$detailHtml$fixHtml';
+  if (detailHtml.isEmpty && fixHtml.isEmpty && title != null) {
+    // Fallback when only title exists (already shown as label).
+    return '';
+  }
+  return '$detailHtml$fixHtml';
+}
+
+String? _shortSevFromDetail(Map<String, dynamic> detail) {
+  final v = detail['value'];
+  Object? raw;
+  if (v is Map) raw = v['severity'];
+  raw ??= detail['severity'];
+  if (raw == null) return null;
+  final s = raw.toString().toLowerCase();
+  if (s.contains('critical')) return 'critical';
+  if (s.contains('error')) return 'error';
+  if (s.contains('warning')) return 'warning';
+  if (s.contains('info')) return 'info';
+  final full = raw.toString();
+  final dot = full.lastIndexOf('.');
+  if (dot >= 0 && dot < full.length - 1) {
+    return full.substring(dot + 1).toLowerCase();
+  }
+  return null;
 }
 
 /// D0 FrameVerdict fields for realtime jank / slow_frame.
@@ -742,10 +928,15 @@ String _alertValueHtml(Map<String, dynamic> detail) {
       return _crashAlertHtml(m, clip);
     }
     if (m['source']?.toString() == 'sleuth_issue_latch' ||
+        m['source']?.toString() == 'sleuth_expand' ||
+        m['source']?.toString() == 'mcp_diff' ||
+        m['source']?.toString() == 'mcp_diff_expand' ||
         alertType == 'gc_pressure' ||
         alertType == 'heap_growing' ||
         alertType == 'heap_near_capacity' ||
         alertType == 'native_memory_growing' ||
+        alertType == 'sustained_jank' ||
+        alertType == 'raster_dominance' ||
         alertType == 'shader_compilation' ||
         alertType == 'heavy_compute' ||
         alertType == 'platform_channel_traffic' ||
@@ -755,7 +946,9 @@ String _alertValueHtml(Map<String, dynamic> detail) {
         alertType == 'missing_repaint_boundary' ||
         alertType == 'layout_bottleneck' ||
         alertType == 'non_lazy_list' ||
-        alertType == 'setstate_scope') {
+        alertType == 'setstate_scope' ||
+        alertType == 'slow_request' ||
+        alertType == 'large_response') {
       return _memoryPressureHtml(m, clip);
     }
     final bits = <String>[];
@@ -774,6 +967,18 @@ String _alertValueHtml(Map<String, dynamic> detail) {
     final counts = m['aliveCounts'];
     if (counts is List && counts.isNotEmpty) {
       bits.add('counts=[${counts.join('→')}]');
+    }
+    final sleuthHits = m['sleuthHits'];
+    if (sleuthHits is List && sleuthHits.isNotEmpty) {
+      final hits = sleuthHits.take(3).map((e) {
+        if (e is Map) {
+          return e['title']?.toString() ??
+              e['stableId']?.toString() ??
+              e.toString();
+        }
+        return e.toString();
+      }).join('；');
+      bits.add('sleuth: ${clip(hits, 120)}');
     }
     if (bits.isEmpty) {
       return '<div class="alert-metric">${_esc(clip(value.toString(), 200))}</div>';

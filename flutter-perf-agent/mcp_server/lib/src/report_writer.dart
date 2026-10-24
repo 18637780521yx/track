@@ -94,6 +94,7 @@ class ReportWriter {
         'alertOnSleuthOnly': config.alertOnSleuthOnly,
         'alertOnRssRetain': config.alertOnRssRetain,
         'leakVmDeepProbe': config.leakVmDeepProbe,
+        'sleuthPerfEnabled': config.sleuthPerfEnabled,
       },
       'steps': stepsJson,
       'alerts': alertsJson,
@@ -139,6 +140,21 @@ class ReportWriter {
     );
     await File(htmlPath).writeAsString(buildHtmlReport(htmlReport));
 
+    // Mid-session overlay + legacy live/latest bookmarks are not the final report.
+    Future<void> drop(String name) async {
+      try {
+        final f = File(p.join(dir.path, name));
+        if (await f.exists()) await f.delete();
+      } catch (_) {}
+    }
+
+    await drop('live_${session.sessionId}.json');
+    await drop('live_${session.sessionId}.html');
+    await drop('live.json');
+    await drop('live.html');
+    await drop('latest.json');
+    await drop('latest.html');
+
     return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
   }
 
@@ -182,6 +198,7 @@ class ReportWriter {
         'alertOnSleuthOnly': config.alertOnSleuthOnly,
         'alertOnRssRetain': config.alertOnRssRetain,
         'leakVmDeepProbe': config.leakVmDeepProbe,
+        'sleuthPerfEnabled': config.sleuthPerfEnabled,
       },
       'steps': stepsJson,
       'alerts': session.alerts.map((a) => a.toJson()).toList(),
@@ -215,7 +232,8 @@ class ReportWriter {
   }) {
     final alerts = <AlertItem>[];
     final memMb = diff.memoryDeltaMb;
-    if (memMb >= config.memoryIncreaseWarningMB) {
+    if (config.memoryIncreaseAlertEnabled &&
+        memMb >= config.memoryIncreaseWarningMB) {
       alerts.add(
         AlertItem(
           type: 'memory_increase',
@@ -233,45 +251,70 @@ class ReportWriter {
     // FrameJankLatch (FrameVerdict). Keep jankDelta / p90 on step.diff as
     // window summary only — do not duplicate as AlertItem here.
 
-    if (diff.issuesAfter.length > diff.issuesBefore.length) {
-      final added =
-          diff.issuesAfter.length - diff.issuesBefore.length;
-      final value = _sleuthIssuesValue(
-        addedCount: added,
-        sleuthIssues: sleuthIssues,
-        fallbackStrings:
-            diff.issuesAfter.skip(diff.issuesBefore.length).take(5).toList(),
-      );
+    // Sleuth issue → alert (sustained_jank / gc_pressure / …). Gated.
+    if (!config.sleuthPerfEnabled) {
+      return alerts;
+    }
+
+    final seenIssue = <String>{};
+    void addIssue(SleuthIssueItem item, {required bool newlyAdded}) {
+      final rawId = (item.stableId ?? item.id ?? '').trim();
+      if (rawId.isEmpty || rawId == 'jank_detected') return;
+      final sev = (item.severity ?? '').toLowerCase();
+      if (!(sev.contains('error') ||
+          sev.contains('critical') ||
+          sev.contains('warning'))) {
+        return;
+      }
+      if (!seenIssue.add(rawId)) return;
+      final title = item.title ?? item.detail ?? rawId;
       alerts.add(
         AlertItem(
-          type: 'sleuth_issues',
+          type: rawId,
           stepId: stepId,
           action: action,
-          message: '操作后新增 Sleuth issue $added 条',
-          value: value,
+          message: newlyAdded ? '新增：$title' : title,
+          value: _issueValueMap(item, rawId: rawId),
         ),
       );
     }
 
     if (sleuthIssues != null) {
-      final severe = <Map<String, dynamic>>[];
-      for (final item in sleuthIssues.issues) {
-        final sev = item.severity?.toLowerCase() ?? '';
-        if (sev.contains('error') ||
-            sev.contains('critical') ||
-            sev.contains('warning')) {
-          severe.add(item.toJson());
-        }
+      final live = sleuthIssues.issues;
+      final addedCount = (diff.issuesAfter.length - diff.issuesBefore.length)
+          .clamp(0, live.length);
+      final newlyAdded = addedCount > 0
+          ? live.sublist((live.length - addedCount).clamp(0, live.length))
+          : const <SleuthIssueItem>[];
+      final newlyIds = {
+        for (final i in newlyAdded)
+          if ((i.stableId ?? i.id ?? '').trim().isNotEmpty)
+            (i.stableId ?? i.id)!.trim(),
+      };
+      for (final item in live) {
+        addIssue(item, newlyAdded: newlyIds.contains(
+          (item.stableId ?? item.id ?? '').trim(),
+        ));
       }
-      if (severe.isNotEmpty) {
+    } else if (diff.issuesAfter.length > diff.issuesBefore.length) {
+      // No structured list — expand string titles into best-effort types.
+      for (final s in diff.issuesAfter
+          .skip(diff.issuesBefore.length)
+          .take(8)) {
+        final type = _guessTypeFromText(s);
+        if (type == null || type == 'jank_detected') continue;
+        if (!seenIssue.add(type)) continue;
         alerts.add(
           AlertItem(
-            type: 'sleuth_detector',
+            type: type,
             stepId: stepId,
             action: action,
-            message: 'Sleuth 当前有 ${severe.length} 条 warning+ issue',
-            value: severe.take(8).toList(),
-            totalIssues: sleuthIssues.issues.length,
+            message: s.length > 120 ? '${s.substring(0, 120)}…' : s,
+            value: <String, dynamic>{
+              'title': s,
+              'stableId': type,
+              'source': 'mcp_diff_expand',
+            },
           ),
         );
       }
@@ -280,23 +323,10 @@ class ReportWriter {
     return alerts;
   }
 
-  /// Prefer structured maps from live [sleuthIssues]; else string titles.
-  static Object _sleuthIssuesValue({
-    required int addedCount,
-    required SleuthIssuesData? sleuthIssues,
-    required List<String> fallbackStrings,
+  static Map<String, dynamic> _issueValueMap(
+    SleuthIssueItem item, {
+    required String rawId,
   }) {
-    final take = addedCount.clamp(1, 5);
-    final live = sleuthIssues?.issues;
-    if (live != null && live.isNotEmpty) {
-      final start = (live.length - take).clamp(0, live.length);
-      final slice = live.sublist(start);
-      return slice.map(_shortIssueMap).toList();
-    }
-    return fallbackStrings;
-  }
-
-  static Map<String, dynamic> _shortIssueMap(SleuthIssueItem item) {
     String? clip(String? s, [int max = 160]) {
       if (s == null || s.isEmpty) return null;
       final t = s.trim();
@@ -304,12 +334,28 @@ class ReportWriter {
       return '${t.substring(0, max)}…';
     }
 
-    final title = item.title ?? item.detail ?? item.stableId ?? item.id;
     return <String, dynamic>{
-      if (title != null) 'title': clip(title, 120),
+      'stableId': rawId,
+      if (item.title != null) 'title': clip(item.title, 120),
       if (item.severity != null) 'severity': item.severity,
       if (item.category != null) 'category': item.category,
       if (item.fixHint != null) 'fixHint': clip(item.fixHint),
+      if (item.detail != null) 'detail': clip(item.detail, 200),
+      'source': 'mcp_diff',
     };
+  }
+
+  static String? _guessTypeFromText(String text) {
+    final t = text.toLowerCase();
+    if (t.contains('sustained jank')) return 'sustained_jank';
+    if (t.contains('raster dominance')) return 'raster_dominance';
+    if (t.contains('gc pressure')) return 'gc_pressure';
+    if (t.contains('heap growing')) return 'heap_growing';
+    if (t.contains('native memory')) return 'native_memory_growing';
+    if (t.contains('heavy computation') || t.contains('heavy compute')) {
+      return 'heavy_compute';
+    }
+    if (t.contains('shader')) return 'shader_compilation';
+    return null;
   }
 }

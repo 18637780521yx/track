@@ -13,6 +13,13 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
   final thresholds =
       (report['thresholds'] as Map?)?.cast<String, dynamic>() ?? const {};
   final slowMs = (thresholds['slowRequestMs'] as num?)?.toInt() ?? 300;
+  final sleuthPerfOn = _thresholdFlag(thresholds, 'sleuthPerfEnabled',
+      defaultWhenMissing: true);
+  final rssAlertOn = _thresholdFlag(
+    thresholds,
+    'memoryIncreaseAlertEnabled',
+    defaultWhenMissing: true,
+  );
 
   final stepById = <String, Map<String, dynamic>>{
     for (final s in steps)
@@ -111,6 +118,14 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
         }
         // Screenshots deferred from path narrative (still in raw steps if needed).
         if (type == 'screenshot') continue;
+        // Cold-start step already emitted a synthetic event with TTFF/phases —
+        // skip the journal's duplicate cold_start / lifecycle:cold_start.
+        if (isCold &&
+            (type == 'cold_start' ||
+                (type == 'lifecycle' &&
+                    detail['kind']?.toString() == 'cold_start'))) {
+          continue;
+        }
 
         var label = m['label']?.toString() ?? type;
         if (type == 'action') {
@@ -142,29 +157,39 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
 
     final stepAlerts =
         (s['alerts'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-    for (final a in stepAlerts) {
-      final alertType = _normalizeAlertType(a['type']?.toString());
-      final alertAt = a['at']?.toString();
-      events.add({
-        'id': 'ev_${idx++}',
-        'type': 'alert',
-        'at': (alertAt != null && alertAt.isNotEmpty)
-            ? alertAt
-            : (s['at']?.toString() ?? ''),
-        'label': _alertLabel(a),
-        'ok': false,
-        'stepId': sid,
-        'route': route,
-        'source': _normalizeSource(source),
-        'module': _moduleForAlertType(alertType),
-        'detail': {
-          ...a,
-          'type': alertType,
-          'alertType': alertType,
-          if (a['type'] != null && a['type'].toString() != alertType)
-            'legacyType': a['type'],
-        },
-      });
+    for (final raw in stepAlerts) {
+      for (final a in expandBagAlerts(raw, expandSleuthBags: sleuthPerfOn)) {
+        final alertType = _normalizeAlertType(a['type']?.toString());
+        if (_shouldHideAlert(
+          alertType,
+          sleuthPerfOn: sleuthPerfOn,
+          rssAlertOn: rssAlertOn,
+        )) {
+          continue;
+        }
+        final alertAt = a['at']?.toString();
+        events.add({
+          'id': 'ev_${idx++}',
+          'type': 'alert',
+          'at': (alertAt != null && alertAt.isNotEmpty)
+              ? alertAt
+              : (s['at']?.toString() ?? ''),
+          'label': _alertLabel(a),
+          'ok': false,
+          'stepId': sid,
+          'route': route,
+          'source': _normalizeSource(source),
+          'module': _moduleForAlertType(alertType),
+          'detail': {
+            ...a,
+            'type': alertType,
+            'alertType': alertType,
+            if (raw['type'] != null &&
+                raw['type'].toString() != alertType)
+              'legacyType': raw['type'],
+          },
+        });
+      }
     }
   }
 
@@ -177,32 +202,48 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
       }
     }
   }
-  for (final a in alerts) {
-    final key = '${a['type']}|${a['stepId']}|${a['message']}';
-    if (seenAlertKeys.contains(key)) continue;
-    final alertType = _normalizeAlertType(a['type']?.toString());
-    final sid = a['stepId']?.toString();
-    final stepRoute =
-        sid != null && stepById.containsKey(sid) ? _stepRoute(stepById[sid]!) : null;
-    events.add({
-      'id': 'ev_${idx++}',
-      'type': 'alert',
-      'at': _alertAt(a, steps, report),
-      'label': _alertLabel(a),
-      'ok': false,
-      'stepId': sid,
-      'route': stepRoute,
-      'source': null,
-      'module': _moduleForAlertType(alertType),
-      'detail': {
-        ...a,
-        'type': alertType,
-        'alertType': alertType,
-        if (a['type'] != null && a['type'].toString() != alertType)
-          'legacyType': a['type'],
-      },
-    });
+  for (final raw in alerts) {
+    for (final a in expandBagAlerts(raw, expandSleuthBags: sleuthPerfOn)) {
+      final alertType = _normalizeAlertType(a['type']?.toString());
+      if (_shouldHideAlert(
+        alertType,
+        sleuthPerfOn: sleuthPerfOn,
+        rssAlertOn: rssAlertOn,
+      )) {
+        continue;
+      }
+      final key = '$alertType|${a['stepId']}|${a['message']}';
+      if (seenAlertKeys.contains(key)) continue;
+      seenAlertKeys.add(key);
+      final sid = a['stepId']?.toString();
+      final stepRoute = sid != null && stepById.containsKey(sid)
+          ? _stepRoute(stepById[sid]!)
+          : null;
+      events.add({
+        'id': 'ev_${idx++}',
+        'type': 'alert',
+        'at': _alertAt(a, steps, report),
+        'label': _alertLabel(a),
+        'ok': false,
+        'stepId': sid,
+        'route': stepRoute,
+        'source': null,
+        'module': _moduleForAlertType(alertType),
+        'detail': {
+          ...a,
+          'type': alertType,
+          'alertType': alertType,
+          if (raw['type'] != null && raw['type'].toString() != alertType)
+            'legacyType': raw['type'],
+        },
+      });
+    }
   }
+
+  // Drop empty WeakRef "leaks" that only echo Sleuth heap_growing.
+  _dropEchoMemoryLeaks(events);
+  // Same detector polled across steps / bags → one card (worse magnitude).
+  _dedupeAlertsByTypeAndStep(events);
 
   // Transition into route X must precede activity already stamped on X
   // (e.g. home/list fired before navigate was recorded at step end).
@@ -226,16 +267,192 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
   final perf = _sessionPerf(steps);
   final netStats = _netStats(events, slowMs);
 
+  final alertEventCount =
+      events.where((e) => e['type']?.toString() == 'alert').length;
+
   return {
     'events': events,
     'timeline': timeline,
     'stats': {
       'eventCount': events.length,
+      'alertCount': alertEventCount,
       'segmentCount': timeline.length,
       ...netStats,
       ...perf,
     },
   };
+}
+
+bool _thresholdFlag(
+  Map<String, dynamic> thresholds,
+  String key, {
+  required bool defaultWhenMissing,
+}) {
+  if (!thresholds.containsKey(key)) return defaultWhenMissing;
+  return thresholds[key] == true;
+}
+
+/// Sleuth / RSS performance alerts gated by report thresholds.
+bool _shouldHideAlert(
+  String alertType, {
+  required bool sleuthPerfOn,
+  required bool rssAlertOn,
+}) {
+  if (!rssAlertOn && alertType == 'memory_increase') return true;
+  if (sleuthPerfOn) return false;
+  if (alertType == 'sleuth_detector' ||
+      alertType == 'sleuth_issues' ||
+      alertType == 'jank' ||
+      alertType == 'slow_frame' ||
+      alertType == 'sleuth_issue') {
+    return true;
+  }
+  if (_sessionSnapshotAlertFamilies.contains(alertType)) return true;
+  for (final f in _sessionSnapshotAlertFamilies) {
+    if (alertType.startsWith('$f:')) return true;
+  }
+  // structural instance ids / network sleuth families
+  const prefixes = <String>[
+    'excessive_keep_alive',
+    'high_frequency_same_path',
+    'slow_request',
+    'large_response',
+    'request_frequency',
+    'http_error_spike',
+  ];
+  for (final p in prefixes) {
+    if (alertType == p || alertType.startsWith('$p:')) return true;
+  }
+  return false;
+}
+
+/// `sleuth_detector` / `sleuth_issues` bags → one first-class alert per issue.
+///
+/// Design: timeline shows `sustained_jank` / `gc_pressure` / … as events,
+/// not a single bag with nested bullets (see report-timeline-v4).
+/// When [expandSleuthBags] is false, bags are dropped (not shown as a lump).
+List<Map<String, dynamic>> expandBagAlerts(
+  Map<String, dynamic> raw, {
+  bool expandSleuthBags = true,
+}) {
+  final type = (raw['type'] ?? '').toString();
+  if (type != 'sleuth_detector' && type != 'sleuth_issues') {
+    return [Map<String, dynamic>.from(raw)];
+  }
+  if (!expandSleuthBags) return const [];
+  final value = raw['value'];
+  if (value is! List || value.isEmpty) {
+    return [Map<String, dynamic>.from(raw)];
+  }
+  final out = <Map<String, dynamic>>[];
+  final seen = <String>{};
+  for (final item in value) {
+    final expanded = _issueEntryToAlert(raw, item);
+    if (expanded == null) continue;
+    final id = expanded['type']?.toString() ?? '';
+    final msg = expanded['message']?.toString() ?? '';
+    final key = '$id|$msg';
+    if (!seen.add(key)) continue;
+    out.add(expanded);
+  }
+  return out.isEmpty ? [Map<String, dynamic>.from(raw)] : out;
+}
+
+Map<String, dynamic>? _issueEntryToAlert(
+  Map<String, dynamic> parent,
+  Object? item,
+) {
+  if (item is Map) {
+    final m = Map<String, dynamic>.from(item);
+    final alertType = _issueAlertType(m);
+    if (alertType == null || alertType == 'jank_detected') return null;
+    final title = (m['title'] ?? m['detail'] ?? m['message'] ?? alertType)
+        .toString();
+    return <String, dynamic>{
+      'type': alertType,
+      'stepId': parent['stepId'],
+      'action': parent['action'],
+      'message': title,
+      if (parent['at'] != null) 'at': parent['at'],
+      'value': <String, dynamic>{
+        ...m,
+        'stableId': m['stableId'] ?? m['id'] ?? alertType,
+        'source': m['source'] ?? 'sleuth_expand',
+      },
+    };
+  }
+  if (item is String) {
+    final s = item.trim();
+    if (s.isEmpty) return null;
+    final alertType = _alertTypeFromIssueText(s) ?? 'sleuth_issue';
+    if (alertType == 'jank_detected') return null;
+    final title = _titleFromIssueText(s) ?? s;
+    return <String, dynamic>{
+      'type': alertType,
+      'stepId': parent['stepId'],
+      'action': parent['action'],
+      'message': title,
+      if (parent['at'] != null) 'at': parent['at'],
+      'value': <String, dynamic>{
+        'title': title,
+        'stableId': alertType,
+        'source': 'sleuth_expand',
+        'raw': s.length > 240 ? '${s.substring(0, 240)}…' : s,
+      },
+    };
+  }
+  return null;
+}
+
+String? _issueAlertType(Map<String, dynamic> m) {
+  final id = (m['stableId'] ?? m['id'] ?? '').toString().trim();
+  if (id.isNotEmpty) {
+    if (id == 'jank_detected') return 'jank_detected';
+    // Instance-scoped keep full id; family suffix after '.' → family.
+    if (id.contains(':')) return id;
+    final dot = id.indexOf('.');
+    if (dot > 0) return id.substring(0, dot);
+    return id;
+  }
+  final title = (m['title'] ?? m['detail'] ?? m['message'] ?? '').toString();
+  return _alertTypeFromIssueText(title);
+}
+
+String? _alertTypeFromIssueText(String text) {
+  final t = text.toLowerCase();
+  const patterns = <String, String>{
+    'sustained jank': 'sustained_jank',
+    'raster dominance': 'raster_dominance',
+    'gc pressure': 'gc_pressure',
+    'heap growing': 'heap_growing',
+    'heap near': 'heap_near_capacity',
+    'native memory': 'native_memory_growing',
+    'shader': 'shader_compilation',
+    'heavy computation': 'heavy_compute',
+    'heavy compute': 'heavy_compute',
+    'platform channel': 'platform_channel_traffic',
+    'stream resource': 'stream_resource_growth',
+    'rebuild': 'rebuild_activity',
+    'excessive repaint': 'excessive_repaint',
+    'missing repaint': 'missing_repaint_boundary',
+    'layout bottleneck': 'layout_bottleneck',
+    'non-lazy': 'non_lazy_list',
+    'non lazy': 'non_lazy_list',
+    'setstate': 'setstate_scope',
+    'slow request': 'slow_request',
+    'large response': 'large_response',
+    'tooltip': 'tooltip_usage',
+  };
+  for (final e in patterns.entries) {
+    if (t.contains(e.key)) return e.value;
+  }
+  return null;
+}
+
+String? _titleFromIssueText(String raw) {
+  // PerformanceIssue(..., "Title here", route: ...)
+  final m = RegExp(r'"([^"]{3,120})"').firstMatch(raw);
+  return m?.group(1);
 }
 
 String _moduleForEventType(String type) {
@@ -280,10 +497,16 @@ String _moduleForAlertType(String alertType) {
   return 'page';
 }
 
-/// Short timeline label for an alert map (`type` / `value` / `message`).
+/// Short timeline label — prefer human title; avoid `type:IssueSeverity.x` noise.
 String _alertLabel(Map<String, dynamic> a) {
   final type = _normalizeAlertType(a['type']?.toString());
   final value = a['value'];
+  if (value is Map) {
+    final title = value['title']?.toString().trim();
+    if (title != null && title.isNotEmpty) {
+      return title.length > 90 ? '${title.substring(0, 90)}…' : title;
+    }
+  }
   switch (type) {
     case 'jank':
     case 'slow_frame':
@@ -292,76 +515,213 @@ String _alertLabel(Map<String, dynamic> a) {
         final phase = value['suspectedPhase']?.toString();
         final msStr = ms is num ? ms.toStringAsFixed(0) : '?';
         if (phase != null && phase.isNotEmpty && phase != 'unknown') {
-          return '$type:${msStr}ms@$phase';
+          return '$type · ${msStr}ms · $phase';
         }
-        return '$type:${msStr}ms';
+        return '$type · ${msStr}ms';
       }
       if (type == 'slow_frame' && value is num) {
-        return 'slow_frame:${value.toStringAsFixed(0)}ms';
+        return 'slow_frame · ${value.toStringAsFixed(0)}ms';
       }
-      // Legacy window-diff count (pre-D0).
-      return value != null ? '$type:+$value' : type;
-    case 'gc_pressure':
-    case 'heap_growing':
-    case 'heap_near_capacity':
-    case 'native_memory_growing':
-    case 'shader_compilation':
-    case 'heavy_compute':
-    case 'platform_channel_traffic':
-    case 'stream_resource_growth':
-    case 'rebuild_activity':
-    case 'excessive_repaint':
-    case 'missing_repaint_boundary':
-    case 'excessive_repaint_boundary':
-    case 'layout_bottleneck':
-    case 'wrap_layout_bottleneck':
-    case 'non_lazy_list':
-    case 'non_lazy_shrinkwrap':
-    case 'setstate_scope':
-    case 'sustained_jank':
-    case 'slow_request':
-    case 'large_response':
-    case 'request_frequency':
-      if (value is Map) {
-        final sev = value['severity']?.toString();
-        if (sev != null && sev.isNotEmpty) return '$type:$sev';
-      }
-      return type;
+      return value != null ? '$type · +$value' : type;
     case 'crash':
       if (value is Map) {
-        final err = value['error']?.toString();
-        if (err != null && err.isNotEmpty) {
-          final short = err.length > 48 ? '${err.substring(0, 48)}…' : err;
-          return 'crash:$short';
+        final err = value['error']?.toString() ?? '';
+        if (err.isNotEmpty) {
+          return err.length > 72 ? '${err.substring(0, 72)}…' : err;
+        }
+        final kind = value['kind']?.toString();
+        if (kind != null && kind.isNotEmpty) return kind;
+      }
+      final msg = a['message']?.toString();
+      if (msg != null && msg.isNotEmpty) {
+        // Strip "FlutterError：" / "未捕获异常：" prefixes for the timeline label.
+        final cleaned = msg
+            .replaceFirst(RegExp(r'^(FlutterError|未捕获异常)[：:]'), '')
+            .trim();
+        if (cleaned.isNotEmpty) {
+          return cleaned.length > 72 ? '${cleaned.substring(0, 72)}…' : cleaned;
         }
       }
       return 'crash';
     case 'memory_increase':
     case 'memory_retain_rss':
       if (value is num) {
-        return '$type:+${value.toStringAsFixed(1)}MB';
+        return '$type · +${value.toStringAsFixed(1)}MB';
       }
       return type;
     case 'slow_cold_start':
       if (value is num) {
-        return 'slow_cold_start:${value.toStringAsFixed(0)}ms';
+        return 'slow_cold_start · ${value.toStringAsFixed(0)}ms';
       }
       return type;
     case 'memory_leak':
-      return 'memory_leak';
-    case 'sleuth_issues':
-    case 'sleuth_detector':
-      return type;
-    default:
-      if (value is Map) {
-        final sev = value['severity']?.toString();
-        if (sev != null && sev.isNotEmpty) return '$type:$sev';
-        if (value['source']?.toString() == 'sleuth_issue_latch') return type;
-      }
       final msg = a['message']?.toString();
-      if (msg != null && msg.isNotEmpty && msg.length <= 80) return msg;
+      if (msg != null && msg.isNotEmpty) {
+        // "pop /login 后 Sleuth: Heap Growing: … · evidence=sleuth"
+        final cut = msg.split(' · evidence').first.trim();
+        return cut.length > 90 ? '${cut.substring(0, 90)}…' : cut;
+      }
+      return 'memory_leak';
+    default:
+      final msg = a['message']?.toString();
+      if (msg != null && msg.isNotEmpty && msg.length <= 90) return msg;
       return type;
   }
+}
+
+/// Sleuth "current inventory" detectors — one card per session (keep worst).
+/// Per-step / per-hit types (jank frame, leak) stay keyed by step.
+/// Crash kinds (flutter_error / zone / uncaught) must not collapse together.
+const _sessionSnapshotAlertFamilies = <String>{
+  'sustained_jank',
+  'raster_dominance',
+  'gc_pressure',
+  'heap_growing',
+  'heap_near_capacity',
+  'native_memory_growing',
+  'shader_compilation',
+  'heavy_compute',
+  'platform_channel_traffic',
+  'stream_resource_growth',
+  'rebuild_activity',
+  'excessive_repaint',
+  'missing_repaint_boundary',
+  'excessive_repaint_boundary',
+  'layout_bottleneck',
+  'wrap_layout_bottleneck',
+  'non_lazy_list',
+  'non_lazy_shrinkwrap',
+  'setstate_scope',
+  'tooltip_usage',
+};
+
+/// `memory_leak` with evidence=sleuth, alive=0 — already covered by heap_growing.
+void _dropEchoMemoryLeaks(List<Map<String, dynamic>> events) {
+  var hasHeapGrowing = false;
+  for (final e in events) {
+    if (e['type']?.toString() != 'alert') continue;
+    final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final t = _normalizeAlertType(
+      d['alertType']?.toString() ?? d['type']?.toString(),
+    );
+    if (t == 'heap_growing' || t.startsWith('heap_growing')) {
+      hasHeapGrowing = true;
+      break;
+    }
+  }
+  if (!hasHeapGrowing) return;
+  events.removeWhere((e) {
+    if (e['type']?.toString() != 'alert') return false;
+    final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final t = _normalizeAlertType(
+      d['alertType']?.toString() ?? d['type']?.toString(),
+    );
+    if (t != 'memory_leak') return false;
+    final v = d['value'];
+    if (v is! Map) return false;
+    if (v['evidence']?.toString() != 'sleuth') return false;
+    final alive = v['alive'];
+    final count = v['aliveCount'];
+    final emptyList = alive is List && alive.isEmpty;
+    final zero = count == 0 || count == null;
+    return emptyList || zero;
+  });
+}
+
+String _crashKindOfDetail(Map<String, dynamic> d) {
+  final v = d['value'];
+  if (v is Map && v['kind'] != null) return v['kind'].toString();
+  final msg = d['message']?.toString() ?? '';
+  final m = RegExp(r'crash kind=([a-z_]+)').firstMatch(msg);
+  return m?.group(1) ?? '';
+}
+
+/// Collapse duplicate detector cards (bag snapshots / multi-step polls).
+void _dedupeAlertsByTypeAndStep(List<Map<String, dynamic>> events) {
+  final bestIndex = <String, int>{};
+  for (var i = 0; i < events.length; i++) {
+    final e = events[i];
+    if (e['type']?.toString() != 'alert') continue;
+    final d = (e['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final alertType = _normalizeAlertType(
+      d['alertType']?.toString() ?? d['type']?.toString(),
+    );
+    final family =
+        alertType.contains(':') ? alertType.split(':').first : alertType;
+    final sid = e['stepId']?.toString() ?? d['stepId']?.toString() ?? '';
+    // Same route step can host all three D1 crash kinds — key by kind.
+    final crashKind = family == 'crash' ? _crashKindOfDetail(d) : '';
+    final key = _sessionSnapshotAlertFamilies.contains(family)
+        ? family
+        : (family == 'crash'
+            ? 'crash|$sid|$crashKind'
+            : '$alertType|$sid');
+    final prev = bestIndex[key];
+    if (prev == null) {
+      bestIndex[key] = i;
+      continue;
+    }
+    if (_alertEventBetter(e, events[prev])) {
+      events[prev] = e;
+    }
+    events[i] = <String, dynamic>{'type': '_drop'};
+  }
+  events.removeWhere((e) => e['type']?.toString() == '_drop');
+}
+
+bool _alertEventBetter(Map<String, dynamic> a, Map<String, dynamic> b) {
+  final da = (a['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final db = (b['detail'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final va = da['value'];
+  final vb = db['value'];
+  final sa = _severityRankOf(
+    va is Map ? va['severity']?.toString() : null,
+  );
+  final sb = _severityRankOf(
+    vb is Map ? vb['severity']?.toString() : null,
+  );
+  if (sa != sb) return sa > sb;
+  final ma = _alertMagnitude(da);
+  final mb = _alertMagnitude(db);
+  if (ma != mb) return ma > mb;
+  final ta = DateTime.tryParse(a['at']?.toString() ?? '');
+  final tb = DateTime.tryParse(b['at']?.toString() ?? '');
+  if (ta != null && tb != null && ta != tb) return ta.isAfter(tb);
+  final la = (va is Map ? va['title']?.toString() : null) ??
+      da['message']?.toString() ??
+      '';
+  final lb = (vb is Map ? vb['title']?.toString() : null) ??
+      db['message']?.toString() ??
+      '';
+  return la.length >= lb.length;
+}
+
+/// Prefer larger GC/min, KB/s, severe-frame counts when severity ties.
+double _alertMagnitude(Map<String, dynamic> detail) {
+  final value = detail['value'];
+  final text = [
+    if (value is Map) value['title'],
+    if (value is Map) value['detail'],
+    detail['message'],
+  ].whereType<Object>().map((e) => e.toString()).join(' ');
+  final gc = RegExp(r'(\d+(?:\.\d+)?)\s*GC/min', caseSensitive: false)
+      .firstMatch(text);
+  if (gc != null) return double.tryParse(gc.group(1)!) ?? 0;
+  final kb = RegExp(r'\+?(\d+(?:\.\d+)?)\s*KB/s', caseSensitive: false)
+      .firstMatch(text);
+  if (kb != null) return double.tryParse(kb.group(1)!) ?? 0;
+  final frames =
+      RegExp(r'(\d+)\s+severe frames', caseSensitive: false).firstMatch(text);
+  if (frames != null) return double.tryParse(frames.group(1)!) ?? 0;
+  return text.length.toDouble();
+}
+
+int _severityRankOf(String? sev) {
+  final s = (sev ?? '').toLowerCase();
+  if (s.contains('critical') || s.contains('error')) return 3;
+  if (s.contains('warning')) return 2;
+  if (s.contains('info')) return 1;
+  return 0;
 }
 
 String _normalizeSource(String? raw) {

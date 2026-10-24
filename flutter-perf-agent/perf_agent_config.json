@@ -11,6 +11,8 @@
   "reportsDir": "reports",
   "enableNetworkCapture": true,
   "enableWidgetAntiPattern": true,
+  "sleuthPerfEnabled": false,
+  "memoryIncreaseAlertEnabled": false,
   "devtoolsSampling": {
     "enabled": false,
     "http": false,
@@ -25,6 +27,7 @@
   "thresholds": {
     "maxFrameCostMs": 16,
     "memoryIncreaseWarningMB": 5,
+    "memoryIncreaseAlertEnabled": false,
     "heapIncreaseWarningMB": 8,
     "slowRequestMs": 300,
     "ttffWarningMs": 1500
@@ -34,6 +37,7 @@
     "transitionSettleMs": 800,
     "leakConfirmRounds": 2,
     "leakRssRetainMb": 5,
+    "sleuthPerfEnabled": false,
     "sleuthBindEnabled": true,
     "alertOnWeakRef": true,
     "requireMultiRound": false,

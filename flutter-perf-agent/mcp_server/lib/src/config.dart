@@ -17,6 +17,7 @@ class PerfAgentConfig {
     required this.reportsDir,
     required this.maxFrameCostMs,
     required this.memoryIncreaseWarningMB,
+    required this.memoryIncreaseAlertEnabled,
     required this.slowRequestMs,
     required this.configPath,
     required this.devtoolsSamplingEnabled,
@@ -41,6 +42,7 @@ class PerfAgentConfig {
     required this.alertOnSleuthOnly,
     required this.alertOnRssRetain,
     required this.leakVmDeepProbe,
+    required this.sleuthPerfEnabled,
     this.repoRoot,
   });
 
@@ -56,6 +58,9 @@ class PerfAgentConfig {
   final String reportsDir;
   final double maxFrameCostMs;
   final double memoryIncreaseWarningMB;
+
+  /// Emit `memory_increase` from step RSS delta. Default **off** (noisy / not Sleuth).
+  final bool memoryIncreaseAlertEnabled;
   final int slowRequestMs;
   final String configPath;
 
@@ -89,6 +94,9 @@ class PerfAgentConfig {
   final bool alertOnRssRetain;
   final bool leakVmDeepProbe;
 
+  /// Sleuth-backed perf alerts (jank / gc / sustained_jank…). Default **off**.
+  final bool sleuthPerfEnabled;
+
   final String? repoRoot;
 
   String get bridgeBaseUrl => 'http://$bridgeHost:$bridgePort';
@@ -99,10 +107,11 @@ class PerfAgentConfig {
         'transitionSettleMs': transitionSettleMs,
         'leakConfirmRounds': leakConfirmRounds,
         'leakRssRetainMb': leakRssRetainMb,
-        'sleuthBindEnabled': sleuthBindEnabled,
+        'sleuthPerfEnabled': sleuthPerfEnabled,
+        'sleuthBindEnabled': sleuthPerfEnabled && sleuthBindEnabled,
         'alertOnWeakRef': alertOnWeakRef,
         'requireMultiRound': requireMultiRound,
-        'alertOnSleuthOnly': alertOnSleuthOnly,
+        'alertOnSleuthOnly': sleuthPerfEnabled && alertOnSleuthOnly,
         'alertOnRssRetain': alertOnRssRetain,
         'leakVmDeepProbe': leakVmDeepProbe,
       };
@@ -159,6 +168,10 @@ class PerfAgentConfig {
       maxFrameCostMs: (thresholds['maxFrameCostMs'] as num?)?.toDouble() ?? 16,
       memoryIncreaseWarningMB:
           (thresholds['memoryIncreaseWarningMB'] as num?)?.toDouble() ?? 5,
+      memoryIncreaseAlertEnabled:
+          thresholds['memoryIncreaseAlertEnabled'] as bool? ??
+              json['memoryIncreaseAlertEnabled'] as bool? ??
+              false,
       slowRequestMs: (thresholds['slowRequestMs'] as num?)?.toInt() ?? 300,
       configPath: configPath,
       // Default off: metrics are Sleuth-only; VM is for flutter_skill UI.
@@ -193,6 +206,10 @@ class PerfAgentConfig {
       alertOnSleuthOnly: transition['alertOnSleuthOnly'] as bool? ?? true,
       alertOnRssRetain: transition['alertOnRssRetain'] as bool? ?? true,
       leakVmDeepProbe: transition['leakVmDeepProbe'] as bool? ?? false,
+      // Top-level or transition; default off until product re-enables.
+      sleuthPerfEnabled: json['sleuthPerfEnabled'] as bool? ??
+          transition['sleuthPerfEnabled'] as bool? ??
+          false,
       repoRoot: repoRoot,
     );
   }

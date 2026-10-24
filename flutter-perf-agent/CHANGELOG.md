@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **报告改回每次新文件**：结束会话只写 `{时间戳}_{用例}_{sessionId}.{json,html}`；不再覆盖 `live.html` / `latest.html`。会话中可选写 `live_<sessionId>.*`；Bridge 去掉 `/report/live` 固定入口。
+- **Live 中稿**：`live:true` 时 HTML 每 2s 自动刷新；Clear → `POST /report/clear`。
+- **Sleuth 关时不展示**：`thresholds.sleuthPerfEnabled=false` 时 HTML/`view` 不再展开 `sleuth_detector`，也不渲染 `stream_resource_growth` 等；App upsert 会丢掉陈旧 MCP 推来的同类告警。
+- **异常一等事件**：时间线不再用 `sleuth_detector` 大包；`sustained_jank` / `gc_pressure` / `heap_growing` 等各自为 `type=alert` 事件。旧报告 HTML 重写时自动拆分；MCP `evaluateDiff` 新会话直接写一等类型。
+
+## 0.9.9 — Sleuth 性能采集开关（默认关）
+
+- **`sleuthPerfEnabled`**（App SDK `ensureInitialized` / MCP `perf_agent_config.json`，默认 **`false`**）
+- 关闭时：不启 `FrameJankLatch` / `SleuthIssueLatch`；强制关 transition sleuth bind / `alertOnSleuthOnly`；MCP `evaluateDiff` 不写 Sleuth issue 类告警
+- **`memoryIncreaseAlertEnabled`**（默认 **`false`**）：MCP RSS `memory_increase` 告警；与 Sleuth 无关，需单独开
+- 仍开启：`crash`、网络、WeakRef 泄漏
+- 需要时显式设 `sleuthPerfEnabled: true` / `memoryIncreaseAlertEnabled: true`
+
 ## 0.9.8 — D1 崩溃进会话
 
 - **CrashCapture**：挂钩 `FlutterError.onError` + `PlatformDispatcher.onError`（链式保留原 handler）

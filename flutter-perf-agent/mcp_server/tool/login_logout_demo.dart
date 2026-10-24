@@ -34,6 +34,7 @@ Future<void> main() async {
     testName: session.testName,
     sessionId: session.sessionId,
     waitStableMs: config.waitStableMs,
+    reportsDir: config.reportsDir,
   );
   if (!started.isOk) {
     stderr.writeln('FAIL start: ${started.msg}');
@@ -110,21 +111,21 @@ Future<void> main() async {
     extraSettleMs: config.navigationWaitMs,
   );
 
-  // AppBar 右上角「我的」比 Tab 文案更稳（Tab 有时命中失败）
+  // Tab「我的」→ 个人页（profile_button 在窄窗时常 hittable=false）
   await step(
     action: 'tap',
-    label: 'tap:profile_button',
-    skillAction: (c) => c.tap(key: 'profile_button', text: '我的'),
+    label: 'tap:mine_tab',
+    skillAction: (c) => c.tap(text: '我的'),
     expectNav: false,
-    extraSettleMs: 600,
+    extraSettleMs: 1200,
   );
 
   await step(
     action: 'tap',
     label: 'tap:logout',
-    skillAction: (c) => c.tap(key: 'logout_button', text: '退出登录'),
+    skillAction: (c) => c.tap(key: 'logout_button'),
     expectNav: true,
-    extraSettleMs: 1800,
+    extraSettleMs: 2000,
   );
 
   await skill.disconnect();

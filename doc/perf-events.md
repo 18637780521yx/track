@@ -49,6 +49,8 @@
 
 原始列表在报告 JSON 的 `alerts[]`；派生进时间线时为 `type=alert`，`detail.type` / `detail.alertType` 为规范名。`ok` 一般为 `false`。
 
+> **0.9.9+**：Sleuth 性能类告警（下表 `jank`～结构扫描等）受总开关 `sleuthPerfEnabled` 控制，**默认关闭**。RSS `memory_increase` 另受 `memoryIncreaseAlertEnabled` 控制（**默认关闭**）。`crash` / 网络 / WeakRef `memory_leak` 不受影响。
+
 | `alertType` | 检测什么 | 默认门槛（可配置） | 挂载位置 |
 |-------------|----------|-------------------|----------|
 | `jank` | 单帧超预算（Sleuth capture + FrameVerdict） | 帧预算（默认 ~16ms） | **实时**（App SDK `FrameJankLatch`，MCP/手动共用）；按 `at` 挂页面/转场 |
@@ -68,8 +70,7 @@
 | `memory_increase` | 单步 **RSS** 上涨过大 | `memoryIncreaseWarningMB` = **5** MB | **仅 MCP** 操作窗 diff → **页面**；≠ 堆增长；手动路径当前不发 |
 | `memory_leak` | 登记对象仍可达 / 多轮仍存活 | WeakRef 等主判定（不依赖强制 GC） | **转场**（pop 后探针；MCP + 手动共用） |
 | `memory_retain_rss` | 无存活登记对象但 RSS 滞留 | `leakRssRetainMb` = **5** MB；**辅证**，RSS 不单独定罪 | **转场** |
-| `sleuth_issues` | 本步新增 Sleuth issue 条数 | 有增量即报 | **仅 MCP**；笼统汇总；逐步被上表一等类型替代 |
-| `sleuth_detector` | 当前存在 warning+ 级 Sleuth issue | 有即汇总 | **仅 MCP**；同上 |
+| `sleuth_issues` / `sleuth_detector` | （遗留大包） | — | **0.9.9+ 不再新写**；HTML/`view` 会拆成一等 `alertType` 事件（`sustained_jank` / `gc_pressure` / …） |
 | `slow_cold_start` | 冷启动偏慢（如 TTFF） | `ttffWarningMs` | **生命周期**（启动；MCP 路径） |
 | `crash` | FlutterError / Zone / PlatformDispatcher 未捕获 | 会话进行中即记 | **页面**（D1 `CrashCapture`）；`value.kind`=`flutter_error`\|`uncaught`\|`zone`；含截断 stack |
 

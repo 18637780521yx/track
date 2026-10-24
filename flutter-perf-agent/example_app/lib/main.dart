@@ -46,6 +46,8 @@ Future<void> _bootstrap() async {
       leakTrackEnabled: true,
       transitionSettleMs: 1500,
       leakConfirmRounds: 2,
+      // Sleuth 性能采集（jank / gc / sustained_jank…）默认关；异常 crash 仍开。
+      sleuthPerfEnabled: false,
       // Online sampling (0.8.7): release lite path when LEAK_ONLINE=true.
       leakOnlineEnabled: leakOnline,
       leakSampleRate: leakOnline ? 1.0 : 0.0,

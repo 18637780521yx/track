@@ -31,6 +31,8 @@ Future<void> main() async {
     await PerfAgent.ensureInitialized(
       host: '127.0.0.1',
       port: 19288,
+      // Sleuth 性能事件（jank / gc / sustained_jank…）默认关；需要时开 true。
+      sleuthPerfEnabled: false,
     );
   }
 

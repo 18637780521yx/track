@@ -6,17 +6,21 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
+import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
 import 'app_lifecycle_tracker.dart';
 import 'bridge_discovery.dart';
+import 'frame_jank_latch.dart';
 import 'network_capture.dart';
 import 'perf_snapshot.dart';
 import 'sdk_report_writer.dart';
 import 'session_journal.dart';
 import 'sleuth_facade.dart';
+import 'sleuth_issue_latch.dart';
+import 'sleuth_perf_flags.dart';
 import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
@@ -144,7 +148,10 @@ class PerfBridgeServer {
       ..get('/sleuth/startup', _sleuthStartup)
       ..get('/network', _network)
       ..get('/app/route', _appRoute)
-      ..post('/transition/leak_probe', _leakProbe);
+      ..post('/transition/leak_probe', _leakProbe)
+      // Session-scoped mid-run report (live_<sessionId>), not fixed live/latest.
+      ..get('/report/log', _reportLog)
+      ..post('/report/clear', _reportClear);
 
     return const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
@@ -294,15 +301,28 @@ class PerfBridgeServer {
     final transition =
         (body['transition'] as Map?)?.cast<String, dynamic>() ?? const {};
     if (transition.isNotEmpty) {
+      final sleuthPerf = transition['sleuthPerfEnabled'] as bool?;
+      if (sleuthPerf != null) {
+        SleuthPerfFlags.enabled = sleuthPerf;
+        if (sleuthPerf) {
+          FrameJankLatch.instance.ensureStarted();
+          SleuthIssueLatch.instance.ensureStarted();
+        } else {
+          FrameJankLatch.instance.stop();
+          SleuthIssueLatch.instance.stop();
+        }
+      }
+      final bind = transition['sleuthBindEnabled'] as bool?;
+      final sleuthOnly = transition['alertOnSleuthOnly'] as bool?;
       TransitionLeakTracker.instance.configure(
         enabled: transition['leakTrackEnabled'] as bool?,
         settleMs: (transition['transitionSettleMs'] as num?)?.toInt(),
         leakConfirmRounds: (transition['leakConfirmRounds'] as num?)?.toInt(),
         rssRetainMb: (transition['leakRssRetainMb'] as num?)?.toDouble(),
-        sleuthBindEnabled: transition['sleuthBindEnabled'] as bool?,
+        sleuthBindEnabled: SleuthPerfFlags.enabled ? bind : false,
         alertOnWeakRef: transition['alertOnWeakRef'] as bool?,
         requireMultiRound: transition['requireMultiRound'] as bool?,
-        alertOnSleuthOnly: transition['alertOnSleuthOnly'] as bool?,
+        alertOnSleuthOnly: SleuthPerfFlags.enabled ? sleuthOnly : false,
         alertOnRssRetain: transition['alertOnRssRetain'] as bool?,
         leakVmDeepProbe: transition['leakVmDeepProbe'] as bool?,
       );
@@ -316,6 +336,7 @@ class PerfBridgeServer {
         'settleMs=${TransitionLeakTracker.instance.settleMs} '
         'rounds=${TransitionLeakTracker.instance.leakConfirmRounds} '
         'rssRetainMb=${TransitionLeakTracker.instance.rssRetainMb} '
+        'sleuthPerf=${SleuthPerfFlags.enabled} '
         'sleuthBind=${SleuthTransitionBinder.instance.enabled}',
       );
     }
@@ -599,6 +620,83 @@ class PerfBridgeServer {
         ),
       ),
     );
+  }
+
+  /// Clear active journal steps/alerts and rewrite empty `live_<sessionId>`.
+  Future<Response> _reportClear(Request request) async {
+    final journal = SessionJournal.instance;
+    if (!journal.isActive) {
+      return _envelope(
+        ApiResponse.fail(ApiCodes.badRequest, 'no active session to clear'),
+        httpStatus: 400,
+      );
+    }
+    final paths = await journal.clearLive();
+    return _envelope(
+      ApiResponse.ok({
+        'sessionId': journal.sessionId,
+        'cleared': true,
+        'liveHtmlPath': paths?.htmlPath,
+        'liveJsonPath': paths?.jsonPath,
+      }),
+    );
+  }
+
+  /// Plain-text tail of recent timeline events (for `curl` / watch).
+  Future<Response> _reportLog(Request request) async {
+    final sid = SessionJournal.instance.sessionId;
+    if (sid == null || sid.isEmpty) {
+      return Response.notFound('no active session\n', headers: _corsHeaders);
+    }
+    final file = _reportFile('live_$sid.json');
+    if (file == null || !await file.exists()) {
+      return Response.notFound(
+        'no live_$sid.json yet\n',
+        headers: _corsHeaders,
+      );
+    }
+    return _formatReportLog(await file.readAsString());
+  }
+
+  Future<Response> _formatReportLog(String raw) async {
+    try {
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final view = (map['view'] as Map?)?.cast<String, dynamic>() ??
+          buildReportView(map);
+      final events =
+          (view['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+      final take =
+          events.length > 80 ? events.sublist(events.length - 80) : events;
+      final buf = StringBuffer();
+      buf.writeln(
+        '# session ${map['sessionId']} live=${map['live'] == true} '
+        'updated=${map['updatedAt'] ?? map['endedAt']}',
+      );
+      for (final e in take) {
+        final at = e['at']?.toString() ?? '';
+        final type = e['type']?.toString() ?? '?';
+        final label = e['label']?.toString() ?? '';
+        buf.writeln('$at\t$type\t$label');
+      }
+      return Response.ok(
+        buf.toString(),
+        headers: {
+          ..._corsHeaders,
+          'content-type': 'text/plain; charset=utf-8',
+          'cache-control': 'no-store',
+        },
+      );
+    } catch (e) {
+      return Response.internalServerError(body: 'bad report json: $e\n');
+    }
+  }
+
+  File? _reportFile(String name) {
+    final dir = SessionJournal.instance.reportsDir.trim();
+    if (dir.isEmpty) return null;
+    final base = p.basename(name);
+    if (base != name || name.contains('..')) return null;
+    return File(p.join(dir, base));
   }
 
   /// Post-pop WeakRef leak probe (no forced GC).

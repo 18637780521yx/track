@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
+import 'sleuth_perf_flags.dart';
 import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 
@@ -125,23 +126,23 @@ class SdkReportWriter {
     );
     await File(htmlPath).writeAsString(buildHtmlReport(htmlReport));
 
-    final liveJson = p.join(reportsDir, 'live_$sessionId.json');
-    final liveHtml = p.join(reportsDir, 'live_$sessionId.html');
-    final liveReport = {
-      ...htmlReport,
-      'live': true,
-      'updatedAt': endedAt.toIso8601String(),
-      'steps': steps
-          .map((s) => s.toJson(includeScreenshotDataUri: false))
-          .toList(),
-    };
-    await File(liveJson).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(liveReport),
-    );
-    await File(liveHtml).writeAsString(buildHtmlReport(liveReport));
+    // Drop mid-session overlay + legacy fixed bookmarks; final is authoritative.
+    await _deleteQuiet(p.join(reportsDir, 'live_$sessionId.json'));
+    await _deleteQuiet(p.join(reportsDir, 'live_$sessionId.html'));
+    await _deleteQuiet(p.join(reportsDir, 'live.json'));
+    await _deleteQuiet(p.join(reportsDir, 'live.html'));
+    await _deleteQuiet(p.join(reportsDir, 'latest.json'));
+    await _deleteQuiet(p.join(reportsDir, 'latest.html'));
 
-    debugPrint('[SdkReportWriter] wrote $jsonPath (MCP-compatible HTML)');
+    debugPrint('[SdkReportWriter] wrote $jsonPath + $htmlPath');
     return SdkReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);
+  }
+
+  static Future<void> _deleteQuiet(String path) async {
+    try {
+      final f = File(path);
+      if (await f.exists()) await f.delete();
+    } catch (_) {}
   }
 
   /// Mid-session live overlay (same HTML as final / manual).
@@ -203,6 +204,7 @@ class SdkReportWriter {
       'note': 'Live — App SDK 账本（与手动同款 HTML）；stop 写出最终报告。',
     };
     final report = {...body, 'view': buildReportView(body)};
+    // Session-scoped only (no fixed live.html / latest.html bookmark).
     final jsonPath = p.join(reportsDir, 'live_$sessionId.json');
     final htmlPath = p.join(reportsDir, 'live_$sessionId.html');
     await File(jsonPath).writeAsString(
@@ -220,6 +222,7 @@ class SdkReportWriter {
       'transitionSettleMs': t.settleMs,
       'leakConfirmRounds': t.leakConfirmRounds,
       'leakRssRetainMb': t.rssRetainMb,
+      'sleuthPerfEnabled': SleuthPerfFlags.enabled,
       'sleuthBindEnabled': SleuthTransitionBinder.instance.enabled,
       'alertOnWeakRef': t.alertOnWeakRef,
       'requireMultiRound': t.requireMultiRound,

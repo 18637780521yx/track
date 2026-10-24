@@ -5,6 +5,7 @@ import 'frame_jank_latch.dart';
 import 'manual_gesture_recorder.dart';
 import 'sdk_report_writer.dart';
 import 'sleuth_issue_latch.dart';
+import 'sleuth_perf_flags.dart';
 import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
@@ -110,12 +111,13 @@ class SessionJournal {
 
     final step = steps[idx];
     final filled = alert.copyWith(stepId: step.stepId);
-    // Replace same frameNumber (D0) or same alertType/stableId (D0m).
+    // Replace same frameNumber (D0), same crash kind, or same D0m type.
     final frameNo = _frameNumberOf(filled.value);
     final typeKey = filled.type;
     final nextAlerts = <AlertItem>[
       for (final a in step.alerts)
-        if (!_replacesRealtime(a, frameNo: frameNo, typeKey: typeKey)) a,
+        if (!_replacesRealtime(a, incoming: filled, frameNo: frameNo, typeKey: typeKey))
+          a,
       filled,
     ];
     steps[idx] = step.copyWith(alerts: nextAlerts);
@@ -124,13 +126,25 @@ class SessionJournal {
 
   static bool _replacesRealtime(
     AlertItem existing, {
+    required AlertItem incoming,
     required int? frameNo,
     required String typeKey,
   }) {
     final existingFrame = _frameNumberOf(existing.value);
     if (frameNo != null && existingFrame == frameNo) return true;
-    if (frameNo == null && existing.type == typeKey) return true;
+    if (frameNo != null) return false;
+    // crash: only replace same kind (flutter_error / zone / uncaught).
+    if (typeKey == 'crash' && existing.type == 'crash') {
+      return _crashKind(existing) == _crashKind(incoming);
+    }
+    if (existing.type == typeKey) return true;
     return false;
+  }
+
+  static String _crashKind(AlertItem a) {
+    final v = a.value;
+    if (v is Map && v['kind'] != null) return v['kind'].toString();
+    return '';
   }
 
   /// Enrich an existing frame alert when Sleuth upgrades the verdict
@@ -198,15 +212,114 @@ class SessionJournal {
   }
 
   /// MCP 路由章会多次 upsert 同一 [stepId]；手动仍用 [addStep] 追加。
+  ///
+  /// Preserves App SDK realtime alerts (crash / frame jank / Sleuth latch)
+  /// that MCP chapter payloads do not carry.
   void upsertStep(StepResult step) {
     if (!isActive) return;
-    final i = steps.indexWhere((s) => s.stepId == step.stepId);
+    // Stale MCP may still push sleuth bags / RSS alerts — drop when gated off.
+    final cleaned = _stripGatedPerfAlerts(step);
+    final i = steps.indexWhere((s) => s.stepId == cleaned.stepId);
     if (i >= 0) {
-      steps[i] = step;
+      steps[i] = _mergePreservingSdkRealtime(steps[i], cleaned);
     } else {
-      steps.add(step);
+      steps.add(cleaned);
     }
     _rebuildAlerts();
+  }
+
+  static StepResult _stripGatedPerfAlerts(StepResult step) {
+    if (SleuthPerfFlags.enabled || step.alerts.isEmpty) return step;
+    final next = <AlertItem>[
+      for (final a in step.alerts)
+        if (!_isSleuthPerfAlertType(a.type) && a.type != 'memory_increase') a,
+    ];
+    if (next.length == step.alerts.length) return step;
+    return step.copyWith(alerts: next);
+  }
+
+  static bool _isSleuthPerfAlertType(String type) {
+    const bags = {'sleuth_detector', 'sleuth_issues', 'sleuth_issue'};
+    if (bags.contains(type)) return true;
+    if (type == 'jank' || type == 'slow_frame') return true;
+    const families = {
+      'sustained_jank',
+      'raster_dominance',
+      'gc_pressure',
+      'heap_growing',
+      'heap_near_capacity',
+      'native_memory_growing',
+      'shader_compilation',
+      'heavy_compute',
+      'platform_channel_traffic',
+      'stream_resource_growth',
+      'rebuild_activity',
+      'excessive_repaint',
+      'missing_repaint_boundary',
+      'excessive_repaint_boundary',
+      'layout_bottleneck',
+      'wrap_layout_bottleneck',
+      'non_lazy_list',
+      'non_lazy_shrinkwrap',
+      'setstate_scope',
+      'tooltip_usage',
+      'slow_request',
+      'large_response',
+      'request_frequency',
+      'http_error_spike',
+    };
+    if (families.contains(type)) return true;
+    for (final f in families) {
+      if (type.startsWith('$f:')) return true;
+    }
+    if (type.startsWith('excessive_keep_alive') ||
+        type.startsWith('high_frequency_same_path')) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Keep latch/crash alerts from [prev] when MCP overwrites the chapter.
+  static StepResult _mergePreservingSdkRealtime(
+    StepResult prev,
+    StepResult incoming,
+  ) {
+    final keep = prev.alerts.where(_isSdkRealtimeAlert).toList();
+    if (keep.isEmpty) return incoming;
+    final incomingKeys = {for (final a in incoming.alerts) _realtimeDedupeKey(a)};
+    final preserved = [
+      for (final a in keep)
+        if (!incomingKeys.contains(_realtimeDedupeKey(a))) a,
+    ];
+    if (preserved.isEmpty) return incoming;
+    return incoming.copyWith(alerts: [...incoming.alerts, ...preserved]);
+  }
+
+  static bool _isSdkRealtimeAlert(AlertItem a) {
+    final v = a.value;
+    if (v is Map) {
+      final src = v['source']?.toString();
+      if (src == 'crash_capture' ||
+          src == 'sleuth_issue_latch' ||
+          src == 'frame_jank_latch') {
+        return true;
+      }
+      if (a.type == 'jank' || a.type == 'slow_frame') {
+        if (v['frameNumber'] != null) return true;
+      }
+    }
+    return a.type == 'crash';
+  }
+
+  static String _realtimeDedupeKey(AlertItem a) {
+    if (a.type == 'crash') {
+      return 'crash|${_crashKind(a)}|${a.message}';
+    }
+    final frame = _frameNumberOf(a.value);
+    if (frame != null) return 'frame|$frame';
+    final v = a.value;
+    final sid = v is Map ? v['stableId']?.toString() ?? '' : '';
+    return '${a.type}|$sid';
   }
 
   void addStepFromJson(Map<String, dynamic> json) {
@@ -224,8 +337,9 @@ class SessionJournal {
   }
 
   /// Refresh `live_<sessionId>.{json,html}` from the current journal.
-  Future<SdkReportPaths?> writeLiveReport() async {
-    if (!isActive || startedAt == null || steps.isEmpty) return null;
+  Future<SdkReportPaths?> writeLiveReport({bool allowEmpty = false}) async {
+    if (!isActive || startedAt == null) return null;
+    if (steps.isEmpty && !allowEmpty) return null;
     return SdkReportWriter.writeLive(
       sessionId: sessionId!,
       testName: testName ?? 'unnamed',
@@ -235,6 +349,24 @@ class SessionJournal {
       steps: List<StepResult>.from(steps),
       alerts: List<AlertItem>.from(alerts),
     );
+  }
+
+  /// Wipe steps/alerts for the active session and rewrite empty live report.
+  /// Keeps the same [sessionId] so MCP/manual can continue recording.
+  Future<SdkReportPaths?> clearLive() async {
+    if (!isActive || startedAt == null) return null;
+    steps.clear();
+    alerts.clear();
+    _stepSeq = 0;
+    mcpGuardDepth = 0;
+    ManualGestureRecorder.instance.resetRouteTracking();
+    TransitionLedger.instance.reset();
+    TransitionLeakTracker.instance.clear();
+    SleuthTransitionBinder.instance.clear();
+    FrameJankLatch.instance.onSessionStart();
+    SleuthIssueLatch.instance.onSessionStart();
+    debugPrint('[SessionJournal] clearLive $sessionId');
+    return writeLiveReport(allowEmpty: true);
   }
 
   Future<SdkReportPaths?> stopAndWriteReport({

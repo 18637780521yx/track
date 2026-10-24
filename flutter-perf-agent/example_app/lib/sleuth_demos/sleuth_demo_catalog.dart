@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import 'combined_chat_demo.dart';
 import 'combined_social_feed_demo.dart';
+import 'crash_capture_demo.dart';
 import 'custom_detector_cookbook_demo.dart';
 import 'custom_painter_demo.dart';
 import 'font_loading_demo.dart';
@@ -71,6 +72,20 @@ class SleuthDemoCategory {
 
 /// 与 Sleuth 官方 example 目录对齐的中文场景清单。
 List<SleuthDemoCategory> sleuthDemoCategories() => [
+      SleuthDemoCategory(
+        title: '异常 Crash',
+        icon: Icons.bug_report,
+        demos: [
+          SleuthDemoRoute(
+            id: 'crash_capture',
+            icon: Icons.warning_amber_rounded,
+            title: 'Crash 异常三连',
+            subtitle: 'flutter_error / zone / uncaught → alertType=crash',
+            color: Colors.red,
+            builder: (_) => const CrashCaptureDemo(),
+          ),
+        ],
+      ),
       SleuthDemoCategory(
         title: '构建 Build',
         icon: Icons.construction,

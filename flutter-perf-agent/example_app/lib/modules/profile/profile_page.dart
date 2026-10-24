@@ -3,6 +3,7 @@ import 'package:get/get.dart';
 
 import '../../app/routes/app_routes.dart';
 import '../../app/services/auth_service.dart';
+import '../../sleuth_demos/crash_capture_demo.dart';
 import 'profile_controller.dart';
 
 class ProfilePage extends GetView<ProfileController> {
@@ -164,6 +165,23 @@ class ProfilePage extends GetView<ProfileController> {
                           : () => controller.openLeakDialog(context),
                       icon: const Icon(Icons.warning_amber_outlined),
                       label: const Text('打开泄漏 Dialog（modal 演示）'),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Semantics(
+                    label: '打开Crash异常演示',
+                    button: true,
+                    child: OutlinedButton.icon(
+                      key: const Key('open_crash_demo_button'),
+                      onPressed: () {
+                        Get.to(
+                          () => const CrashCaptureDemo(),
+                          routeName: '/demo/crash_capture',
+                          transition: Transition.cupertino,
+                        );
+                      },
+                      icon: const Icon(Icons.bug_report_outlined),
+                      label: const Text('Crash 异常三连（看报告 crash）'),
                     ),
                   ),
                 ],
