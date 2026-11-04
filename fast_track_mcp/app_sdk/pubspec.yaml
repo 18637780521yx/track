@@ -1,0 +1,36 @@
+name: fast_track_mcp
+description: Fast Track MCP App SDK — crash/ANR/jank/memory + session journal + Bridge.
+version: 0.10.0
+publish_to: none
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+  flutter: ">=3.16.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_skill: ^0.9.37
+  get: ^4.7.3
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  path: ^1.9.0
+  fast_track_mcp_protocol:
+    path: ../protocol
+  # 纯上报管道（零钩子）；检测在本 SDK
+  flutter_fast_track:
+    path: ../../fast_track
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        package: com.fast_track_mcp
+        pluginClass: FastTrackMcpPlugin
+      ios:
+        pluginClass: FastTrackMcpPlugin

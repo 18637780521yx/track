@@ -1,0 +1,229 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter_skill/flutter_skill.dart';
+import 'package:get/get.dart';
+
+import '../bridge/bridge_server.dart';
+import '../detect/anr_watchdog.dart';
+import '../detect/crash_capture.dart';
+import '../detect/jank_monitor.dart';
+import '../detect/memory_monitor.dart';
+import '../gesture/manual_gesture_recorder.dart';
+import '../leak/getx_leak_hook.dart' as getx_hook;
+import '../leak/leak_online.dart';
+import '../leak/transition_leak_tracker.dart';
+import '../leak/transition_ledger.dart';
+import '../lifecycle/app_lifecycle_tracker.dart';
+import '../network/network_capture.dart';
+import '../session/reports_path.dart';
+import '../session/session_journal.dart';
+import 'fast_track_bridge.dart';
+
+/// Entry point for embedding Fast Track MCP into a Flutter app.
+///
+/// Crash / ANR / jank / RSS 由本 SDK 检测；[flutter_fast_track] 只负责 track 上报。
+class FastTrackMcp {
+  static FastTrackMcpBridgeServer? _bridge;
+  static bool _initialized = false;
+  static Future<void>? _startFuture;
+
+  static FastTrackMcpBridgeServer? get bridge => _bridge;
+
+  static int? get boundPort =>
+      _bridge?.isRunning == true ? _bridge!.boundPort : null;
+
+  static Future<void>? get ready => _startFuture;
+
+  static List<NavigatorObserver> get navigatorObservers =>
+      getx_hook.perfNavigatorObservers(
+        enabled: !kReleaseMode || LeakOnline.instance.active,
+      );
+
+  static List<GetPage<dynamic>> instrumentGetPages(
+    List<GetPage<dynamic>> pages,
+  ) =>
+      getx_hook.instrumentGetPages(pages);
+
+  /// 请在 [FastTrackMcpCrashHandler.run] 内先 [FastTracker.init]，再调本方法。
+  static Future<void> ensureInitialized({
+    String host = '127.0.0.1',
+    int port = 19288,
+    int waitStableMs = 500,
+    bool enableFlutterSkill = true,
+    bool enableManualRecording = true,
+    bool autoSessionOnManual = true,
+    String reportsDir = 'reports',
+    bool leakTrackEnabled = true,
+    int transitionSettleMs = 1500,
+    int leakConfirmRounds = 2,
+    double leakRssRetainMb = 5,
+    bool alertOnWeakRef = true,
+    bool requireMultiRound = false,
+    bool alertOnRssRetain = true,
+    bool leakVmDeepProbe = false,
+    bool enableAnrWatchdog = true,
+    Duration anrTimeout = const Duration(seconds: 5),
+    bool enableJankMonitor = true,
+    int jankFpsTarget = 60,
+    bool enableMemoryMonitor = true,
+    bool leakOnlineEnabled = false,
+    double leakSampleRate = 0.0,
+    void Function(Map<String, dynamic> event)? onLeakOnlineEvent,
+    bool wireLeakOnlineToFastTrack = true,
+  }) async {
+    if (_initialized) return;
+    _initialized = true;
+
+    final leakHandler = onLeakOnlineEvent ??
+        (wireLeakOnlineToFastTrack
+            ? FastTrackMcpBridge.forwardLeakOnlineEvent
+            : null);
+
+    LeakOnline.instance.configure(
+      enabled: leakOnlineEnabled,
+      sampleRate: leakSampleRate,
+      onEvent: leakHandler,
+    );
+
+    // Production monitors (also useful in debug).
+    if (enableAnrWatchdog) {
+      unawaited(FastTrackMcpAnrWatchdog.start(timeout: anrTimeout));
+    }
+    if (enableJankMonitor) {
+      FastTrackMcpJankMonitor.start(fpsTarget: jankFpsTarget);
+    }
+    if (enableMemoryMonitor) {
+      FastTrackMcpMemoryMonitor.start();
+    }
+
+    if (kReleaseMode) {
+      if (LeakOnline.instance.active) {
+        TransitionLeakTracker.instance.configure(
+          enabled: true,
+          settleMs: transitionSettleMs,
+          leakConfirmRounds: leakConfirmRounds,
+          rssRetainMb: leakRssRetainMb,
+        );
+        TransitionLedger.instance.settleMs = transitionSettleMs;
+        debugPrint(
+          '[FastTrackMcp] release online lite active '
+          '(sampleRate=$leakSampleRate)',
+        );
+      } else {
+        debugPrint('[FastTrackMcp] release: monitors on, bridge idle');
+      }
+      return;
+    }
+
+    SessionJournal.instance.manualRecording = enableManualRecording;
+    SessionJournal.instance.autoSessionOnManual = autoSessionOnManual;
+    final writableReports = await ReportsPath.ensureWritable(reportsDir);
+    SessionJournal.instance.reportsDir = writableReports;
+    if (writableReports != reportsDir) {
+      debugPrint(
+        '[FastTrackMcp] reportsDir remapped: $reportsDir → $writableReports',
+      );
+    }
+
+    TransitionLeakTracker.instance.configure(
+      enabled: leakTrackEnabled,
+      settleMs: transitionSettleMs,
+      leakConfirmRounds: leakConfirmRounds,
+      rssRetainMb: leakRssRetainMb,
+      alertOnWeakRef: alertOnWeakRef,
+      requireMultiRound: requireMultiRound,
+      alertOnRssRetain: alertOnRssRetain,
+      leakVmDeepProbe: leakVmDeepProbe,
+    );
+    TransitionLedger.instance.settleMs = transitionSettleMs;
+
+    if (enableFlutterSkill) {
+      FlutterSkillBinding.ensureInitialized();
+    }
+
+    if (enableManualRecording) {
+      ManualGestureRecorder.instance.ensureStarted();
+    }
+
+    AppLifecycleTracker.instance.ensureStarted();
+    // Session-journal crash trail (chains after FastTrackMcpCrashHandler).
+    CrashCapture.instance.ensureStarted();
+
+    _bridge = FastTrackMcpBridgeServer(
+      host: host,
+      port: port,
+      waitStableMs: waitStableMs,
+    );
+    _startFuture = _startBridgeDeferred();
+  }
+
+  static void installHttpCapture({
+    int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
+    bool redactSensitiveHeaders = true,
+    List<String>? allowedHosts,
+    bool httpsOnly = false,
+    bool allowHttpLoopback = true,
+    List<String>? excludeUrlSubstrings,
+  }) {
+    if (kReleaseMode) return;
+    FastTrackMcpNetwork.install(
+      maxBodyBytes: maxBodyBytes,
+      redactSensitiveHeaders: redactSensitiveHeaders,
+      allowedHosts: allowedHosts,
+      httpsOnly: httpsOnly,
+      allowHttpLoopback: allowHttpLoopback,
+      excludeUrlSubstrings: excludeUrlSubstrings,
+    );
+  }
+
+  static void installHttpCaptureDeferred({
+    int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
+    bool redactSensitiveHeaders = true,
+    List<String>? allowedHosts,
+    bool httpsOnly = false,
+    bool allowHttpLoopback = true,
+    List<String>? excludeUrlSubstrings,
+  }) {
+    if (kReleaseMode) return;
+    FastTrackMcpNetwork.installDeferred(
+      maxBodyBytes: maxBodyBytes,
+      redactSensitiveHeaders: redactSensitiveHeaders,
+      allowedHosts: allowedHosts,
+      httpsOnly: httpsOnly,
+      allowHttpLoopback: allowHttpLoopback,
+      excludeUrlSubstrings: excludeUrlSubstrings,
+    );
+  }
+
+  static Future<void> _startBridgeDeferred() async {
+    await Future<void>.delayed(const Duration(milliseconds: 350));
+    final bridge = _bridge;
+    if (bridge == null) return;
+    try {
+      await bridge.start();
+      AppLifecycleTracker.instance.noteColdStart(
+        route: FastTrackMcpNetwork.currentRoute(),
+      );
+      debugPrint(
+        '[FastTrackMcp] bridge ready at http://${bridge.host}:${bridge.boundPort}',
+      );
+    } catch (e, st) {
+      debugPrint('[FastTrackMcp] bridge start failed: $e\n$st');
+    }
+  }
+
+  static Future<void> shutdown() async {
+    CrashCapture.instance.stop();
+    await FastTrackMcpAnrWatchdog.stop();
+    FastTrackMcpJankMonitor.stop();
+    FastTrackMcpMemoryMonitor.stop();
+    AppLifecycleTracker.instance.stop();
+    await _bridge?.stop();
+    _bridge = null;
+    _initialized = false;
+    _startFuture = null;
+    LeakOnline.instance.reset();
+  }
+}

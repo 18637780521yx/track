@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "fast_track_mcp": {
+      "command": "/Users/bella/Library/flutter/bin/dart",
+      "args": [
+        "/Users/bella/Desktop/未命名文件夹 3/track/fast_track_mcp/mcp_server/bin/server.dart",
+        "--config",
+        "/Users/bella/Desktop/未命名文件夹 3/track/fast_track_mcp/perf_agent_config.json"
+      ],
+      "env": {
+        "PATH": "/Users/bella/Library/flutter/bin:/Users/bella/.pub-cache/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      }
+    }
+  }
+}

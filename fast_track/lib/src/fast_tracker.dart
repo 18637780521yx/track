@@ -117,6 +117,9 @@ class FastTracker {
 
       _initialized = true;
 
+      // 检测（crash/ANR/jank/memory）与 NavigatorObserver 由 fast_track_mcp 负责；
+      // 本包 init 零钩子，只做 track / 会话 / 上报。
+
       if (_preInitBuffer.isNotEmpty) {
         fastLog('replaying ${_preInitBuffer.length} pre-init events', debug: true);
         final buffered = List.of(_preInitBuffer);
@@ -152,7 +155,7 @@ class FastTracker {
     if (prev != null && prev.isNotEmpty) {
       props[r'$previous_distinct_id'] = prev;
     }
-    track('identify', props);
+    unawaited(_track('identify', properties: props));
   }
 
   void resetIdentity() {
