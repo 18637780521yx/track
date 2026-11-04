@@ -6,22 +6,24 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
-import 'package:path/path.dart' as p;
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 
+import '../detect/detect_sink.dart';
+import '../gesture/manual_gesture_recorder.dart';
+import '../gesture/ui_actions.dart';
 import '../lifecycle/app_lifecycle_tracker.dart';
-import 'bridge_discovery.dart';
-import '../network/network_capture.dart';
-import '../session/perf_snapshot.dart';
-import '../session/sdk_report_writer.dart';
-import '../session/session_journal.dart';
 import '../leak/transition_leak_tracker.dart';
 import '../leak/transition_ledger.dart';
-import '../gesture/ui_actions.dart';
+import '../network/network_capture.dart';
+import '../session/perf_snapshot.dart';
+import 'bridge_discovery.dart';
 
-/// Local HTTP bridge: session, RSS snapshots, and network capture for MCP.
+/// Local HTTP bridge: MCP 自动化上下文 + 快照 / 网络环缓。
+///
+/// App SDK 不再维护 SessionJournal / 本地报告；稳定性信号走 FastTrack 埋点。
+/// `/session/*` 仅给 MCP 侧对齐「开/停/记步」状态，不落盘。
 ///
 /// All JSON bodies use `{ code, data, msg }`.
 class FastTrackMcpBridgeServer {
@@ -47,8 +49,9 @@ class FastTrackMcpBridgeServer {
   String? sessionId;
   String? testName;
   DateTime? sessionStartedAt;
+  int _mcpStepCount = 0;
 
-  /// Survives route changes so login/list APIs still appear in step reports.
+  /// Survives route changes so login/list APIs still appear in network dump.
   final Map<String, NetworkRequest> _networkArchive = {};
   Timer? _networkIngestTimer;
 
@@ -127,19 +130,13 @@ class FastTrackMcpBridgeServer {
       ..post('/session/start', _sessionStart)
       ..post('/session/stop', _sessionStop)
       ..post('/session/step', _sessionStep)
-      ..post('/session/live', _sessionLive)
-      ..get('/session/journal', _sessionJournal)
       ..post('/session/mcp_guard', _sessionMcpGuard)
       ..get('/snapshot', _snapshot)
       ..post('/wait', _wait)
-      ..post('/tap', _tapLegacy)
       ..get('/ui', _ui)
       ..get('/network', _network)
       ..get('/app/route', _appRoute)
-      ..post('/transition/leak_probe', _leakProbe)
-      // Session-scoped mid-run report (live_<sessionId>), not fixed live/latest.
-      ..get('/report/log', _reportLog)
-      ..post('/report/clear', _reportClear);
+      ..post('/transition/leak_probe', _leakProbe);
 
     return const Pipeline()
         .addMiddleware(logRequests(logger: (msg, isError) {
@@ -249,8 +246,8 @@ class FastTrackMcpBridgeServer {
         HealthData(
           bridge: 'fast_track_mcp',
           version: '0.7.1',
-          sessionId: sessionId ?? SessionJournal.instance.sessionId,
-          testName: testName ?? SessionJournal.instance.testName,
+          sessionId: sessionId,
+          testName: testName,
           vmServiceUri: vmUri,
           uiDriver: 'flutter_skill',
           mode: kReleaseMode
@@ -269,21 +266,10 @@ class FastTrackMcpBridgeServer {
         'sess_${DateTime.now().millisecondsSinceEpoch}';
     testName = body['testName'] as String? ?? 'unnamed';
     sessionStartedAt = DateTime.now();
+    _mcpStepCount = 0;
     final wait = body['waitStableMs'] as int? ?? waitStableMs;
-    final reportsDir = body['reportsDir'] as String?;
-    final manualRecording = body['manualRecording'] as bool? ?? true;
 
-    SessionJournal.instance.start(
-      sessionId: sessionId!,
-      testName: testName!,
-      reportsDir: reportsDir,
-      manualRecording: manualRecording,
-      mode: kReleaseMode
-          ? 'release'
-          : (kProfileMode ? 'profile' : 'debug'),
-    );
-
-    // MCP (or any client) may push transition leak knobs for this session.
+    // MCP may push transition leak knobs for this automation run.
     final transition =
         (body['transition'] as Map?)?.cast<String, dynamic>() ?? const {};
     if (transition.isNotEmpty) {
@@ -312,6 +298,8 @@ class FastTrackMcpBridgeServer {
 
     _networkArchive.clear();
     PerfNetworkStore.instance.clear();
+    TransitionLedger.instance.reset();
+    TransitionLeakTracker.instance.clear();
     _startNetworkIngest();
     await _waitStable(wait);
 
@@ -329,24 +317,9 @@ class FastTrackMcpBridgeServer {
   }
 
   Future<Response> _sessionStop(Request request) async {
-    final body = await _readJson(request);
-    final writeReport = body['writeReport'] as bool? ?? true;
     final ended = DateTime.now();
     _ingestNetwork();
     _stopNetworkIngest();
-
-    final journalSnap = SessionJournal.instance.toJson();
-    final stepCount = SessionJournal.instance.steps.length;
-    final alertCount = SessionJournal.instance.alerts.length;
-    SdkReportPaths? paths;
-    try {
-      paths = await SessionJournal.instance.stopAndWriteReport(
-        writeReport: writeReport,
-      );
-    } catch (e, st) {
-      debugPrint('[FastTrackMcpBridgeServer] session/stop report failed: $e\n$st');
-      paths = null;
-    }
 
     final data = SessionStopData(
       sessionId: sessionId,
@@ -354,31 +327,23 @@ class FastTrackMcpBridgeServer {
       startedAt: sessionStartedAt?.toIso8601String(),
       endedAt: ended.toIso8601String(),
       finalSnapshot: PerfSnapshot.capture().toPayload(),
-      stepCount: stepCount,
-      alertCount: alertCount,
-      reportJsonPath: paths?.jsonPath,
-      reportHtmlPath: paths?.htmlPath,
-      journal: journalSnap,
+      stepCount: _mcpStepCount,
+      alertCount: 0,
     );
     sessionId = null;
     testName = null;
     sessionStartedAt = null;
+    _mcpStepCount = 0;
     return _envelope(ApiResponse.ok(data));
   }
 
   Future<Response> _sessionStep(Request request) async {
     final body = await _readJson(request);
-    final journal = SessionJournal.instance;
-    if (!journal.isActive) {
-      // Accept MCP step even if only MCP side thought session was open.
-      final sid = body['sessionId'] as String? ??
-          sessionId ??
+    if (sessionId == null) {
+      sessionId = body['sessionId'] as String? ??
           'sess_${DateTime.now().millisecondsSinceEpoch}';
-      journal.start(
-        sessionId: sid,
-        testName: body['testName'] as String? ?? testName ?? 'unnamed',
-      );
-      sessionId ??= sid;
+      testName = body['testName'] as String? ?? testName ?? 'unnamed';
+      sessionStartedAt ??= DateTime.now();
     }
     final stepJson = body['step'];
     if (stepJson is! Map) {
@@ -393,67 +358,44 @@ class FastTrackMcpBridgeServer {
         : <String, dynamic>{};
     extra.putIfAbsent('source', () => 'mcp');
     map['extra'] = extra;
-    // MCP ActionRunner 同章多次推送：按 stepId upsert，与手动账本结构对齐。
-    journal.upsertStepFromJson(map);
-    SdkReportPaths? live;
-    try {
-      live = await journal.writeLiveReport();
-    } catch (e) {
-      debugPrint('[FastTrackMcpBridgeServer] live report after step failed: $e');
-    }
+    _mcpStepCount++;
+
+    await FastTrackMcpDetectSink.track(
+      'perf_mcp_step',
+      properties: {
+        'session_id': sessionId,
+        'test_name': testName,
+        'step_id': map['stepId']?.toString(),
+        'action': map['action']?.toString(),
+        'route': map['route']?.toString(),
+        'ok': map['ok'],
+        ...extra,
+      },
+    );
+
     return _envelope(
       ApiResponse.ok({
         'ok': true,
-        'stepCount': journal.steps.length,
-        'sessionId': journal.sessionId,
-        if (live != null) 'liveJsonPath': live.jsonPath,
-        if (live != null) 'liveHtmlPath': live.htmlPath,
+        'stepCount': _mcpStepCount,
+        'sessionId': sessionId,
       }),
     );
   }
 
-  Future<Response> _sessionLive(Request request) async {
-    final journal = SessionJournal.instance;
-    if (!journal.isActive) {
-      return _envelope(
-        ApiResponse.fail(ApiCodes.noSession, 'no active session'),
-        httpStatus: 400,
-      );
-    }
-    final live = await journal.writeLiveReport();
-    if (live == null) {
-      return _envelope(
-        ApiResponse.fail(ApiCodes.badRequest, 'no steps to write live report'),
-        httpStatus: 400,
-      );
-    }
-    return _envelope(
-      ApiResponse.ok({
-        'liveJsonPath': live.jsonPath,
-        'liveHtmlPath': live.htmlPath,
-        'stepCount': journal.steps.length,
-        'sessionId': journal.sessionId,
-      }),
-    );
-  }
-
-  FutureOr<Response> _sessionJournal(Request request) {
-    return _envelope(ApiResponse.ok(SessionJournal.instance.toJson()));
-  }
-
+  /// Suppress silent manual `ui_tap`/`ui_scroll` while MCP drives UI.
   Future<Response> _sessionMcpGuard(Request request) async {
     final body = await _readJson(request);
     final active = body['active'] == true;
-    final journal = SessionJournal.instance;
+    final rec = ManualGestureRecorder.instance;
     if (active) {
-      journal.beginMcpGuard();
+      rec.beginMcpGuard();
     } else {
-      journal.endMcpGuard();
+      rec.endMcpGuard();
     }
     return _envelope(
       ApiResponse.ok({
-        'mcpGuardDepth': journal.mcpGuardDepth,
         'active': active,
+        'suppressManual': rec.suppressManual,
       }),
     );
   }
@@ -567,83 +509,6 @@ class FastTrackMcpBridgeServer {
     );
   }
 
-  /// Clear active journal steps/alerts and rewrite empty `live_<sessionId>`.
-  Future<Response> _reportClear(Request request) async {
-    final journal = SessionJournal.instance;
-    if (!journal.isActive) {
-      return _envelope(
-        ApiResponse.fail(ApiCodes.badRequest, 'no active session to clear'),
-        httpStatus: 400,
-      );
-    }
-    final paths = await journal.clearLive();
-    return _envelope(
-      ApiResponse.ok({
-        'sessionId': journal.sessionId,
-        'cleared': true,
-        'liveHtmlPath': paths?.htmlPath,
-        'liveJsonPath': paths?.jsonPath,
-      }),
-    );
-  }
-
-  /// Plain-text tail of recent timeline events (for `curl` / watch).
-  Future<Response> _reportLog(Request request) async {
-    final sid = SessionJournal.instance.sessionId;
-    if (sid == null || sid.isEmpty) {
-      return Response.notFound('no active session\n', headers: _corsHeaders);
-    }
-    final file = _reportFile('live_$sid.json');
-    if (file == null || !await file.exists()) {
-      return Response.notFound(
-        'no live_$sid.json yet\n',
-        headers: _corsHeaders,
-      );
-    }
-    return _formatReportLog(await file.readAsString());
-  }
-
-  Future<Response> _formatReportLog(String raw) async {
-    try {
-      final map = jsonDecode(raw) as Map<String, dynamic>;
-      final view = (map['view'] as Map?)?.cast<String, dynamic>() ??
-          buildReportView(map);
-      final events =
-          (view['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-      final take =
-          events.length > 80 ? events.sublist(events.length - 80) : events;
-      final buf = StringBuffer();
-      buf.writeln(
-        '# session ${map['sessionId']} live=${map['live'] == true} '
-        'updated=${map['updatedAt'] ?? map['endedAt']}',
-      );
-      for (final e in take) {
-        final at = e['at']?.toString() ?? '';
-        final type = e['type']?.toString() ?? '?';
-        final label = e['label']?.toString() ?? '';
-        buf.writeln('$at\t$type\t$label');
-      }
-      return Response.ok(
-        buf.toString(),
-        headers: {
-          ..._corsHeaders,
-          'content-type': 'text/plain; charset=utf-8',
-          'cache-control': 'no-store',
-        },
-      );
-    } catch (e) {
-      return Response.internalServerError(body: 'bad report json: $e\n');
-    }
-  }
-
-  File? _reportFile(String name) {
-    final dir = SessionJournal.instance.reportsDir.trim();
-    if (dir.isEmpty) return null;
-    final base = p.basename(name);
-    if (base != name || name.contains('..')) return null;
-    return File(p.join(dir, base));
-  }
-
   /// Post-pop WeakRef leak probe (no forced GC).
   /// Body: `{ "route": "/detail", "settleMs": 1500 }`
   Future<Response> _leakProbe(Request request) async {
@@ -661,46 +526,6 @@ class FastTrackMcpBridgeServer {
       settleOverrideMs: settle,
     );
     return _envelope(ApiResponse.ok(probe.toJson()));
-  }
-
-  Future<Response> _tapLegacy(Request request) async {
-    final body = await _readJson(request);
-    final target = (body['targetDesc'] as String?)?.trim() ?? '';
-    if (target.isEmpty) {
-      return _envelope(
-        ApiResponse.fail(ApiCodes.badRequest, 'targetDesc is required'),
-        httpStatus: 400,
-      );
-    }
-    final wait = body['waitStableMs'] as int? ?? waitStableMs;
-
-    final before = PerfSnapshot.capture();
-    final t0 = DateTime.now();
-    final action = await UiActions.tapByDescription(target);
-    await _waitStable(wait);
-    final after = PerfSnapshot.capture();
-    final diff = FastTrackMcpDiff(
-      before: before,
-      after: after,
-      durationMs: DateTime.now().difference(t0).inMilliseconds,
-    );
-
-    final data = TapLegacyData(
-      legacy: true,
-      action: action,
-      diff: diff.toData(),
-      sessionId: sessionId,
-      warning:
-          'Bridge /tap is legacy. Primary path is flutter_skill via MCP.',
-    );
-
-    if (!action.success) {
-      return _envelope(
-        ApiResponse.fail(ApiCodes.actionFailed, action.error ?? 'tap failed',
-            data: data),
-      );
-    }
-    return _envelope(ApiResponse.ok(data));
   }
 
   Future<String?> _vmServiceUri() async {

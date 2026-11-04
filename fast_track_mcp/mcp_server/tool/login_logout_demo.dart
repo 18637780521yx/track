@@ -21,7 +21,7 @@ Future<void> main() async {
   }
   stdout.writeln('bridge ok vm=${health.data!.vmServiceUri}');
 
-  await bridge.stopSession(writeReport: false);
+  await bridge.stopSession();
 
   final session = PerfSession(
     sessionId: 'login_logout_${DateTime.now().millisecondsSinceEpoch}',
@@ -34,7 +34,6 @@ Future<void> main() async {
     testName: session.testName,
     sessionId: session.sessionId,
     waitStableMs: config.waitStableMs,
-    reportsDir: config.reportsDir,
   );
   if (!started.isOk) {
     stderr.writeln('FAIL start: ${started.msg}');
@@ -133,7 +132,7 @@ Future<void> main() async {
 
   final paths = await reports.writeReports(session);
   try {
-    final stop = await bridge.stopSession(writeReport: true);
+    final stop = await bridge.stopSession();
     stdout.writeln(
       'sdk stop code=${stop.code} html=${stop.data?.reportHtmlPath}',
     );

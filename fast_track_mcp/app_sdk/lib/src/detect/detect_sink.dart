@@ -1,15 +1,17 @@
-import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_fast_track/flutter_fast_track.dart';
 
 import '../network/network_capture.dart';
-import '../session/session_journal.dart';
 
-/// 性能检测上报：调试会话写入 [SessionJournal]，线上走 [FastTracker]。
+/// 性能检测统一出口：只走 [FastTracker] 埋点（复用 FastTrack 会话）。
+///
+/// 不再写入 SessionJournal / 本地 JSON·HTML 报告。
 class FastTrackMcpDetectSink {
   FastTrackMcpDetectSink._();
 
-  /// 会话进行中时挂一条实时告警。无会话则忽略（调试路径）。
+  /// 质量/实时信号 → `perf_<type>` 埋点。
   static void alert({
     required String type,
     required String action,
@@ -17,22 +19,18 @@ class FastTrackMcpDetectSink {
     Object? value,
     String? routeHint,
   }) {
-    final journal = SessionJournal.instance;
-    if (!journal.isActive) return;
     final route = (routeHint != null && routeHint.isNotEmpty)
         ? routeHint
         : FastTrackMcpNetwork.currentRoute();
-    journal.appendRealtimeAlert(
-      AlertItem(
-        type: type,
-        stepId: '',
-        action: action,
-        message: message,
-        value: value,
-        at: DateTime.now().toIso8601String(),
-      ),
-      routeHint: route,
-    );
+    final props = <String, dynamic>{
+      'action': action,
+      'message': message,
+      if (route != null && route.isNotEmpty) 'route': route,
+      if (value is Map<String, dynamic>) ...value,
+      if (value != null && value is! Map<String, dynamic>) 'value': value,
+    };
+    final name = type.startsWith('perf_') ? type : 'perf_$type';
+    unawaited(track(name, properties: props));
   }
 
   /// 写入 FastTrack 队列；[flush] 为 true 时立刻尝试上传。

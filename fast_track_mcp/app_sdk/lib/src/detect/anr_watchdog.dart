@@ -242,12 +242,6 @@ class FastTrackMcpAnrWatchdog {
         properties: properties,
         flush: true,
       );
-      FastTrackMcpDetectSink.alert(
-        type: 'anr',
-        action: 'anr:$source',
-        message: '主线程阻塞 ${blockedMs}ms ($source)',
-        value: properties,
-      );
 
       final onAnr = _onAnr;
       if (onAnr != null) {

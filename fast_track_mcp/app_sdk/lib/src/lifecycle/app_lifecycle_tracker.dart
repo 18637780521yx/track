@@ -1,15 +1,13 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
-import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
 
+import '../detect/detect_sink.dart';
 import '../network/network_capture.dart';
-import '../session/session_journal.dart';
 
-/// Records App 启动 / 进入后台 / 进入前台.
+/// Records App 启动 / 进入后台 / 进入前台 → FastTrack 埋点。
 ///
-/// Always keeps [lastEvent] for Bridge `/health` (MCP 可轮询，无需盲等).
-/// Journal append only while a session is active.
+/// Always keeps [lastEvent] for Bridge `/health` (MCP 可轮询).
 class AppLifecycleTracker with WidgetsBindingObserver {
   AppLifecycleTracker._();
   static final AppLifecycleTracker instance = AppLifecycleTracker._();
@@ -18,7 +16,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
   DateTime? _backgroundedAt;
   bool _coldStartNoted = false;
 
-  /// Latest lifecycle for Bridge health — independent of session.
+  /// Latest lifecycle for Bridge health — independent of MCP automation.
   Map<String, dynamic>? lastEvent;
 
   /// MCP「可开始操作」：最近一次是启动或进前台（非后台）.
@@ -31,7 +29,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     if (kReleaseMode || _started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
-    // First frame ≈ process usable; mark cold_start for health even before session.
     SchedulerBinding.instance.addPostFrameCallback((_) {
       noteColdStart(route: FastTrackMcpNetwork.currentRoute());
     });
@@ -53,7 +50,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       label: 'App 启动',
       route: route ?? FastTrackMcpNetwork.currentRoute(),
       at: DateTime.now(),
-      writeJournal: SessionJournal.instance.isActive,
     );
   }
 
@@ -61,7 +57,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final route = FastTrackMcpNetwork.currentRoute();
     final now = DateTime.now();
-    final journalActive = SessionJournal.instance.isActive;
 
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
@@ -71,7 +66,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
         label: 'App 进入后台',
         route: route,
         at: now,
-        writeJournal: journalActive,
       );
       return;
     }
@@ -87,7 +81,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
         route: route,
         at: now,
         backgroundMs: backgroundMs,
-        writeJournal: journalActive,
       );
     }
   }
@@ -98,7 +91,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     required String? route,
     required DateTime at,
     int? backgroundMs,
-    required bool writeJournal,
   }) {
     lastEvent = {
       'kind': kind,
@@ -107,34 +99,16 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       if (route != null && route.isNotEmpty) 'route': route,
       if (backgroundMs != null) 'backgroundMs': backgroundMs,
     };
-    debugPrint('[AppLifecycleTracker] $kind route=$route journal=$writeJournal');
+    debugPrint('[AppLifecycleTracker] $kind route=$route');
 
-    if (!writeJournal) return;
-
-    final journal = SessionJournal.instance;
-    final stepId = journal.nextStepId();
-    journal.addStep(
-      StepResult(
-        stepId: stepId,
-        action: 'lifecycle:$kind',
-        route: route,
-        ok: true,
-        driver: 'app_sdk',
-        at: at.toIso8601String(),
-        events: [
-          StepEvent(
-            type: kind == 'cold_start' ? 'cold_start' : 'lifecycle',
-            at: at.toIso8601String(),
-            label: label,
-            detail: {
-              'kind': kind,
-              if (route != null) 'route': route,
-              if (backgroundMs != null) 'backgroundMs': backgroundMs,
-            },
-          ),
-        ],
-        extra: {'source': 'lifecycle', 'kind': kind},
-      ),
+    FastTrackMcpDetectSink.track(
+      'app_lifecycle',
+      properties: {
+        'kind': kind,
+        'label': label,
+        if (route != null && route.isNotEmpty) 'route': route,
+        if (backgroundMs != null) 'background_ms': backgroundMs,
+      },
     );
   }
 }

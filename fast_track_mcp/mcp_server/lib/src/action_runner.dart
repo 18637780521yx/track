@@ -243,7 +243,6 @@ class ActionRunner {
     int? waitStableMs,
     int? extraSettleMs,
     bool expectNavigation = false,
-    Future<ApiResponse<TapLegacyData>> Function()? legacyFallback,
   }) async {
     final wait = waitStableMs ?? config.waitStableMs;
     final t0 = DateTime.now();
@@ -300,7 +299,7 @@ class ActionRunner {
     final before = beforeRes.data!.snapshot;
 
     ActionResult actionResult;
-    var driver = 'flutter_skill';
+    const driver = 'flutter_skill';
 
     if (client != null) {
       await bridge.mcpGuard(active: true);
@@ -318,24 +317,7 @@ class ActionRunner {
           );
         }
 
-        if (!actionResult.success && legacyFallback != null) {
-          _log('$actionLabel flutter_skill failed, trying legacy');
-          driver = 'legacy_fallback';
-          final legacy = await legacyFallback();
-          final legacyOk =
-              legacy.isOk && (legacy.data?.action.success ?? false);
-          actionResult = ActionResult(
-            success: legacyOk,
-            driver: driver,
-            detail: {
-              'flutterSkill': actionResult.toJson(),
-              'legacy': legacy.toJson(),
-            },
-            error: legacyOk ? null : (legacy.msg),
-          );
-        } else if (actionResult.success) {
-          // Single post-action wait (stable + settle). Nav land wait is
-          // applied once below if the route actually changes — don't stack.
+        if (actionResult.success) {
           final settle =
               wait + (extraSettleMs ?? 0) + config.postActionSettleMs;
           if (settle > 0) {
@@ -345,20 +327,10 @@ class ActionRunner {
       } finally {
         await bridge.mcpGuard(active: false);
       }
-    } else if (legacyFallback != null) {
-      driver = 'legacy';
-      final legacy = await legacyFallback();
-      final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
-      actionResult = ActionResult(
-        success: legacyOk,
-        driver: driver,
-        detail: {'legacy': legacy.toJson()},
-        error: legacyOk ? null : legacy.msg,
-      );
     } else {
       actionResult = const ActionResult(
         success: false,
-        error: 'no vmServiceUri and no legacy fallback',
+        error: 'no flutter_skill client (vmServiceUri missing)',
       );
     }
 

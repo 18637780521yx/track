@@ -1,12 +1,12 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter_fast_track/flutter_fast_track.dart';
 
-/// 把 perf-agent 的线上轻量泄漏信号接到 [FastTracker]。
+/// 把线上轻量泄漏信号接到 [FastTracker]。
 ///
-/// **职责划分（避免双钩子冲突）**
-/// - FastTrack：**独占** crash / Zone / ANR / 生产 jank / RSS `app_memory_leak`
-/// - FastTrackMcp：开发账本、WeakRef 转场泄漏、全量 HTTP、Bridge/MCP
-/// - 本桥：仅 `LeakOnline` → `FastTracker.track`，不重装 FlutterError / timings
+/// **职责划分**
+/// - FastTrack：埋点会话 + 批上报（所有 `track`）
+/// - FastTrackMcp：crash/ANR/jank/memory 检测、WeakRef、HTTP 抓包、Bridge
+/// - 本桥：`LeakOnline` → `FastTracker.track`
 class FastTrackMcpBridge {
   FastTrackMcpBridge._();
 

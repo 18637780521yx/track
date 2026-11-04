@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:fast_track_mcp_server/perf_mcp_server.dart';
 import 'package:path/path.dart' as p;
 
-/// 验收：MCP ActionRunner 全量镜像 → 仅 App SDK 报告（与手动同款）。
+/// 验收：MCP ActionRunner 步骤 → mcp_server 报告。
 Future<void> main() async {
   final repoRoot = p.normalize(p.join(Directory.current.path, '..'));
   final config = await FastTrackMcpConfig.load(
@@ -20,7 +20,7 @@ Future<void> main() async {
     exit(2);
   }
 
-  await bridge.stopSession(writeReport: false);
+  await bridge.stopSession();
 
   final session = PerfSession(
     sessionId: 'unify_${DateTime.now().millisecondsSinceEpoch}',
@@ -99,31 +99,13 @@ Future<void> main() async {
 
   await skill.disconnect();
 
-  // Same as fixed stop_perf_test: SDK only.
-  final stop = await bridge.stopSession(writeReport: true);
-  final sdkJson = stop.data?.reportJsonPath;
-  final sdkHtml = stop.data?.reportHtmlPath;
-  stdout.writeln('sdkJson=$sdkJson');
-  stdout.writeln('sdkHtml=$sdkHtml');
+  await bridge.stopSession();
+  final paths = await reports.writeReports(session);
+  stdout.writeln('json=${paths.jsonPath}');
+  stdout.writeln('html=${paths.htmlPath}');
 
-  if (sdkJson == null || sdkHtml == null) {
-    stderr.writeln('FAIL: no SDK report paths');
-    exit(1);
-  }
-
-  // Ensure no twin mcp fat report for this session within 2s window.
-  final reportsDir = Directory(config.reportsDir);
-  final sid = session.sessionId;
-  final twins = reportsDir
-      .listSync()
-      .whereType<File>()
-      .where((f) => f.path.contains(sid) && f.path.endsWith('.html'))
-      .map((f) => f.path)
-      .toList();
-  stdout.writeln('html files for session: $twins');
-
-  final report =
-      jsonDecode(await File(sdkJson).readAsString()) as Map<String, dynamic>;
+  final report = jsonDecode(await File(paths.jsonPath).readAsString())
+      as Map<String, dynamic>;
   final owner = report['reportOwner'];
   final steps = (report['steps'] as List?) ?? const [];
   final ev = steps.fold<int>(
@@ -151,34 +133,23 @@ Future<void> main() async {
     'mods=$mods multi=$multi',
   );
 
-  final html = await File(sdkHtml).readAsString();
-  final ok = owner == 'app_sdk' &&
-      ev >= 8 &&
+  final html = await File(paths.htmlPath).readAsString();
+  final ok = ev >= 8 &&
       mods.containsKey('transition') &&
       multi >= 1 &&
-      html.contains('多轮确认') &&
-      twins.length == 1; // only live+final? final one named stamp_... ; live separate
-  // twins may include live_ — allow live + one final
-  final finals = twins.where((p) => !p.contains('live_')).toList();
-  final ok2 = owner == 'app_sdk' &&
-      ev >= 8 &&
-      mods.containsKey('transition') &&
-      multi >= 1 &&
-      html.contains('多轮确认') &&
-      finals.length == 1;
+      html.contains('多轮确认');
 
   stdout.writeln(const JsonEncoder.withIndent('  ').convert({
     'owner': owner,
     'events': ev,
     'mods': mods,
     'multi': multi,
-    'finalHtmlCount': finals.length,
-    'htmlPath': sdkHtml,
+    'htmlPath': paths.htmlPath,
   }));
 
-  if (!ok2) {
+  if (!ok) {
     stderr.writeln('FAIL: report unify checks');
     exit(1);
   }
-  stdout.writeln('PASS: MCP→SDK unified report');
+  stdout.writeln('PASS: MCP report unify');
 }

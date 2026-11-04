@@ -87,20 +87,7 @@ Future<void> main(List<String> args) async {
       actionResult = ActionResult(success: false, error: e.toString());
     }
 
-    if (!actionResult.success && action == 'tap') {
-      stdout.writeln('tap flutter_skill failed, trying legacy…');
-      final legacy = await bridge.tapLegacy(targetDesc: label);
-      final legacyOk = legacy.isOk && (legacy.data?.action.success ?? false);
-      driver = 'legacy_fallback';
-      actionResult = ActionResult(
-        success: legacyOk,
-        driver: driver,
-        detail: {
-          'flutterSkill': actionResult.toJson(),
-          'legacy': legacy.toJson(),
-        },
-      );
-    } else if (actionResult.success) {
+    if (actionResult.success) {
       await bridge.waitStable(waitStableMs: config.waitStableMs);
       final settle = config.postActionSettleMs + extraSettleMs;
       if (settle > 0) {

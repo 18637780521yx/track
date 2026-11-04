@@ -26,9 +26,6 @@ Future<void> main() async {
         host: '127.0.0.1',
         port: 19288,
         waitStableMs: 500,
-        enableManualRecording: true,
-        autoSessionOnManual: true,
-        reportsDir: 'reports',
         leakTrackEnabled: true,
         leakOnlineEnabled: leakOnline,
         leakSampleRate: leakOnline ? 1.0 : 0.0,
@@ -70,8 +67,6 @@ class FastTrackMcpDemoApp extends StatelessWidget {
       getPages: AppPages.routes,
       defaultTransition: Transition.cupertino,
       navigatorObservers: FastTrackMcp.navigatorObservers,
-      builder: (context, child) =>
-          FastTrackMcpRecordingBanner(child: child ?? const SizedBox.shrink()),
     );
   }
 }

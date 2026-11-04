@@ -41,8 +41,6 @@ class BridgeClient {
     required String testName,
     String? sessionId,
     int? waitStableMs,
-    String? reportsDir,
-    bool manualRecording = true,
     /// When null, push [FastTrackMcpConfig.transitionPayload] from [config].
     Map<String, dynamic>? transition,
   }) {
@@ -53,24 +51,19 @@ class BridgeClient {
         'testName': testName,
         if (sessionId != null) 'sessionId': sessionId,
         'waitStableMs': waitStableMs ?? config.waitStableMs,
-        if (reportsDir != null) 'reportsDir': reportsDir,
-        'manualRecording': manualRecording,
         'transition': transitionBody,
       },
       (raw) => SessionStartData.fromJson(_asMap(raw)),
     );
   }
 
-  Future<ApiResponse<SessionStopData>> stopSession({
-    bool writeReport = true,
-  }) =>
-      _post(
+  Future<ApiResponse<SessionStopData>> stopSession() => _post(
         '/session/stop',
-        {'writeReport': writeReport},
+        const {},
         (raw) => SessionStopData.fromJson(_asMap(raw)),
       );
 
-  /// Append a step into App SDK unified journal (source defaults to mcp).
+  /// Mirror a step into App SDK → FastTrack `perf_mcp_step`.
   Future<ApiResponse<Map<String, dynamic>>> appendStep({
     required Map<String, dynamic> step,
     String? sessionId,
@@ -87,14 +80,7 @@ class BridgeClient {
     );
   }
 
-  /// Refresh App SDK live report (same HTML as manual).
-  Future<ApiResponse<Map<String, dynamic>>> writeLiveReport() => _post(
-        '/session/live',
-        const {},
-        (raw) => _asMap(raw),
-      );
-
-  /// Suppress manual gesture recording while MCP drives UI.
+  /// Suppress App silent `ui_tap`/`ui_scroll` while MCP injects gestures.
   Future<ApiResponse<Map<String, dynamic>>> mcpGuard({required bool active}) {
     return _post(
       '/session/mcp_guard',
@@ -102,11 +88,6 @@ class BridgeClient {
       (raw) => _asMap(raw),
     );
   }
-
-  Future<ApiResponse<Map<String, dynamic>>> journal() => _get(
-        '/session/journal',
-        (raw) => _asMap(raw),
-      );
 
   Future<ApiResponse<SnapshotData>> snapshot({bool raw = false}) => _get(
         '/snapshot${raw ? '?raw=1' : ''}',
@@ -202,20 +183,6 @@ class BridgeClient {
     return _get(
       '/network?${parts.join('&')}',
       (raw) => NetworkRequestsData.fromJson(_asMap(raw)),
-    );
-  }
-
-  Future<ApiResponse<TapLegacyData>> tapLegacy({
-    required String targetDesc,
-    int? waitStableMs,
-  }) {
-    return _post(
-      '/tap',
-      {
-        'targetDesc': targetDesc,
-        'waitStableMs': waitStableMs ?? config.waitStableMs,
-      },
-      (raw) => TapLegacyData.fromJson(_asMap(raw)),
     );
   }
 

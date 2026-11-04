@@ -7,7 +7,6 @@ import 'package:get/get.dart';
 
 import '../bridge/bridge_server.dart';
 import '../detect/anr_watchdog.dart';
-import '../detect/crash_capture.dart';
 import '../detect/jank_monitor.dart';
 import '../detect/memory_monitor.dart';
 import '../gesture/manual_gesture_recorder.dart';
@@ -17,13 +16,12 @@ import '../leak/transition_leak_tracker.dart';
 import '../leak/transition_ledger.dart';
 import '../lifecycle/app_lifecycle_tracker.dart';
 import '../network/network_capture.dart';
-import '../session/reports_path.dart';
-import '../session/session_journal.dart';
 import 'fast_track_bridge.dart';
 
 /// Entry point for embedding Fast Track MCP into a Flutter app.
 ///
-/// Crash / ANR / jank / RSS 由本 SDK 检测；[flutter_fast_track] 只负责 track 上报。
+/// Crash / ANR / jank / RSS 由本 SDK 检测并 [FastTracker.track]；
+/// Bridge 仅服务 MCP 自动化（开/停/记步 → 埋点，无本地报告）。
 class FastTrackMcp {
   static FastTrackMcpBridgeServer? _bridge;
   static bool _initialized = false;
@@ -52,9 +50,6 @@ class FastTrackMcp {
     int port = 19288,
     int waitStableMs = 500,
     bool enableFlutterSkill = true,
-    bool enableManualRecording = true,
-    bool autoSessionOnManual = true,
-    String reportsDir = 'reports',
     bool leakTrackEnabled = true,
     int transitionSettleMs = 1500,
     int leakConfirmRounds = 2,
@@ -87,7 +82,6 @@ class FastTrackMcp {
       onEvent: leakHandler,
     );
 
-    // Production monitors (also useful in debug).
     if (enableAnrWatchdog) {
       unawaited(FastTrackMcpAnrWatchdog.start(timeout: anrTimeout));
     }
@@ -117,16 +111,6 @@ class FastTrackMcp {
       return;
     }
 
-    SessionJournal.instance.manualRecording = enableManualRecording;
-    SessionJournal.instance.autoSessionOnManual = autoSessionOnManual;
-    final writableReports = await ReportsPath.ensureWritable(reportsDir);
-    SessionJournal.instance.reportsDir = writableReports;
-    if (writableReports != reportsDir) {
-      debugPrint(
-        '[FastTrackMcp] reportsDir remapped: $reportsDir → $writableReports',
-      );
-    }
-
     TransitionLeakTracker.instance.configure(
       enabled: leakTrackEnabled,
       settleMs: transitionSettleMs,
@@ -143,13 +127,9 @@ class FastTrackMcp {
       FlutterSkillBinding.ensureInitialized();
     }
 
-    if (enableManualRecording) {
-      ManualGestureRecorder.instance.ensureStarted();
-    }
-
     AppLifecycleTracker.instance.ensureStarted();
-    // Session-journal crash trail (chains after FastTrackMcpCrashHandler).
-    CrashCapture.instance.ensureStarted();
+    // 静默手势 → ui_tap / ui_scroll 埋点（无录制条 / 无本地报告）
+    ManualGestureRecorder.instance.ensureStarted();
 
     _bridge = FastTrackMcpBridgeServer(
       host: host,
@@ -214,16 +194,11 @@ class FastTrackMcp {
     }
   }
 
-  static Future<void> shutdown() async {
-    CrashCapture.instance.stop();
-    await FastTrackMcpAnrWatchdog.stop();
-    FastTrackMcpJankMonitor.stop();
-    FastTrackMcpMemoryMonitor.stop();
-    AppLifecycleTracker.instance.stop();
-    await _bridge?.stop();
-    _bridge = null;
+  /// Test / hot-restart helper.
+  @visibleForTesting
+  static void debugReset() {
     _initialized = false;
     _startFuture = null;
-    LeakOnline.instance.reset();
+    _bridge = null;
   }
 }

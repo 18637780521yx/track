@@ -242,20 +242,10 @@ class FastTrackMcpMemoryMonitor {
         await hook(FastTrackMcpEventName.appMemoryLeak, props);
         return;
       }
-      final alertType =
-          type == 'memory_pressure' ? 'memory_pressure' : 'memory_leak';
       await FastTrackMcpDetectSink.track(
         FastTrackMcpEventName.appMemoryLeak,
         properties: props,
         flush: true,
-      );
-      FastTrackMcpDetectSink.alert(
-        type: alertType,
-        action: 'memory:$type',
-        message: alertType == 'memory_pressure'
-            ? '内存压力 RSS ${props['rss_mb']}MB'
-            : '疑似内存泄漏 RSS ${props['rss_mb']}MB',
-        value: props,
       );
       final onMemory = _onMemory;
       if (onMemory != null) {

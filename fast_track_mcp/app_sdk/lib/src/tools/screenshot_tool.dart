@@ -22,7 +22,7 @@ class ScreenshotShot {
 /// Standalone Flutter scene screenshot utility.
 ///
 /// Captures the root [OffsetLayer] (fallback: [RenderRepaintBoundary]) as PNG.
-/// Used by [ManualGestureRecorder], and callable from Bridge / MCP / tests.
+/// Callable from Bridge / MCP / tests.
 class ScreenshotTool {
   ScreenshotTool._();
 

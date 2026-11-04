@@ -73,7 +73,7 @@ class FastTrackMcpNetwork {
     '127.0.0.1:19288',
     '/sleuth/',
     'fast_track_mcp',
-    // FastTrack 上报通道，避免污染 SessionJournal / 环缓
+    // FastTrack 上报通道，避免污染网络环缓
     '/v1/events',
     '/api/track',
     'track-server',
@@ -89,7 +89,7 @@ class FastTrackMcpNetwork {
   /// Large response threshold (bytes).
   static int largeResponseBytes = 1024 * 1024;
 
-  /// When true, append SessionJournal alerts for slow / large / HTTP errors.
+  /// When true, emit FastTrack `perf_*` alerts for slow / large / HTTP errors.
   static bool emitQualityAlerts = true;
 
   static bool get isInstalled =>

@@ -171,7 +171,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       _stepCounter = 0;
     }
     // 清掉 App 侧残留 Bridge session（不落报告，避免空会话脏文件）。
-    await _bridge.stopSession(writeReport: false);
+    await _bridge.stopSession();
 
     final health = await _bridge.health();
     if (!health.isOk || health.data == null) {
@@ -191,7 +191,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       testName: testName,
       sessionId: sessionId,
       waitStableMs: waitStableMs,
-      manualRecording: true,
     );
     if (!started.isOk || started.data == null) {
       return ApiResponse.fail(started.code, started.msg);
@@ -248,20 +247,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final session = _session;
     if (session == null) return {};
     try {
-      // Prefer App SDK live (same HTML as manual); mirror already refreshed it.
-      final live = await _bridge.writeLiveReport();
-      if (live.isOk && live.data != null) {
-        final d = live.data!;
-        return {
-          'liveReportPath': d['liveJsonPath'],
-          'liveHtmlReportPath': d['liveHtmlPath'],
-          'sessionId': d['sessionId'] ?? session.sessionId,
-          'stepCount': d['stepCount'] ?? session.steps.length,
-          'alertCount': session.alerts.length,
-          'reportOwner': 'app_sdk',
-        };
-      }
-      // Fallback: MCP-side live if bridge journal unavailable.
       final mcpLive = await _reports.writeLiveReports(session);
       return {
         'liveReportPath': mcpLive.jsonPath,
@@ -455,8 +440,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     // Ensure network logs land in the MCP-side copy even if step-time missed.
     await _backfillStepNetwork(session);
 
-    // App SDK journal is authoritative (same HTML/schema as manual).
-    final stop = await _bridge.stopSession(writeReport: true);
+    final stop = await _bridge.stopSession();
 
     String? snapshotPath;
     if (doExport) {
@@ -466,24 +450,14 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       );
     }
 
-    final sdkJson = stop.data?.reportJsonPath;
-    final sdkHtml = stop.data?.reportHtmlPath;
-    // Fallback only if SDK journal empty / bridge failed.
-    ReportPaths? mcpFallback;
-    if (sdkJson == null || sdkHtml == null) {
-      mcpFallback = await _reports.writeReports(session);
-    }
+    final mcpReport = await _reports.writeReports(session);
     await _disposeSkill();
     final summary = {
       'sessionId': session.sessionId,
       'testName': session.testName,
-      'reportPath': sdkJson ?? mcpFallback?.jsonPath,
-      'htmlReportPath': sdkHtml ?? mcpFallback?.htmlPath,
-      'reportOwner': sdkJson != null ? 'app_sdk' : 'mcp_server',
-      if (sdkJson != null) 'sdkReportPath': sdkJson,
-      if (sdkHtml != null) 'sdkHtmlReportPath': sdkHtml,
-      if (mcpFallback != null) 'mcpReportPath': mcpFallback.jsonPath,
-      if (mcpFallback != null) 'mcpHtmlReportPath': mcpFallback.htmlPath,
+      'reportPath': mcpReport.jsonPath,
+      'htmlReportPath': mcpReport.htmlPath,
+      'reportOwner': 'mcp_server',
       if (snapshotPath != null) 'snapshotPath': snapshotPath,
       'stepCount': stop.data?.stepCount ?? session.steps.length,
       'alertCount': stop.data?.alertCount ?? session.alerts.length,
@@ -560,7 +534,6 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
     final args = request.arguments ?? const <String, Object?>{};
     final target = (args['targetDesc'] as String? ?? '').trim();
     final wait = args['waitStableMs'] as int?;
-    final forceLegacy = args['useLegacyTap'] == true;
     final scrollIntoView = args['scrollIntoView'] != false;
     if (target.isEmpty) {
       return _reply(
@@ -584,18 +557,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'targetDesc': target,
         'scrollIntoView': scrollIntoView,
       },
-      skillAction: forceLegacy
-          ? (client) async => {'success': false, 'error': 'forced legacy'}
-          : scrollIntoView
-              ? (client) => VisibilityAssist.tapEnsuringVisible(
-                    client,
-                    target: target,
-                  )
-              : (client) => client.tap(text: target, key: target),
-      legacyFallback: () => _bridge.tapLegacy(
-        targetDesc: target,
-        waitStableMs: wait,
-      ),
+      skillAction: scrollIntoView
+          ? (client) => VisibilityAssist.tapEnsuringVisible(
+                client,
+                target: target,
+              )
+          : (client) => client.tap(text: target, key: target),
     );
     return _stepReply(step);
   }

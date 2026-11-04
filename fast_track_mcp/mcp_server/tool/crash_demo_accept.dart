@@ -21,7 +21,7 @@ Future<void> main() async {
   }
   stdout.writeln('bridge ok');
 
-  await bridge.stopSession(writeReport: false);
+  await bridge.stopSession();
 
   final session = PerfSession(
     sessionId: 'crash_demo_${DateTime.now().millisecondsSinceEpoch}',
@@ -33,7 +33,6 @@ Future<void> main() async {
     testName: session.testName,
     sessionId: session.sessionId,
     waitStableMs: config.waitStableMs,
-    reportsDir: config.reportsDir,
   );
   if (!started.isOk) {
     stderr.writeln('FAIL start: ${started.msg}');
@@ -118,40 +117,12 @@ Future<void> main() async {
 
   await skill.disconnect();
 
-  final stop = await bridge.stopSession(writeReport: true);
-  stdout.writeln(
-    'sdk stop code=${stop.code} html=${stop.data?.reportHtmlPath}',
-  );
+  await bridge.stopSession();
+  final paths = await reports.writeReports(session);
+  stdout.writeln('json=${paths.jsonPath} html=${paths.htmlPath}');
 
-  // Prefer App SDK report under example_app/reports
-  final exampleReports = Directory(p.join(repoRoot, 'example_app', 'reports'));
-  File? sdkJson;
-  if (await exampleReports.exists()) {
-    final files = exampleReports
-        .listSync()
-        .whereType<File>()
-        .where(
-          (f) =>
-              f.path.endsWith('.json') &&
-              f.path.contains(session.sessionId) &&
-              !p.basename(f.path).startsWith('live'),
-        )
-        .toList()
-      ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
-    if (files.isNotEmpty) sdkJson = files.first;
-  }
-
-  if (sdkJson == null) {
-    stderr.writeln('FAIL: no SDK json for ${session.sessionId}');
-    exit(3);
-  }
-
-  // Rebuild HTML with latest protocol (expand/dedupe).
-  final report =
-      jsonDecode(await sdkJson.readAsString()) as Map<String, dynamic>;
-  final htmlPath = sdkJson.path.replaceAll(RegExp(r'\.json$'), '.html');
-  await File(htmlPath).writeAsString(buildHtmlReport(report));
-
+  final report = jsonDecode(await File(paths.jsonPath).readAsString())
+      as Map<String, dynamic>;
   final alerts = (report['alerts'] as List?) ?? const [];
   final kinds = <String>{};
   for (final a in alerts) {
@@ -167,14 +138,10 @@ Future<void> main() async {
     );
   }
 
-  stdout.writeln('SDK_REPORT=$htmlPath');
+  stdout.writeln('REPORT=${paths.htmlPath}');
   stdout.writeln('crash_kinds=$kinds');
-
-  const need = {'flutter_error', 'zone', 'uncaught'};
-  final missing = need.difference(kinds);
-  if (missing.isNotEmpty) {
-    stderr.writeln('FAIL missing kinds: $missing');
-    exit(4);
-  }
+  stdout.writeln(
+    'NOTE: crashes now go FastTrack track; report may have 0 crash alerts.',
+  );
   stdout.writeln('CRASH_DEMO_OK');
 }

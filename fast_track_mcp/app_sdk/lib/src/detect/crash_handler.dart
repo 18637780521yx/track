@@ -352,17 +352,6 @@ class FastTrackMcpCrashHandler {
         properties: properties,
         flush: fatal,
       );
-      final text = properties['message']?.toString() ?? '';
-      FastTrackMcpDetectSink.alert(
-        type: 'crash',
-        action: fatal ? 'crash:$source' : 'error:$source',
-        message: fatal ? '未捕获异常：$text' : '已捕获异常：$text',
-        value: <String, dynamic>{
-          ...properties,
-          'kind': source,
-          'source': 'detect_crash',
-        },
-      );
     } catch (e) {
       debugPrint('[ftm] crash report failed: $e');
     } finally {

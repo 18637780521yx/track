@@ -232,15 +232,6 @@ class FastTrackMcpJankMonitor {
         properties: properties,
         flush: frozen,
       );
-      FastTrackMcpDetectSink.alert(
-        type: 'jank',
-        action: frozen ? 'jank:frozen_frame' : 'jank:frame_window',
-        message: frozen
-            ? '冻帧 ${properties['total_ms']}ms'
-            : '卡顿窗口 slow=${properties['slow_frames']}/${properties['total_frames']} '
-                'max=${properties['max_total_ms']}ms',
-        value: properties,
-      );
       final onJank = _onJank;
       if (onJank != null) {
         await onJank(properties);
