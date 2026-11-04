@@ -12,9 +12,11 @@ import 'config.dart';
 import 'flutter_skill_client.dart';
 import 'flutter_skill_vm_client.dart';
 import 'report_writer.dart';
+import 'screenshot_compress.dart';
 import 'skill_mcp_bindings.dart';
 import 'snapshot_io.dart';
 import 'visibility_assist.dart';
+import 'vm_uri_resolver.dart';
 
 /// MCP tools: UI via flutter_skill (full); metrics via PerfBridge + Sleuth.
 ///
@@ -26,10 +28,10 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
   }) : super.fromStreamChannel(
           implementation: Implementation(
             name: 'flutter-perf-agent',
-            version: '0.9.8',
+            version: '0.9.9',
           ),
           instructions:
-              'Flutter-Perf-Agent V1 (0.9.8 + crash-in-session). '
+              'Flutter-Perf-Agent V1 (0.9.9 skill_call + Sleuth). '
               'Prefer: flutter run --profile --no-dds. '
               'UI tools (tap/input_text/scroll/skill_call) AUTO-start a perf '
               'session: each action samples Sleuth/RSS, updates live report. '
@@ -74,7 +76,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
     if (config.debugLog) {
       io.stderr.writeln(
-        '[flutter-perf-agent-mcp] v0.9.2 bridge=${config.bridgeBaseUrl} '
+        '[flutter-perf-agent-mcp] v0.9.9 bridge=${config.bridgeBaseUrl} '
         'autoSession=true envelope=code/data/msg '
         'retries=${config.maxRetries} '
         'captureScreenshots=${config.captureScreenshots}',
@@ -121,9 +123,19 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
 
   Future<void> _warmVmFromBridge() async {
     final health = await _bridge.health();
-    final rawVm = health.data?.vmServiceUri;
-    if (rawVm != null && rawVm.isNotEmpty) {
-      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
+    await _applyVmUri(health.data?.vmServiceUri);
+  }
+
+  /// Prefer a **host-reachable** WS URI (flutter_skill-style), not the raw
+  /// device-loopback URI from Bridge on physical phones.
+  Future<void> _applyVmUri(String? bridgeRaw) async {
+    final next = await VmUriResolver.resolve(
+      bridgeRaw,
+      debugLog: config.debugLog,
+    );
+    if (next != _vmWsUri) {
+      await _disposeSkill();
+      _vmWsUri = next;
     }
   }
 
@@ -173,29 +185,26 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       );
     }
 
-    final rawVm = health.data!.vmServiceUri;
-    if (rawVm != null && rawVm.isNotEmpty) {
-      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
-    }
+    await _applyVmUri(health.data!.vmServiceUri);
 
     final sessionId = 'sess_${DateTime.now().millisecondsSinceEpoch}';
-    final reportsAbs = io.File(config.reportsDir).isAbsolute
-        ? config.reportsDir
-        : io.File(config.reportsDir).absolute.path;
+    // Do NOT push MCP host `reportsDir` into the App — on iOS/Android that is a
+    // foreign path and breaks SdkReportWriter / screenshots. App keeps its
+    // sandboxed dir from PerfAgent.ensureInitialized; MCP writes locally.
     final started = await _bridge.startSession(
       testName: testName,
       sessionId: sessionId,
       waitStableMs: waitStableMs,
-      reportsDir: reportsAbs,
       manualRecording: true,
     );
     if (!started.isOk || started.data == null) {
       return ApiResponse.fail(started.code, started.msg);
     }
 
+    // Prefer session-start URI if present (may refresh token/port).
     final startedVm = started.data!.vmServiceUri;
     if (startedVm != null && startedVm.isNotEmpty) {
-      _vmWsUri = FlutterSkillVmClient.normalizeWsUri(startedVm);
+      await _applyVmUri(startedVm);
     }
 
     _session = PerfSession(
@@ -576,11 +585,8 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         final health = await _bridge.health();
         final data = health.data;
         if (health.isOk && data != null && data.lifecycleForeground) {
-          // Warm VM for subsequent tap/screenshot.
-          final rawVm = data.vmServiceUri;
-          if (rawVm != null && rawVm.isNotEmpty) {
-            _vmWsUri = FlutterSkillVmClient.normalizeWsUri(rawVm);
-          }
+          // Warm VM for subsequent tap/screenshot (host-reachable URI).
+          await _applyVmUri(data.vmServiceUri);
           final ms = DateTime.now().difference(t0).inMilliseconds;
           return _reply(
             ApiResponse.ok({
@@ -588,7 +594,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
               'elapsedMs': ms,
               'lifecycle': data.lifecycle,
               'lifecycleForeground': true,
-              'vmServiceUri': data.vmServiceUri,
+              'vmServiceUri': _vmWsUri ?? data.vmServiceUri,
               'bridge': _bridge.bridgeBaseUrl,
               'note': 'App lifecycle cold_start/foreground — 可开始 tap',
             }),
@@ -808,8 +814,12 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
       final safeName = (nameArg != null && nameArg.isNotEmpty)
           ? nameArg.replaceAll(RegExp(r'[^\w\-]+'), '_')
           : 'shot_${DateTime.now().millisecondsSinceEpoch}';
-      final path = p.join(dir.path, '$safeName.png');
-      await io.File(path).writeAsBytes(base64Decode(b64));
+      final compressed = ScreenshotCompress.compressBase64(
+        b64,
+        maxWidth: maxWidth,
+      );
+      final path = p.join(dir.path, '$safeName.${compressed.ext}');
+      await io.File(path).writeAsBytes(compressed.bytes);
 
       return _reply(
         ApiResponse.ok({
@@ -823,7 +833,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
           'note':
               'On-demand only; tap/input do not auto-screenshot '
               '(captureScreenshots=${config.captureScreenshots}).',
-          if (includeDataUri) 'dataUri': 'data:image/png;base64,$b64',
+          if (includeDataUri) 'dataUri': compressed.dataUri,
         }),
       );
     } catch (e) {
@@ -897,7 +907,7 @@ base class PerfMcpServer extends MCPServer with ToolsSupport {
         'phase': 'sleuth_full',
         'uiSurface': 'flutter_skill_full',
         'envelope': 'code/data/msg',
-        'version': '0.6.0',
+        'version': '0.9.9',
         'note':
             'Full Sleuth via Bridge. flutter_skill via tap/scroll/input + '
             'screenshot (on-demand) + skill_call. '

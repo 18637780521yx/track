@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
@@ -12,6 +11,7 @@ import 'flutter_skill_client.dart';
 import 'flutter_skill_vm_client.dart';
 import 'perf_diff.dart';
 import 'report_writer.dart';
+import 'screenshot_compress.dart';
 
 typedef SkillAction = Future<Map<String, dynamic>> Function(
   FlutterSkillClient client,
@@ -908,17 +908,18 @@ class ActionRunner {
     }
     try {
       await client.ensureConnected();
-      var b64 = await client.screenshotBase64();
+      // Timeline covers only need ~360px thumbs (design-mock phone frame).
+      var b64 = await client.screenshotBase64(maxWidth: 360);
       if ((b64 == null || b64.isEmpty) && retryOnEmpty) {
         _log('screenshot empty, retry after settle');
         await bridge.waitStable(waitStableMs: config.waitStableMs);
         await Future<void>.delayed(const Duration(milliseconds: 500));
-        b64 = await client.screenshotBase64();
+        b64 = await client.screenshotBase64(maxWidth: 360);
       }
       if (b64 != null && b64.isNotEmpty) {
-        final path = await _saveScreenshot('${stepId}_$suffix', b64);
-        _log('screenshot saved $path');
-        return (path: path, dataUri: 'data:image/png;base64,$b64');
+        final saved = await _saveScreenshot('${stepId}_$suffix', b64);
+        _log('screenshot saved ${saved.path}');
+        return (path: saved.path, dataUri: saved.dataUri);
       }
     } catch (e) {
       _log('screenshot failed: $e');
@@ -926,16 +927,20 @@ class ActionRunner {
     return (path: null, dataUri: null);
   }
 
-  Future<String> _saveScreenshot(String name, String base64) async {
+  Future<({String path, String dataUri})> _saveScreenshot(
+    String name,
+    String base64,
+  ) async {
     final dir = io.Directory(
       p.join(config.reportsDir, 'screenshots', session.sessionId),
     );
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
-    final path = p.join(dir.path, '$name.png');
-    await io.File(path).writeAsBytes(base64Decode(base64));
-    return path;
+    final compressed = ScreenshotCompress.compressBase64(base64);
+    final path = p.join(dir.path, '$name.${compressed.ext}');
+    await io.File(path).writeAsBytes(compressed.bytes);
+    return (path: path, dataUri: compressed.dataUri);
   }
 
   /// Upsert full route-chapter into App SDK journal (paths only, no data URI).

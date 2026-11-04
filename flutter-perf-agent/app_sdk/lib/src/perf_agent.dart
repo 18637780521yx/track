@@ -11,6 +11,7 @@ import 'getx_leak_hook.dart' as getx_hook;
 import 'leak_online.dart';
 import 'manual_gesture_recorder.dart';
 import 'network_capture.dart';
+import 'reports_path.dart';
 import 'session_journal.dart';
 import 'sleuth_issue_latch.dart';
 import 'sleuth_perf_flags.dart';
@@ -139,7 +140,14 @@ class PerfAgent {
 
     SessionJournal.instance.manualRecording = enableManualRecording;
     SessionJournal.instance.autoSessionOnManual = autoSessionOnManual;
-    SessionJournal.instance.reportsDir = reportsDir;
+    // Mobile sandbox cannot write cwd-relative `reports`; remap to temp.
+    final writableReports = await ReportsPath.ensureWritable(reportsDir);
+    SessionJournal.instance.reportsDir = writableReports;
+    if (writableReports != reportsDir) {
+      debugPrint(
+        '[PerfAgent] reportsDir remapped: $reportsDir → $writableReports',
+      );
+    }
 
     final bindSleuth = sleuthPerfEnabled && sleuthBindEnabled;
     TransitionLeakTracker.instance.configure(

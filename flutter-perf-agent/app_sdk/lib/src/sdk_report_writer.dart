@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
+import 'screenshot_hydrate.dart';
 import 'sleuth_perf_flags.dart';
 import 'sleuth_transition_binder.dart';
 import 'transition_leak_tracker.dart';
@@ -96,8 +97,11 @@ class SdkReportWriter {
           'GC/堆等需：flutter run --profile --no-dds。',
       ...?extra,
     };
-    final view = buildReportView(baseReport);
-    final htmlReport = {...baseReport, 'view': view};
+    final htmlSteps = [for (final s in stepsJson) Map<String, dynamic>.from(s)];
+    final htmlBody = {...baseReport, 'steps': htmlSteps};
+    await hydrateReportScreenshots(htmlBody);
+    final view = buildReportView(htmlBody);
+    final htmlReport = {...htmlBody, 'view': view};
 
     final jsonReport = {
       ...htmlReport,
@@ -203,12 +207,20 @@ class SdkReportWriter {
       },
       'note': 'Live — App SDK 账本（与手动同款 HTML）；stop 写出最终报告。',
     };
-    final report = {...body, 'view': buildReportView(body)};
+    final htmlBody = {
+      ...body,
+      'steps': [for (final s in stepsJson) Map<String, dynamic>.from(s)],
+    };
+    await hydrateReportScreenshots(htmlBody);
+    final report = {...htmlBody, 'view': buildReportView(htmlBody)};
     // Session-scoped only (no fixed live.html / latest.html bookmark).
     final jsonPath = p.join(reportsDir, 'live_$sessionId.json');
     final htmlPath = p.join(reportsDir, 'live_$sessionId.html');
     await File(jsonPath).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(report),
+      const JsonEncoder.withIndent('  ').convert({
+        ...body,
+        'view': buildReportView(body),
+      }),
     );
     await File(htmlPath).writeAsString(buildHtmlReport(report));
     return SdkReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);

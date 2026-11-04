@@ -116,8 +116,6 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
             }
           }
         }
-        // Screenshots deferred from path narrative (still in raw steps if needed).
-        if (type == 'screenshot') continue;
         // Cold-start step already emitted a synthetic event with TTFF/phases —
         // skip the journal's duplicate cold_start / lifecycle:cold_start.
         if (isCold &&
@@ -151,8 +149,40 @@ Map<String, dynamic> buildReportView(Map<String, dynamic> report) {
           'source': _normalizeSource(source),
           'module': _moduleForEventType(type),
           'detail': detail,
+          if (m['screenshotPath'] != null)
+            'screenshotPath': m['screenshotPath'],
+          if (m['screenshotDataUri'] != null)
+            'screenshotDataUri': m['screenshotDataUri'],
         });
       }
+    }
+
+    // Step-level cover when chapter has a shot but no nested screenshot event.
+    final hadShotEvent = rawEvents is List &&
+        rawEvents.any(
+          (e) => e is Map && e['type']?.toString() == 'screenshot',
+        );
+    if (!hadShotEvent &&
+        (s['screenshotDataUri'] != null || s['screenshotPath'] != null)) {
+      final coverRoute = route ?? '(unknown)';
+      events.add({
+        'id': 'ev_${idx++}',
+        'type': 'screenshot',
+        'at': s['at']?.toString() ?? '',
+        'label': '页面截图',
+        'ok': true,
+        'stepId': sid,
+        'route': coverRoute,
+        'source': _normalizeSource(source),
+        'module': 'page',
+        'detail': {
+          if (coverRoute != '(unknown)') 'route': coverRoute,
+          'fromStep': true,
+        },
+        if (s['screenshotPath'] != null) 'screenshotPath': s['screenshotPath'],
+        if (s['screenshotDataUri'] != null)
+          'screenshotDataUri': s['screenshotDataUri'],
+      });
     }
 
     final stepAlerts =
@@ -945,7 +975,7 @@ List<Map<String, dynamic>> _segmentTimeline(
         }
       }
       if (lastTransition != null &&
-          lastTransition!['stepId']?.toString() == sid) {
+          lastTransition['stepId']?.toString() == sid) {
         return lastTransition;
       }
     }
@@ -960,11 +990,32 @@ List<Map<String, dynamic>> _segmentTimeline(
     return null;
   }
 
+  void applyCover(Map<String, dynamic> seg, Map<String, dynamic> e) {
+    final uri = e['screenshotDataUri']?.toString();
+    final path = e['screenshotPath']?.toString();
+    if ((uri == null || uri.isEmpty) && (path == null || path.isEmpty)) {
+      return;
+    }
+    // Later shots win (post-action / land cover).
+    if (uri != null && uri.isNotEmpty) seg['coverDataUri'] = uri;
+    if (path != null && path.isNotEmpty) seg['coverPath'] = path;
+  }
+
   for (final e in events) {
     final type = e['type']?.toString() ?? 'action';
 
-    // Screenshots are not path narrative this iteration.
-    if (type == 'screenshot') continue;
+    // Screenshots become page covers, not narrative rows.
+    if (type == 'screenshot') {
+      final route = e['route']?.toString();
+      final pageKey =
+          (route != null && route.isNotEmpty) ? route : '(unknown)';
+      if (openPage == null || openPage!['route'] != pageKey) {
+        flushPage();
+        openPage = newPage(pageKey, e);
+      }
+      applyCover(openPage!, e);
+      continue;
+    }
 
     if (type == 'cold_start' || type == 'lifecycle') {
       flushPage();

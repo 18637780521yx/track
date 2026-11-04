@@ -263,6 +263,62 @@ String _css() => r'''
     max-width: min(100%, 420px); border-radius: 8px; border: 1px solid var(--line);
     background: #0f1a14;
   }
+  /* design-mock: page = cover left + compact action rows */
+  .page-body {
+    display: flex; gap: 16px; align-items: flex-start; margin-top: 12px;
+    flex-wrap: wrap;
+  }
+  .page-cover {
+    flex: 0 0 auto; width: 108px;
+    border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--line); background: #0f1a14;
+    box-shadow: 0 1px 2px rgba(20,35,27,.06);
+  }
+  .page-cover img {
+    display: block; width: 100%; height: auto; vertical-align: top;
+  }
+  .page-actions { flex: 1 1 200px; min-width: 0; }
+  .page-summary { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  .action-rows { margin: 0; padding: 0; list-style: none; }
+  .action-rows > li.ar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 7px 10px; margin: 0 0 6px;
+    background: #f7faf8; border: 1px solid #e8eee9; border-radius: 8px;
+    font-size: 13px;
+  }
+  .action-rows > li.ar .net-card { flex: 1 1 100%; margin: 4px 0 0; }
+  .action-rows > li.ar.fail { background: #fff1f0; border-color: #f5c6c2; }
+  .ar-dot {
+    width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+    background: #5b6b62;
+  }
+  .ar.action .ar-dot { background: #6b4ea3; }
+  .ar.network .ar-dot { background: #1e8a4c; }
+  .ar.navigate .ar-dot { background: #1e4a8c; }
+  .ar-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ar-ms { flex: 0 0 auto; color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; }
+  .ar-src { flex: 0 0 auto; }
+  .ar-alert {
+    margin: -2px 0 8px; padding: 8px 10px;
+    background: var(--warn-bg); border: 1px solid #f5c6c2; border-radius: 8px;
+    color: var(--bad); font-size: 12px; line-height: 1.4;
+  }
+  /* design-mock: transition = kind chip + leak warn */
+  .tr-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+    margin-top: 10px;
+  }
+  .kind-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 8px; font-size: 12px;
+    background: #f3eef8; color: #5b3d7a; border: 1px solid #e4d8f0;
+  }
+  .kind-chip b { font-weight: 700; }
+  .tr-warn {
+    flex: 1 1 220px; padding: 8px 12px; border-radius: 8px;
+    background: #fff7e8; border: 1px solid #f0d9a8; color: #8a5a00;
+    font-size: 13px;
+  }
   .inner-timeline { margin: 12px 0 0; padding: 0; list-style: none; }
   .inner-timeline li {
     position: relative; padding: 0 0 12px 16px;
@@ -461,28 +517,29 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
     }
   }
   if (module == 'transition') {
-    badges.write(
-      '<span class="badge net">${_esc(seg['transitionKind']?.toString() ?? 'unknown')}</span>',
-    );
     final alerts = seg['alertCount'] ?? 0;
     if (alerts is num && alerts > 0) {
       badges.write(' <span class="badge bad">$alerts 告警</span>');
     }
   }
 
-  final headerExtra = switch (module) {
-    'startup' || 'lifecycle' => _lifecycleExtrasHtml(seg),
-    'page' => _pageExtrasHtml(seg),
-    'transition' => _transitionExtrasHtml(seg),
-    'alert' => _perfReportExtrasHtml(seg), // legacy view.timeline
-    _ => '',
-  };
-
   final events =
       (seg['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
   final isLifecycle = module == 'startup' || module == 'lifecycle';
+
+  if (module == 'page') {
+    return _pageCardHtml(seg, index: index, title: title, at: at, badges: badges.toString());
+  }
+  if (module == 'transition') {
+    return _transitionCardHtml(seg, index: index, title: title, at: at, badges: badges.toString());
+  }
+
+  final headerExtra = switch (module) {
+    'startup' || 'lifecycle' => _lifecycleExtrasHtml(seg),
+    'alert' => _perfReportExtrasHtml(seg), // legacy view.timeline
+    _ => '',
+  };
   final showInner = !isLifecycle || events.length > 1;
-  final emptyPage = module == 'page' && events.isEmpty;
 
   return '''
 <article class="seg">
@@ -494,8 +551,178 @@ String _segmentCardHtml(Map<String, dynamic> seg, {required int index}) {
     <div>$badges</div>
   </div>
   $headerExtra
-  ${emptyPage ? '<p class="muted">无操作</p>' : (showInner ? _innerEventsHtml(events) : '')}
+  ${showInner ? _innerEventsHtml(events) : ''}
 </article>''';
+}
+
+String _pageCardHtml(
+  Map<String, dynamic> seg, {
+  required int index,
+  required String title,
+  required String at,
+  required String badges,
+}) {
+  final events =
+      (seg['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+  final cover = _coverImgHtml(seg);
+  final evCount = events.where((e) => e['type'] != 'screenshot').length;
+  final nets = seg['networkCount'] ?? 0;
+  final summary =
+      '<p class="page-summary">$evCount 事件 · $nets 请求</p>';
+  final rows = _pageActionRowsHtml(events);
+  final body = (cover.isEmpty && rows.isEmpty)
+      ? '<p class="muted">无操作</p>'
+      : '''
+  <div class="page-body">
+    $cover
+    <div class="page-actions">
+      $summary
+      $rows
+    </div>
+  </div>''';
+
+  return '''
+<article class="seg">
+  <div class="seg-head">
+    <div>
+      <h3>$index · $title</h3>
+      <div class="seg-meta">$at</div>
+    </div>
+    <div>$badges</div>
+  </div>
+  $body
+</article>''';
+}
+
+String _transitionCardHtml(
+  Map<String, dynamic> seg, {
+  required int index,
+  required String title,
+  required String at,
+  required String badges,
+}) {
+  final kind = _esc(seg['transitionKind']?.toString() ?? 'unknown');
+  final from = seg['from']?.toString() ?? '?';
+  final leak = (seg['leak'] as Map?)?.cast<String, dynamic>();
+  final events =
+      (seg['events'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
+
+  final buf = StringBuffer()
+    ..writeln('<div class="tr-row">')
+    ..writeln('<span class="kind-chip">kind: <b>$kind</b></span>');
+
+  final warn = _transitionLeakWarn(from: from, leak: leak);
+  if (warn != null) {
+    buf.writeln('<div class="tr-warn">${_esc(warn)}</div>');
+  }
+  buf.writeln('</div>');
+
+  // Inline alerts (memory_leak / retain / …) — keep under the kind row.
+  final alertEvents = events.where((e) => e['type'] == 'alert').toList();
+  if (alertEvents.isNotEmpty) {
+    buf.writeln(_innerEventsHtml(alertEvents));
+  }
+
+  return '''
+<article class="seg">
+  <div class="seg-head">
+    <div>
+      <h3>$index · $title</h3>
+      <div class="seg-meta">$at</div>
+    </div>
+    <div>$badges</div>
+  </div>
+  $buf
+</article>''';
+}
+
+String? _transitionLeakWarn({
+  required String from,
+  required Map<String, dynamic>? leak,
+}) {
+  if (leak == null) return null;
+  final alive = (leak['alive'] as List?) ?? const [];
+  final aliveCount = leak['aliveCount'] ?? alive.length;
+  final sleuthHits = (leak['sleuthHits'] as List?) ?? const [];
+  if (aliveCount is num && aliveCount > 0) {
+    return '可能存在路由泄漏：$from 未正确退出';
+  }
+  if (sleuthHits.isNotEmpty) {
+    return '可能存在路由泄漏：$from 未正确退出（Sleuth 转场窗有新增可达对象）';
+  }
+  final multi = leak['multiRoundConfirmed'] == true;
+  if (multi) {
+    return '可能存在路由泄漏：$from 多轮确认仍存活';
+  }
+  return null;
+}
+
+String _coverImgHtml(Map<String, dynamic> seg) {
+  final uri = seg['coverDataUri']?.toString();
+  if (uri == null || uri.isEmpty) return '';
+  return '<div class="page-cover"><img src="${_esc(uri)}" alt="page cover" loading="lazy"/></div>';
+}
+
+/// Compact action / network / alert rows (design-mock right column).
+String _pageActionRowsHtml(List<Map<String, dynamic>> events) {
+  if (events.isEmpty) return '';
+  final items = <String>[];
+  for (final t in events) {
+    final type = t['type']?.toString() ?? 'action';
+    if (type == 'screenshot' || type == 'navigate') continue;
+    final detail =
+        (t['detail'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    final ok = t['ok'] != false;
+    final source = t['source']?.toString();
+
+    if (type == 'alert') {
+      final alertType = detail['alertType']?.toString() ??
+          detail['type']?.toString() ??
+          'alert';
+      var label = t['label']?.toString() ?? alertType;
+      final value = detail['value'];
+      final valueMap = value is Map ? Map<String, dynamic>.from(value) : null;
+      if (label == alertType || label.startsWith('$alertType:')) {
+        if (valueMap?['title'] != null) {
+          label = valueMap!['title'].toString();
+        } else if (detail['message'] != null) {
+          label = detail['message'].toString();
+        }
+      }
+      final sev = _shortSevFromDetail(detail);
+      final extra = sev != null ? ' · $sev' : '';
+      items.add(
+        '<li class="ar-alert"><strong>${_esc(alertType)}</strong> · '
+        '${_esc(label)}$extra'
+        '${_alertValueHtml(detail)}</li>',
+      );
+      continue;
+    }
+
+    var label = t['label']?.toString() ?? type;
+    if (type == 'action') {
+      label = label; // already normalized in view
+    }
+    String? ms;
+    if (type == 'network' && detail['durationMs'] != null) {
+      ms = '${detail['durationMs']} ms';
+    }
+    final srcBadge = (source != null && source.isNotEmpty)
+        ? ' <span class="badge src-$source ar-src">${_esc(source)}</span>'
+        : '';
+    final failCls = ok ? '' : ' fail';
+    final netExpand =
+        type == 'network' ? _networkExpandHtml(detail) : '';
+    items.add('''
+<li class="ar $type$failCls">
+  <span class="ar-dot"></span>
+  <span class="ar-label">${_esc(label)}$srcBadge${!ok ? ' <span class="badge bad">失败</span>' : ''}</span>
+  ${ms != null ? '<span class="ar-ms">${_esc(ms)}</span>' : ''}
+  $netExpand
+</li>''');
+  }
+  if (items.isEmpty) return '';
+  return '<ol class="action-rows">${items.join('\n')}</ol>';
 }
 
 String _lifecycleExtrasHtml(Map<String, dynamic> seg) {
@@ -520,8 +747,6 @@ String _lifecycleExtrasHtml(Map<String, dynamic> seg) {
   }
   return buf.toString();
 }
-
-String _pageExtrasHtml(Map<String, dynamic> seg) => _pageDiffsHtml(seg);
 
 String _perfReportExtrasHtml(Map<String, dynamic> seg) {
   final buf = StringBuffer();
@@ -558,89 +783,13 @@ String _perfReportExtrasHtml(Map<String, dynamic> seg) {
   return buf.toString();
 }
 
-String _transitionExtrasHtml(Map<String, dynamic> seg) {
-  final kind = _esc(seg['transitionKind']?.toString() ?? 'unknown');
-  final from = _esc(seg['from']?.toString());
-  final to = _esc(seg['to']?.toString());
-  final leak = (seg['leak'] as Map?)?.cast<String, dynamic>();
-  final buf = StringBuffer()
-    ..writeln('<p class="seg-meta">$from → $to · <code>$kind</code></p>');
-  if (leak == null) return buf.toString();
-  final alive = (leak['alive'] as List?) ?? const [];
-  final aliveCount = leak['aliveCount'] ?? alive.length;
-  final rssDelta = leak['rssDeltaMb'];
-  final evidence = leak['evidence']?.toString() ?? 'weak_ref';
-  final sleuthHits = (leak['sleuthHits'] as List?) ?? const [];
-  if (aliveCount is num && aliveCount > 0) {
-    final names = alive
-        .map((e) => e is Map ? e['name']?.toString() ?? '?' : e.toString())
-        .join(', ');
-    buf.writeln(
-      '<p class="badge bad">泄漏 WeakRef ×$aliveCount：${_esc(names)}'
-      ' · <code>${_esc(evidence)}</code></p>',
-    );
-  } else if (sleuthHits.isEmpty) {
-    buf.writeln('<p class="muted">WeakRef 探针：无仍可达对象</p>');
-  }
-  if (sleuthHits.isNotEmpty) {
-    final titles = sleuthHits
-        .map((e) => e is Map
-            ? (e['title'] ?? e['stableId'] ?? '?').toString()
-            : e.toString())
-        .join(', ');
-    buf.writeln(
-      '<p class="badge bad">Sleuth 转场窗新增：${_esc(titles)}'
-      ' · <code>${_esc(evidence)}</code></p>',
-    );
-  }
-  final counts = (leak['aliveCounts'] as List?) ?? const [];
-  if (counts.length >= 2) {
-    final series = counts.map((e) => e.toString()).join('→');
-    final multi = leak['multiRoundConfirmed'] == true;
-    final round = leak['roundIndex'];
-    buf.writeln(
-      multi
-          ? '<p class="badge bad">多轮确认：同路由 ${counts.length} 次进出 '
-              '存活数 [$series]（round $round）</p>'
-          : '<p class="muted">多轮：同路由 ${counts.length} 次进出 '
-              '存活数 [$series]（round $round）</p>',
-    );
-  }
-  if (rssDelta != null) {
-    buf.writeln(
-      '<p class="muted">RSS 辅证 Δ ${_num(rssDelta)} MB（settle ${leak['settleMs'] ?? '-'}ms）</p>',
-    );
-  }
-  return buf.toString();
-}
-
-String _pageDiffsHtml(Map<String, dynamic> seg) {
-  final diffs =
-      (seg['diffs'] as List?)?.cast<Map<String, dynamic>>() ?? const [];
-  if (diffs.isEmpty) return '';
-  final rows = diffs.map((d) {
-    return '<tr>'
-        '<td>${_esc(d['stepId']?.toString())}</td>'
-        '<td>${_esc(d['cause']?.toString())}</td>'
-        '<td>${_esc(d['durationMs']?.toString() ?? '-')} ms</td>'
-        '<td>${_num(d['memoryDeltaMb'])}</td>'
-        '<td>${d['jankDelta'] ?? '-'}</td>'
-        '</tr>';
-  }).join('\n');
-  return '''
-<table class="data-table" style="margin-top:10px;">
-  <thead><tr><th>步骤</th><th>操作</th><th>耗时</th><th>Δmem</th><th>Jank</th></tr></thead>
-  <tbody>$rows</tbody>
-</table>''';
-}
-
 String _innerEventsHtml(List<Map<String, dynamic>> events) {
   if (events.isEmpty) return '<p class="muted">无事件</p>';
   final items = <String>[];
   var i = 0;
   for (final t in events) {
     final type = t['type']?.toString() ?? 'action';
-    if (type == 'screenshot') continue; // path narrative: no screenshots
+    if (type == 'screenshot') continue; // covers live on page cards, not rows
     i++;
     final id = t['id']?.toString() ?? 'ev_$i';
     final label = t['label']?.toString() ?? type;

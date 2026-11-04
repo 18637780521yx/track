@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **真机 VM URI（对齐 flutter_skill）**：MCP 不再原样使用 Bridge 报的手机 loopback 地址；`VmUriResolver` 优先探测本机可达，再按 `iproxy` 转发改写，并回退扫描 Flutter 工具进程（与 skill 发现思路一致）。
+- **真机 reportsDir**：iOS/Android 将相对路径 / MCP 宿主机绝对路径 remap 到沙盒临时目录（`ReportsPath`），避免 `PathAccessException` 导致 `session/stop` 500；写失败时仍正常停会话。MCP 不再把本机 `reportsDir` 推给 App。
 - **报告改回每次新文件**：结束会话只写 `{时间戳}_{用例}_{sessionId}.{json,html}`；不再覆盖 `live.html` / `latest.html`。会话中可选写 `live_<sessionId>.*`；Bridge 去掉 `/report/live` 固定入口。
 - **Live 中稿**：`live:true` 时 HTML 每 2s 自动刷新；Clear → `POST /report/clear`。
 - **Sleuth 关时不展示**：`thresholds.sleuthPerfEnabled=false` 时 HTML/`view` 不再展开 `sleuth_detector`，也不渲染 `stream_resource_growth` 等；App upsert 会丢掉陈旧 MCP 推来的同类告警。

@@ -103,11 +103,34 @@ class VisibilityAssist {
           };
 
     if (match == null) {
+      // interactive 常把 Badge 角标当成唯一 text（flutter_skill 取首个 Text），
+      // 标题「邮箱」仍在树里的 Text 节点上；VM tap 按 text 可直接命中。
+      final tap = await client.tap(text: t, key: t);
+      clearCache();
+      if (FlutterSkillVmClient.isOk(tap)) {
+        return {
+          ...tap,
+          ...meta,
+          'path': 'text_node_tap',
+          'rpc': [
+            if (meta['inspectCached'] != true) 'interactive',
+            'tap',
+          ],
+          'uiHint': {
+            'note':
+                'No interactive text match; tapped Text/Key directly '
+                '(Badge label often shadows the visible title).',
+            'offScreenTexts': enriched['offScreenTexts'],
+            'inViewportTexts': enriched['inViewportTexts'],
+          },
+        };
+      }
       return {
         'success': false,
         'error': 'No element matching "$t" in interactive tree',
         ...meta,
         'path': 'not_found',
+        'tapAttempt': tap,
         'uiHint': {
           'offScreenTexts': enriched['offScreenTexts'],
           'inViewportTexts': enriched['inViewportTexts'],
@@ -229,7 +252,9 @@ class VisibilityAssist {
     }
   }
 
-  /// Prefer exact text; score hittable+inViewport highest.
+  /// Prefer exact text/semantics; then contains; score hittable+inViewport.
+  ///
+  /// Contains helps when interactive text is `"1\n邮箱"` (Badge + title).
   static Map<String, dynamic>? pickBestMatch(
     List<Map<String, dynamic>> elements,
     String target,
@@ -243,13 +268,26 @@ class VisibilityAssist {
     for (final e in elements) {
       final text = '${e['text'] ?? ''}'.trim();
       final key = '${e['key'] ?? e['ref'] ?? ''}'.trim();
+      final sem = '${e['semanticsLabel'] ?? ''}'.trim();
       final exactText = text == t;
+      final exactSem = sem == t;
       final exactKey = key == t || key.endsWith('.$t') || key.contains(t);
-      if (!exactText && !exactKey) continue;
+      final containsText = !exactText && text.contains(t);
+      final containsSem = !exactSem && sem.contains(t);
+      if (!exactText &&
+          !exactSem &&
+          !exactKey &&
+          !containsText &&
+          !containsSem) {
+        continue;
+      }
 
       var score = 0;
       if (exactText) score += 8;
+      if (exactSem) score += 7;
       if (exactKey) score += 4;
+      if (containsText) score += 3;
+      if (containsSem) score += 2;
       if (e['hittable'] == true) score += 4;
       if (e['inViewport'] == true) score += 2;
       if (e['needsScroll'] == true) score += 1;

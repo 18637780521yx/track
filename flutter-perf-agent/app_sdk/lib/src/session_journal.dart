@@ -3,6 +3,7 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 
 import 'frame_jank_latch.dart';
 import 'manual_gesture_recorder.dart';
+import 'reports_path.dart';
 import 'sdk_report_writer.dart';
 import 'sleuth_issue_latch.dart';
 import 'sleuth_perf_flags.dart';
@@ -62,7 +63,8 @@ class SessionJournal {
             ? 'release'
             : (kProfileMode ? 'profile' : 'debug'));
     if (reportsDir != null && reportsDir.isNotEmpty) {
-      this.reportsDir = reportsDir;
+      // Drop MCP host paths / cwd-relative dirs on device sandboxes.
+      this.reportsDir = ReportsPath.resolveSync(reportsDir);
     }
     if (manualRecording != null) this.manualRecording = manualRecording;
     if (autoSessionOnManual != null) {
@@ -340,15 +342,21 @@ class SessionJournal {
   Future<SdkReportPaths?> writeLiveReport({bool allowEmpty = false}) async {
     if (!isActive || startedAt == null) return null;
     if (steps.isEmpty && !allowEmpty) return null;
-    return SdkReportWriter.writeLive(
-      sessionId: sessionId!,
-      testName: testName ?? 'unnamed',
-      startedAt: startedAt!,
-      mode: mode,
-      reportsDir: reportsDir,
-      steps: List<StepResult>.from(steps),
-      alerts: List<AlertItem>.from(alerts),
-    );
+    try {
+      reportsDir = await ReportsPath.ensureWritable(reportsDir);
+      return await SdkReportWriter.writeLive(
+        sessionId: sessionId!,
+        testName: testName ?? 'unnamed',
+        startedAt: startedAt!,
+        mode: mode,
+        reportsDir: reportsDir,
+        steps: List<StepResult>.from(steps),
+        alerts: List<AlertItem>.from(alerts),
+      );
+    } catch (e, st) {
+      debugPrint('[SessionJournal] writeLive failed: $e\n$st');
+      return null;
+    }
   }
 
   /// Wipe steps/alerts for the active session and rewrite empty live report.
@@ -378,28 +386,36 @@ class SessionJournal {
       return null;
     }
     SdkReportPaths? paths;
-    if (writeReport && steps.isNotEmpty) {
-      paths = await SdkReportWriter.write(
-        sessionId: sessionId!,
-        testName: testName ?? 'unnamed',
-        startedAt: startedAt!,
-        mode: mode,
-        reportsDir: reportsDir,
-        steps: List<StepResult>.from(steps),
-        alerts: List<AlertItem>.from(alerts),
-        extra: extra,
-      );
-      debugPrint(
-        '[SessionJournal] stop → ${paths.jsonPath} / ${paths.htmlPath} '
-        '(${steps.length} steps)',
-      );
-    } else {
-      debugPrint(
-        '[SessionJournal] stop without report '
-        '(steps=${steps.length}, writeReport=$writeReport)',
-      );
+    try {
+      if (writeReport && steps.isNotEmpty) {
+        reportsDir = await ReportsPath.ensureWritable(reportsDir);
+        paths = await SdkReportWriter.write(
+          sessionId: sessionId!,
+          testName: testName ?? 'unnamed',
+          startedAt: startedAt!,
+          mode: mode,
+          reportsDir: reportsDir,
+          steps: List<StepResult>.from(steps),
+          alerts: List<AlertItem>.from(alerts),
+          extra: extra,
+        );
+        debugPrint(
+          '[SessionJournal] stop → ${paths.jsonPath} / ${paths.htmlPath} '
+          '(${steps.length} steps)',
+        );
+      } else {
+        debugPrint(
+          '[SessionJournal] stop without report '
+          '(steps=${steps.length}, writeReport=$writeReport)',
+        );
+      }
+    } catch (e, st) {
+      // Never leave the session half-stopped; Bridge must not 500.
+      debugPrint('[SessionJournal] stop report write failed: $e\n$st');
+      paths = null;
+    } finally {
+      _clear();
     }
-    _clear();
     return paths;
   }
 

@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
+import '../lib/src/screenshot_hydrate.dart';
+
 /// Rebuild HTML for a report JSON (default: newest timestamped under reports/).
 Future<void> main(List<String> args) async {
   final repo = p.normalize(p.join(Directory.current.path, '..'));
@@ -37,10 +39,10 @@ Future<void> main(List<String> args) async {
     exit(2);
   }
   final map = jsonDecode(await jsonFile.readAsString()) as Map<String, dynamic>;
+  await hydrateReportScreenshots(map);
   map['view'] = buildReportView(map);
   final htmlPath = jsonFile.path.replaceAll(RegExp(r'\.json$'), '.html');
   final html = buildHtmlReport(map);
   await File(htmlPath).writeAsString(html);
-  await jsonFile.writeAsString(const JsonEncoder.withIndent('  ').convert(map));
   stdout.writeln('ok $htmlPath bytes=${html.length}');
 }

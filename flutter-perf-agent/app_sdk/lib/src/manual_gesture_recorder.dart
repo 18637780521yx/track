@@ -497,6 +497,10 @@ class ManualGestureRecorder {
     return out;
   }
 
+  /// Cover thumbs only — keep App SDK free of `package:image` (host apps often
+  /// pin older `archive`, which breaks newer `image` builds).
+  static const _coverMaxWidth = 360.0;
+
   Future<_Shot> _captureScreenshot(String stepId) async {
     try {
       await SchedulerBinding.instance.endOfFrame;
@@ -536,13 +540,18 @@ class ManualGestureRecorder {
     final layer = root.layer;
     if (layer is OffsetLayer) {
       final view = binding.platformDispatcher.views.first;
+      final logicalW = view.physicalSize.width / view.devicePixelRatio;
+      // ~360px wide PNG — small enough for HTML covers without JPEG encode.
+      final scale = (logicalW <= 0)
+          ? 1.0
+          : (_coverMaxWidth / logicalW).clamp(0.15, 1.0);
       return layer.toImage(
         Offset.zero & view.physicalSize,
-        pixelRatio: 1 / view.devicePixelRatio,
+        pixelRatio: scale / view.devicePixelRatio,
       );
     }
     if (renderObject is RenderRepaintBoundary) {
-      return renderObject.toImage(pixelRatio: 1);
+      return renderObject.toImage(pixelRatio: 0.35);
     }
     return null;
   }

@@ -57,7 +57,14 @@ Future<void> _bootstrap() async {
     );
   }
 
-  await DemoApi.ensureReady();
+  // Never block first frame on demo API — real device 127.0.0.1 is the phone.
+  // Start: cd example_app && python3 server/app.py
+  // Device: --dart-define=DEMO_API_BASE=http://<Mac局域网IP>:18765
+  try {
+    await DemoApi.ensureReady();
+  } catch (e) {
+    debugPrint('[boot] DemoApi not ready (UI still starts): $e');
+  }
   Get.put(AuthService(), permanent: true);
 
   // Logical page for HTTP stamp + MCP route-steps: GetX route + main tab.
@@ -97,14 +104,8 @@ Future<void> _bootstrap() async {
   );
 
   if (!kReleaseMode) {
-    // Only Demo API host; httpsOnly + loopback http for local python server.
-    PerfAgent.installHttpCaptureDeferred(
-      allowedHosts: PerfNetworkCapture.hostsFromBaseUrls([
-        DemoApi.defaultBaseUrl,
-      ]),
-      httpsOnly: true,
-      allowHttpLoopback: true,
-    );
+    // No host/scheme filter for now — capture all HTTP(S) into the report.
+    PerfAgent.installHttpCaptureDeferred();
   }
 }
 

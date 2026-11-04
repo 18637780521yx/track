@@ -60,6 +60,37 @@ void main() {
       expect(best?['hittable'], isTrue);
       expect(best?['inViewport'], isTrue);
     });
+
+    test('matches title inside Badge+label joined text', () {
+      final best = VisibilityAssist.pickBestMatch([
+        {
+          'text': '1',
+          'hittable': true,
+          'inViewport': true,
+          'visible': true,
+        },
+        {
+          'text': '1\n邮箱',
+          'hittable': true,
+          'inViewport': true,
+          'visible': true,
+        },
+      ], '邮箱');
+      expect(best?['text'], '1\n邮箱');
+    });
+
+    test('matches semanticsLabel when text is badge-only', () {
+      final best = VisibilityAssist.pickBestMatch([
+        {
+          'text': '1',
+          'semanticsLabel': '邮箱',
+          'hittable': true,
+          'inViewport': true,
+          'visible': true,
+        },
+      ], '邮箱');
+      expect(best?['semanticsLabel'], '邮箱');
+    });
   });
 
   group('VisibilityAssist.enrichInteractive', () {

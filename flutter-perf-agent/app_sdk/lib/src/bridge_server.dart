@@ -369,9 +369,15 @@ class PerfBridgeServer {
     final journalSnap = SessionJournal.instance.toJson();
     final stepCount = SessionJournal.instance.steps.length;
     final alertCount = SessionJournal.instance.alerts.length;
-    final paths = await SessionJournal.instance.stopAndWriteReport(
-      writeReport: writeReport,
-    );
+    SdkReportPaths? paths;
+    try {
+      paths = await SessionJournal.instance.stopAndWriteReport(
+        writeReport: writeReport,
+      );
+    } catch (e, st) {
+      debugPrint('[PerfBridge] session/stop report failed: $e\n$st');
+      paths = null;
+    }
 
     final data = SessionStopData(
       sessionId: sessionId,

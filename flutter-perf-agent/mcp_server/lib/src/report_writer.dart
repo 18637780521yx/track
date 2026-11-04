@@ -5,6 +5,7 @@ import 'package:flutter_perf_agent_protocol/flutter_perf_agent_protocol.dart';
 import 'package:path/path.dart' as p;
 
 import 'config.dart';
+import 'screenshot_hydrate.dart';
 
 class PerfSession {
   PerfSession({
@@ -115,8 +116,11 @@ class ReportWriter {
           '步骤含 networkRequests（完整抓包：URL/头/体）。'
           'GC/堆等需：flutter run --profile --no-dds。',
     };
-    final view = buildReportView(baseReport);
-    final htmlReport = {...baseReport, 'view': view};
+    final htmlSteps = [for (final s in stepsJson) Map<String, dynamic>.from(s)];
+    final htmlBody = {...baseReport, 'steps': htmlSteps};
+    await hydrateReportScreenshots(htmlBody);
+    final view = buildReportView(htmlBody);
+    final htmlReport = {...htmlBody, 'view': view};
 
     final jsonSteps = session.steps
         .map((s) => s.toJson(includeScreenshotDataUri: false))
@@ -213,12 +217,20 @@ class ReportWriter {
           'Live report — 全会话时间线 + 模块分区；'
           'stop_perf_test 写出最终报告。',
     };
-    final report = {...liveBody, 'view': buildReportView(liveBody)};
+    final htmlBody = {
+      ...liveBody,
+      'steps': [for (final s in stepsJson) Map<String, dynamic>.from(s)],
+    };
+    await hydrateReportScreenshots(htmlBody);
+    final report = {...htmlBody, 'view': buildReportView(htmlBody)};
     final fileBase = 'live_${session.sessionId}';
     final jsonPath = p.join(dir.path, '$fileBase.json');
     final htmlPath = p.join(dir.path, '$fileBase.html');
     await File(jsonPath).writeAsString(
-      const JsonEncoder.withIndent('  ').convert(report),
+      const JsonEncoder.withIndent('  ').convert({
+        ...liveBody,
+        'view': buildReportView(liveBody),
+      }),
     );
     await File(htmlPath).writeAsString(buildHtmlReport(report));
     return ReportPaths(jsonPath: jsonPath, htmlPath: htmlPath);

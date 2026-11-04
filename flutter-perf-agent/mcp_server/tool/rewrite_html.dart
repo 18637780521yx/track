@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_perf_agent_mcp/perf_mcp_server.dart';
 import 'package:path/path.dart' as p;
 
+import '../lib/src/screenshot_hydrate.dart';
+
 /// Rewrite HTML for the newest non-live report JSON (or a given path).
 Future<void> main(List<String> args) async {
   final repoRoot = p.normalize(p.join(Directory.current.path, '..'));
@@ -32,6 +34,7 @@ Future<void> main(List<String> args) async {
   }
   final report =
       jsonDecode(await jsonFile.readAsString()) as Map<String, dynamic>;
+  await hydrateReportScreenshots(report);
   final htmlPath = jsonFile.path.replaceAll(RegExp(r'\.json$'), '.html');
   await File(htmlPath).writeAsString(buildHtmlReport(report));
   stdout.writeln('rewrote $htmlPath');
