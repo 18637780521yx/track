@@ -34,6 +34,10 @@ export 'src/detect/memory_monitor.dart';
 export 'src/gesture/hit_target.dart';
 export 'src/gesture/manual_gesture_recorder.dart';
 
+// lifecycle
+export 'src/lifecycle/app_lifecycle_tracker.dart';
+export 'src/lifecycle/cold_start_clock.dart';
+
 // leak
 export 'src/leak/getx_leak_hook.dart';
 export 'src/leak/leak_online.dart';

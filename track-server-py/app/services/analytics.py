@@ -681,3 +681,66 @@ async def delete_user(pool: asyncpg.Pool, user_id: str) -> dict[str, int] | None
         "stability_events": stab_n,
     }
 
+
+async def delete_session(pool: asyncpg.Pool, session_id: str) -> dict[str, int] | None:
+    """按 session_id 删除埋点 / 日志 / 稳定性事件。"""
+    sid = (session_id or "").strip()
+    if not sid:
+        return None
+
+    async with pool.acquire() as conn:
+        exists = await conn.fetchval(
+            """
+            SELECT 1 WHERE EXISTS (SELECT 1 FROM events WHERE session_id = $1 LIMIT 1)
+               OR EXISTS (SELECT 1 FROM app_logs WHERE session_id = $1 LIMIT 1)
+               OR EXISTS (SELECT 1 FROM stability_events WHERE session_id = $1 LIMIT 1)
+            """,
+            sid,
+        )
+        if exists is None:
+            return None
+
+        async with conn.transaction():
+            events_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM events WHERE session_id = $1 RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    sid,
+                )
+                or 0
+            )
+            logs_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM app_logs WHERE session_id = $1 RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    sid,
+                )
+                or 0
+            )
+            stab_n = int(
+                await conn.fetchval(
+                    """
+                    WITH d AS (
+                        DELETE FROM stability_events WHERE session_id = $1 RETURNING 1
+                    )
+                    SELECT COUNT(*) FROM d
+                    """,
+                    sid,
+                )
+                or 0
+            )
+
+    return {
+        "events": events_n,
+        "app_logs": logs_n,
+        "stability_events": stab_n,
+    }
+

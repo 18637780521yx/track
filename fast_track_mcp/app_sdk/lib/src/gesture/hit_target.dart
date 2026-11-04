@@ -24,13 +24,31 @@ class HitTarget {
   final String? role;
 
   /// Short human label for reports / action name.
+  ///
+  /// Skips icon-font / Private Use Area glyphs (they show as □ in HTML).
   String get displayLabel {
-    if (key != null && key!.isNotEmpty) return key!;
-    if (text != null && text!.trim().isNotEmpty) return text!.trim();
-    if (label != null && label!.trim().isNotEmpty) return label!.trim();
-    if (hint != null && hint!.trim().isNotEmpty) return hint!.trim();
-    if (widgetType != null) return '$widgetType@${x.toStringAsFixed(0)},${y.toStringAsFixed(0)}';
+    if (_usable(key)) return key!.trim();
+    if (_usable(text)) return text!.trim();
+    if (_usable(label)) return label!.trim();
+    if (_usable(hint)) return hint!.trim();
+    if (widgetType != null && widgetType!.isNotEmpty) {
+      return '$widgetType@${x.toStringAsFixed(0)},${y.toStringAsFixed(0)}';
+    }
     return 'tap@${x.toStringAsFixed(0)},${y.toStringAsFixed(0)}';
+  }
+
+  static bool _usable(String? s) {
+    if (s == null) return false;
+    final t = s.trim();
+    if (t.isEmpty) return false;
+    // Prefer labels that contain at least one non-control, non-PUA char.
+    return t.runes.any((c) {
+      if (c <= 0x1f || c == 0x7f) return false;
+      if (c >= 0xe000 && c <= 0xf8ff) return false;
+      if (c >= 0xf0000 && c <= 0xffffd) return false;
+      if (c >= 0x100000 && c <= 0x10fffd) return false;
+      return true;
+    });
   }
 
   Map<String, dynamic> toJson() => {
@@ -52,24 +70,56 @@ class HitTargetResolver {
     final result = HitTestResult();
     WidgetsBinding.instance.hitTestInView(result, position, viewId);
 
-    Element? best;
+    final candidates = <Element>[];
     for (final entry in result.path) {
       final target = entry.target;
       if (target is! RenderObject) continue;
       final el = _elementFor(target);
-      if (el == null) continue;
-      if (_isInteractive(el.widget) || _hasIdentity(el)) {
-        best = el;
-        break;
-      }
-      best ??= el;
+      if (el != null) candidates.add(el);
     }
 
+    final best = _pickBest(candidates);
     if (best == null) {
       return HitTarget(x: position.dx, y: position.dy);
     }
 
     return _fromElement(best, position);
+  }
+
+  /// Prefer real controls (ListTile / InkWell / buttons) over raw Listener/Text.
+  static Element? _pickBest(List<Element> candidates) {
+    if (candidates.isEmpty) return null;
+
+    Element? scored;
+    var bestScore = -1;
+    for (final el in candidates) {
+      final s = _score(el.widget);
+      if (s > bestScore) {
+        bestScore = s;
+        scored = el;
+      }
+    }
+    return scored ?? candidates.first;
+  }
+
+  static int _score(Widget w) {
+    if (w is ListTile || w is RadioListTile || w is CheckboxListTile) return 100;
+    if (w is ElevatedButton ||
+        w is TextButton ||
+        w is OutlinedButton ||
+        w is FilledButton) {
+      return 90;
+    }
+    if (w is IconButton || w is FloatingActionButton) return 85;
+    if (w is InkWell || w is GestureDetector) return 80;
+    if (w is TextField || w is TextFormField) return 75;
+    if (w is Checkbox || w is Switch || w is Radio) return 70;
+    if (w.key is ValueKey<String>) return 40;
+    if (w is Text && HitTarget._usable(w.data)) return 30;
+    if (w is RichText) return 20;
+    // Raw Listener / RenderPointerListener — last resort.
+    if (w.runtimeType.toString().contains('Listener')) return 5;
+    return 10;
   }
 
   static Element? _elementFor(RenderObject renderObject) {
@@ -90,95 +140,83 @@ class HitTargetResolver {
     return found;
   }
 
-  static bool _isInteractive(Widget w) {
-    return w is ElevatedButton ||
-        w is TextButton ||
-        w is OutlinedButton ||
-        w is IconButton ||
-        w is FloatingActionButton ||
-        w is TextField ||
-        w is TextFormField ||
-        w is Checkbox ||
-        w is Switch ||
-        w is InkWell ||
-        w is GestureDetector ||
-        w is ListTile;
-  }
-
-  static bool _hasIdentity(Element el) {
-    final w = el.widget;
-    if (w.key is ValueKey<String>) return true;
-    if (w is Text && (w.data?.isNotEmpty ?? false)) return true;
-    return false;
-  }
-
   static HitTarget _fromElement(Element element, Offset position) {
     String? key;
     String? text;
     String? label;
     String? hint;
     String? role;
-    final widget = element.widget;
-    final widgetType = widget.runtimeType.toString();
+    var widgetType = element.widget.runtimeType.toString();
 
-    if (widget.key is ValueKey<String>) {
-      key = (widget.key as ValueKey<String>).value;
-    }
+    void absorb(Element el) {
+      final w = el.widget;
+      if (key == null && w.key is ValueKey<String>) {
+        key = (w.key as ValueKey<String>).value;
+      }
 
-    if (widget is TextField) {
-      role = 'input';
-      label = widget.decoration?.labelText;
-      hint = widget.decoration?.hintText;
-    } else if (widget is TextFormField) {
-      role = 'input';
-      void findField(Element e) {
-        final w = e.widget;
-        if (w is TextField) {
-          label = w.decoration?.labelText;
-          hint = w.decoration?.hintText;
-          return;
+      if (w is TextField) {
+        role ??= 'input';
+        label ??= w.decoration?.labelText;
+        hint ??= w.decoration?.hintText;
+      } else if (w is TextFormField) {
+        role ??= 'input';
+      } else if (w is ListTile ||
+          w is RadioListTile ||
+          w is CheckboxListTile ||
+          w is ElevatedButton ||
+          w is TextButton ||
+          w is OutlinedButton ||
+          w is FilledButton ||
+          w is IconButton ||
+          w is FloatingActionButton ||
+          w is InkWell ||
+          w is GestureDetector) {
+        role ??= 'button';
+        // Prefer this control's type in the report.
+        if (_score(w) >= 80) {
+          widgetType = w.runtimeType.toString();
         }
-        e.visitChildren(findField);
+        if (w is IconButton) {
+          if (HitTarget._usable(w.tooltip)) text ??= w.tooltip;
+        }
+        if (w is FloatingActionButton) {
+          if (HitTarget._usable(w.tooltip)) text ??= w.tooltip;
+        }
+        final t = _extractUsableText(el);
+        if (t != null) text ??= t;
+      } else if (w is Semantics) {
+        final s = w.properties.label ?? w.properties.tooltip;
+        if (HitTarget._usable(s)) label ??= s;
+      } else if (w is Text && HitTarget._usable(w.data)) {
+        text ??= w.data!.trim();
       }
-
-      findField(element);
-    } else if (widget is ElevatedButton ||
-        widget is TextButton ||
-        widget is OutlinedButton ||
-        widget is IconButton ||
-        widget is FloatingActionButton ||
-        widget is InkWell ||
-        widget is GestureDetector ||
-        widget is ListTile) {
-      role = 'button';
-      text = _extractText(element);
-      if (widget is IconButton) {
-        text ??= widget.tooltip;
-      }
-      if (widget is FloatingActionButton) {
-        text ??= widget.tooltip;
-      }
-    } else if (widget is Text) {
-      text = widget.data;
     }
 
-    // Walk parents for ValueKey / label if leaf has none.
-    if (key == null || (text == null && label == null && hint == null)) {
+    absorb(element);
+
+    // Climb ancestors: InkWell / ListTile often wrap the leaf Listener/Icon.
+    element.visitAncestorElements((ancestor) {
+      absorb(ancestor);
+      // Keep walking until we have a usable label or leave the interactive row.
+      final done = HitTarget._usable(key) ||
+          HitTarget._usable(text) ||
+          HitTarget._usable(label) ||
+          HitTarget._usable(hint);
+      return !done;
+    });
+
+    // Last pass: if still empty, search a wider ancestor subtree (row title).
+    if (!HitTarget._usable(text) &&
+        !HitTarget._usable(label) &&
+        !HitTarget._usable(key)) {
       element.visitAncestorElements((ancestor) {
-        final w = ancestor.widget;
-        if (key == null && w.key is ValueKey<String>) {
-          key = (w.key as ValueKey<String>).value;
+        final t = _extractUsableText(ancestor);
+        if (t != null) {
+          text = t;
+          role ??= 'button';
+          return false;
         }
-        if (label == null && w is TextField) {
-          label = w.decoration?.labelText;
-          hint ??= w.decoration?.hintText;
-          role ??= 'input';
-        }
-        if (text == null) {
-          final t = _extractText(ancestor);
-          if (t != null && t.isNotEmpty) text = t;
-        }
-        return key == null || (text == null && label == null);
+        return true;
       });
     }
 
@@ -194,18 +232,19 @@ class HitTargetResolver {
     );
   }
 
-  static String? _extractText(Element element) {
+  /// First usable (non-icon-font) plain text under [element].
+  static String? _extractUsableText(Element element) {
     String? found;
     void visit(Element e) {
       if (found != null) return;
       final w = e.widget;
-      if (w is Text && w.data != null && w.data!.trim().isNotEmpty) {
+      if (w is Text && HitTarget._usable(w.data)) {
         found = w.data!.trim();
         return;
       }
       if (w is RichText) {
         final t = w.text.toPlainText().trim();
-        if (t.isNotEmpty) {
+        if (HitTarget._usable(t)) {
           found = t;
           return;
         }

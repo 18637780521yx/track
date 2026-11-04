@@ -6,9 +6,9 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      // 本地调试：默认走线上 API；本地后端可用 VITE_API_PROXY 覆盖
-      '/api': process.env.VITE_API_PROXY || 'http://101.126.68.169:5000',
-      '/track': process.env.VITE_API_PROXY || 'http://101.126.68.169:5000',
+      // 本地调试：默认走本机 track-server-py；可用 VITE_API_PROXY 覆盖
+      '/api': process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
+      '/track': process.env.VITE_API_PROXY || 'http://127.0.0.1:8080',
     },
   },
 });

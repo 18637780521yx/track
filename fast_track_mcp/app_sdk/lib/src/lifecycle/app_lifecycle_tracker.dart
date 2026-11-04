@@ -1,9 +1,13 @@
+import 'dart:async';
+
+import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import '../detect/detect_sink.dart';
 import '../network/network_capture.dart';
+import 'cold_start_clock.dart';
 
 /// Records App 启动 / 进入后台 / 进入前台 → FastTrack 埋点。
 ///
@@ -30,7 +34,8 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     _started = true;
     WidgetsBinding.instance.addObserver(this);
     SchedulerBinding.instance.addPostFrameCallback((_) {
-      noteColdStart(route: FastTrackMcpNetwork.currentRoute());
+      ColdStartClock.instance.markFirstFrame();
+      unawaited(_emitColdStartWhenReady());
     });
   }
 
@@ -41,16 +46,62 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     _backgroundedAt = null;
   }
 
-  /// Bridge up / first frame — kind=`cold_start`.
+  /// Bridge up / 外部补记 — 若阶段耗时尚未齐，会等 TTI（或超时）再上报。
   void noteColdStart({String? route}) {
     if (_coldStartNoted) return;
+    unawaited(_emitColdStartWhenReady(routeHint: route));
+  }
+
+  Future<void> _emitColdStartWhenReady({String? routeHint}) async {
+    if (_coldStartNoted) return;
+    final clock = ColdStartClock.instance;
+    if (!clock.hasFirstFrame) {
+      clock.markFirstFrame();
+    }
+    await clock.waitInteractive(timeout: const Duration(seconds: 2));
+    if (_coldStartNoted) return;
     _coldStartNoted = true;
+
+    final metrics = clock.metrics();
+    final phases = buildColdStartPhases(metrics);
+    final route = routeHint ?? FastTrackMcpNetwork.currentRoute();
+    final ttff = (metrics['ttffMs'] as num?)?.toDouble();
+    final tti = (metrics['ttiMs'] as num?)?.toDouble();
+
     _record(
       kind: 'cold_start',
       label: 'App 启动',
-      route: route ?? FastTrackMcpNetwork.currentRoute(),
+      route: route,
       at: DateTime.now(),
+      extra: {
+        if (ttff != null) 'ttff_ms': ttff,
+        if (tti != null) 'tti_ms': tti,
+        if (ttff != null) 'ttffMs': ttff,
+        if (tti != null) 'ttiMs': tti,
+        'startup': metrics,
+        if (phases.isNotEmpty) 'startup_phases': phases,
+        if (phases.isNotEmpty) 'startupPhases': phases,
+      },
     );
+
+    // 慢启动告警挂在同一生命周期段（控制台按 route/时间归并）
+    const ttffWarnMs = 2000.0;
+    if (ttff != null && ttff >= ttffWarnMs) {
+      unawaited(
+        FastTrackMcpDetectSink.track(
+          'perf_slow_cold_start',
+          properties: {
+            'action': 'cold_start',
+            'message':
+                'TTFF ${ttff.toStringAsFixed(0)} ms ≥ 阈值 ${ttffWarnMs.toStringAsFixed(0)} ms',
+            'ttff_ms': ttff,
+            'threshold_ms': ttffWarnMs,
+            if (route != null && route.isNotEmpty) 'route': route,
+          },
+          flush: true,
+        ),
+      );
+    }
   }
 
   @override
@@ -91,6 +142,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     required String? route,
     required DateTime at,
     int? backgroundMs,
+    Map<String, dynamic>? extra,
   }) {
     lastEvent = {
       'kind': kind,
@@ -98,17 +150,26 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       'at': at.toIso8601String(),
       if (route != null && route.isNotEmpty) 'route': route,
       if (backgroundMs != null) 'backgroundMs': backgroundMs,
+      if (extra != null) ...extra,
     };
-    debugPrint('[AppLifecycleTracker] $kind route=$route');
+    debugPrint(
+      '[AppLifecycleTracker] $kind route=$route '
+      'ttff=${extra?['ttff_ms'] ?? extra?['ttffMs']} '
+      'tti=${extra?['tti_ms'] ?? extra?['ttiMs']}',
+    );
 
-    FastTrackMcpDetectSink.track(
-      'app_lifecycle',
-      properties: {
-        'kind': kind,
-        'label': label,
-        if (route != null && route.isNotEmpty) 'route': route,
-        if (backgroundMs != null) 'background_ms': backgroundMs,
-      },
+    unawaited(
+      FastTrackMcpDetectSink.track(
+        'app_lifecycle',
+        properties: {
+          'kind': kind,
+          'label': label,
+          if (route != null && route.isNotEmpty) 'route': route,
+          if (backgroundMs != null) 'background_ms': backgroundMs,
+          if (extra != null) ...extra,
+        },
+        flush: true,
+      ),
     );
   }
 }

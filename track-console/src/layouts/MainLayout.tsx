@@ -2,6 +2,7 @@ import {
   AlertOutlined,
   BarChartOutlined,
   DashboardOutlined,
+  FileSearchOutlined,
   FilterOutlined,
   LineChartOutlined,
   TeamOutlined,
@@ -17,6 +18,7 @@ const menuItems = [
   { key: '/', icon: <DashboardOutlined />, label: '数据概览' },
   { key: '/events', icon: <LineChartOutlined />, label: '事件分析' },
   { key: '/stability', icon: <AlertOutlined />, label: '稳定性' },
+  { key: '/reports', icon: <FileSearchOutlined />, label: '会话报告' },
   { key: '/funnel', icon: <FilterOutlined />, label: '漏斗分析' },
   { key: '/retention', icon: <TeamOutlined />, label: '留存分析' },
   { key: '/users', icon: <UserOutlined />, label: '用户列表' },
@@ -28,6 +30,7 @@ export function MainLayout({ children }: { children: ReactNode }) {
 
   const selectedKey = useMemo(() => {
     if (location.pathname.startsWith('/users')) return '/users';
+    if (location.pathname.startsWith('/reports')) return '/reports';
     const hit = menuItems.find((item) => location.pathname === item.key);
     return hit?.key ?? '/';
   }, [location.pathname]);
@@ -61,9 +64,7 @@ export function MainLayout({ children }: { children: ReactNode }) {
             display: 'flex',
             alignItems: 'center',
           }}
-        >
-          <Typography.Text type="secondary">仿神策 MVP · 与 fast_track SDK 对接</Typography.Text>
-        </Header>
+        />
         <Content style={{ margin: 24 }}>{children}</Content>
       </Layout>
     </Layout>

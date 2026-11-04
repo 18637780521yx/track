@@ -96,10 +96,10 @@ class ManualGestureRecorder {
     _lastAt = now;
     try {
       final routeAtStart = FastTrackMcpNetwork.currentRoute();
-      await SchedulerBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 80));
-
+      // 立刻命中：若先 delay，弹窗/转场会抢在 hit-test 前打开，落到图标 Listener。
       final target = HitTargetResolver.resolve(position, viewId: viewId);
+
+      await SchedulerBinding.instance.endOfFrame;
       await Future<void>.delayed(const Duration(milliseconds: 120));
       final routeAfter = FastTrackMcpNetwork.currentRoute();
 
@@ -117,6 +117,7 @@ class ManualGestureRecorder {
           'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
           ...target.toJson(),
         },
+        flush: true,
       );
     } catch (e, st) {
       debugPrint('[ManualGestureRecorder] tap failed: $e\n$st');
@@ -158,6 +159,7 @@ class ManualGestureRecorder {
             'route_after': routeAfter,
           'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
         },
+        flush: true,
       );
     } catch (e, st) {
       debugPrint('[ManualGestureRecorder] scroll failed: $e\n$st');

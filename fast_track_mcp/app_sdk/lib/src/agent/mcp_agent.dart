@@ -123,13 +123,18 @@ class FastTrackMcp {
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 
-    if (enableFlutterSkill) {
-      FlutterSkillBinding.ensureInitialized();
-    }
-
+    // 生命周期优先于 flutter_skill，避免 skill 初始化失败时冷启动永远不埋点。
     AppLifecycleTracker.instance.ensureStarted();
     // 静默手势 → ui_tap / ui_scroll 埋点（无录制条 / 无本地报告）
     ManualGestureRecorder.instance.ensureStarted();
+
+    if (enableFlutterSkill) {
+      try {
+        FlutterSkillBinding.ensureInitialized();
+      } catch (e, st) {
+        debugPrint('[FastTrackMcp] flutter_skill init failed: $e\n$st');
+      }
+    }
 
     _bridge = FastTrackMcpBridgeServer(
       host: host,

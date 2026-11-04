@@ -171,6 +171,12 @@ export const api = {
       { method: 'DELETE' },
     );
   },
+  deleteSession(sessionId: string) {
+    return request<{ ok: boolean; deleted: Record<string, number> }>(
+      `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
+      { method: 'DELETE' },
+    );
+  },
   listUserEvents(
     userId: string,
     range: DateRange,

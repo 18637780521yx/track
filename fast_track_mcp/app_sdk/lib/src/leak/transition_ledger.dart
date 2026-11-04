@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
-import 'leak_online.dart';
+import '../detect/detect_sink.dart';
 import '../network/network_capture.dart';
+import 'leak_online.dart';
 import 'transition_leak_tracker.dart';
 
 /// Last Navigator/GetX transition observed by [TransitionObserver].
@@ -148,6 +149,7 @@ class TransitionLedger {
       from: last!.from,
       to: last!.to,
     );
+    _trackTransition(last!);
     debugPrint('[TransitionLedger] $kind ${last!.from} → ${last!.to}');
   }
 
@@ -170,6 +172,7 @@ class TransitionLedger {
       from: last!.from,
       to: last!.to,
     );
+    _trackTransition(last!);
     if (LeakOnline.instance.active && route != null && route.isNotEmpty) {
       // ignore: unawaited_futures
       _onlineProbeAfterPop(route);
@@ -212,6 +215,12 @@ class TransitionLedger {
       to: to,
       at: DateTime.now(),
     );
+    LeakOnline.instance.emitBreadcrumb(
+      kind: 'replace',
+      from: last!.from,
+      to: last!.to,
+    );
+    _trackTransition(last!);
   }
 
   void onRemove(String? name) {
@@ -227,6 +236,82 @@ class TransitionLedger {
       to: _stack.isNotEmpty ? _stack.last : currentLogical,
       at: DateTime.now(),
     );
+    LeakOnline.instance.emitBreadcrumb(
+      kind: 'remove',
+      from: last!.from,
+      to: last!.to,
+    );
+    _trackTransition(last!);
+  }
+
+  /// App-driven logical route change (bottom tab / segment) without Navigator
+  /// push — e.g. `/tabs#work` → `/tabs#mine`. Emits `tab_change` + `app_page`.
+  ///
+  /// Pass [fromName] when the app has already switched its tab index (so
+  /// [currentLogical] would already equal [toName]).
+  void onLogicalChange(
+    String? toName, {
+    String? fromName,
+    String kind = 'tab_change',
+  }) {
+    final to = _name(toName);
+    if (to == null || to.isEmpty) return;
+    final from = _name(fromName) ??
+        currentLogical ??
+        (_stack.isNotEmpty ? _stack.last : null) ??
+        last?.to;
+    if (from == to) return;
+
+    if (_stack.isNotEmpty && routeShell(_stack.last) == routeShell(to)) {
+      _stack[_stack.length - 1] = to;
+    } else if (_stack.isEmpty) {
+      _stack.add(to);
+    }
+
+    last = TransitionRecord(
+      kind: kind,
+      from: from,
+      to: to,
+      at: DateTime.now(),
+    );
+    LeakOnline.instance.emitBreadcrumb(
+      kind: kind,
+      from: last!.from,
+      to: last!.to,
+    );
+    _trackTransition(last!);
+    debugPrint('[TransitionLedger] $kind ${last!.from} → ${last!.to}');
+  }
+
+  /// Always bury transition + landing page (report reconstruction; not gated
+  /// on [LeakOnline]).
+  void _trackTransition(TransitionRecord r) {
+    final at = r.at.toIso8601String();
+    // ignore: unawaited_futures
+    FastTrackMcpDetectSink.track(
+      'app_transition',
+      properties: {
+        'kind': r.kind,
+        if (r.from != null && r.from!.isNotEmpty) 'from': r.from,
+        if (r.to != null && r.to!.isNotEmpty) 'to': r.to,
+        'at': at,
+      },
+      flush: true,
+    );
+    final page = r.to;
+    if (page != null && page.isNotEmpty) {
+      // ignore: unawaited_futures
+      FastTrackMcpDetectSink.track(
+        'app_page',
+        properties: {
+          'route': page,
+          'via': r.kind,
+          if (r.from != null && r.from!.isNotEmpty) 'from': r.from,
+          'at': at,
+        },
+        flush: true,
+      );
+    }
   }
 
   /// Prefer observer kind when from/to match the last record; else infer.

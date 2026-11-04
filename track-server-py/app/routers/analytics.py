@@ -212,3 +212,15 @@ async def delete_user(user_id: str):
         return {"ok": True, "deleted": result}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.delete("/sessions/{session_id}")
+async def delete_session(session_id: str):
+    """删除单个会话的 events / app_logs / stability_events。"""
+    try:
+        result = await analytics.delete_session(get_pool(), session_id)
+        if result is None:
+            return JSONResponse({"error": "session not found"}, status_code=404)
+        return {"ok": True, "deleted": result}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)

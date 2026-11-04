@@ -14,6 +14,7 @@ import '../detect/detect_sink.dart';
 import '../gesture/manual_gesture_recorder.dart';
 import '../gesture/ui_actions.dart';
 import '../lifecycle/app_lifecycle_tracker.dart';
+import '../lifecycle/cold_start_clock.dart';
 import '../leak/transition_leak_tracker.dart';
 import '../leak/transition_ledger.dart';
 import '../network/network_capture.dart';
@@ -136,6 +137,7 @@ class FastTrackMcpBridgeServer {
       ..get('/ui', _ui)
       ..get('/network', _network)
       ..get('/app/route', _appRoute)
+      ..get('/sleuth/startup', _sleuthStartup)
       ..post('/transition/leak_probe', _leakProbe);
 
     return const Pipeline()
@@ -257,6 +259,14 @@ class FastTrackMcpBridgeServer {
           lifecycleForeground: AppLifecycleTracker.instance.isForegroundish,
         ),
       ),
+    );
+  }
+
+  /// MCP 冷启动步骤轮询：返回 ColdStartClock 指标（兼容旧 Sleuth 路径）。
+  Future<Response> _sleuthStartup(Request request) async {
+    final metrics = ColdStartClock.instance.metrics();
+    return _envelope(
+      ApiResponse.ok(StartupMetricsData(metrics: metrics)),
     );
   }
 

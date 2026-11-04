@@ -5,6 +5,7 @@ import { MainLayout } from './layouts/MainLayout';
 import { EventAnalysisPage } from './pages/EventAnalysis';
 import { FunnelPage } from './pages/Funnel';
 import { OverviewPage } from './pages/Overview';
+import { PerfReportDetailPage, PerfReportPage } from './pages/PerfReport';
 import { RetentionPage } from './pages/Retention';
 import { StabilityPage } from './pages/Stability';
 import { UserDetailPage } from './pages/UserDetail';
@@ -29,6 +30,8 @@ export default function App() {
               <Route path="/" element={<OverviewPage />} />
               <Route path="/events" element={<EventAnalysisPage />} />
               <Route path="/stability" element={<StabilityPage />} />
+              <Route path="/reports" element={<PerfReportPage />} />
+              <Route path="/reports/:sessionId" element={<PerfReportDetailPage />} />
               <Route path="/funnel" element={<FunnelPage />} />
               <Route path="/retention" element={<RetentionPage />} />
               <Route path="/users" element={<UsersPage />} />

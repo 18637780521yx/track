@@ -59,34 +59,19 @@ export function OverviewPage() {
       </div>
 
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} sm={8} lg={4}>
+        <Col xs={12} sm={8}>
           <Card className="stat-card">
             <Statistic title="日活 (DAU)" value={data?.dau ?? 0} />
           </Card>
         </Col>
-        <Col xs={12} sm={8} lg={4}>
+        <Col xs={12} sm={8}>
           <Card className="stat-card">
             <Statistic title="新增用户" value={data?.new_users ?? 0} />
           </Card>
         </Col>
-        <Col xs={12} sm={8} lg={4}>
+        <Col xs={12} sm={8}>
           <Card className="stat-card">
             <Statistic title="安装 (首开)" value={data?.installs ?? 0} />
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="stat-card">
-            <Statistic title="付费用户" value={data?.paying_users ?? 0} />
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="stat-card">
-            <Statistic title="收入" value={data?.revenue ?? 0} precision={2} prefix="¥" />
-          </Card>
-        </Col>
-        <Col xs={12} sm={8} lg={4}>
-          <Card className="stat-card">
-            <Statistic title="活跃订阅" value={data?.active_subscriptions ?? 0} />
           </Card>
         </Col>
       </Row>

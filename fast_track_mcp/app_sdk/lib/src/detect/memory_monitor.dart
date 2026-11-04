@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/painting.dart';
 
+import '../network/network_capture.dart';
 import 'detect_sink.dart';
 import 'event_names.dart';
 
@@ -222,6 +223,7 @@ class FastTrackMcpMemoryMonitor {
     _reporting = true;
     _lastReportAt = now;
     try {
+      final route = FastTrackMcpNetwork.currentRoute();
       final props = <String, dynamic>{
         'type': type,
         'severity': severity,
@@ -230,6 +232,7 @@ class FastTrackMcpMemoryMonitor {
         'max_rss_bytes': maxRss,
         'max_rss_mb': double.parse((maxRss / (1024 * 1024)).toStringAsFixed(2)),
         if (imageCacheBytes != null) 'image_cache_bytes': imageCacheBytes,
+        if (route != null && route.isNotEmpty) 'route': route,
         if (_baselineRss != null) ...{
           'baseline_rss_bytes': _baselineRss,
           'delta_from_baseline_bytes': rss - _baselineRss!,
