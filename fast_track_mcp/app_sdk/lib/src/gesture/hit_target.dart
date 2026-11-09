@@ -41,6 +41,7 @@ class HitTarget {
     if (s == null) return false;
     final t = s.trim();
     if (t.isEmpty) return false;
+    if (_isNoiseLabel(t)) return false;
     // Prefer labels that contain at least one non-control, non-PUA char.
     return t.runes.any((c) {
       if (c <= 0x1f || c == 0x7f) return false;
@@ -49,6 +50,29 @@ class HitTarget {
       if (c >= 0x100000 && c <= 0x10fffd) return false;
       return true;
     });
+  }
+
+  /// Image/network ErrorWidget 文案、异常栈等，不能当点击目标名。
+  static bool _isNoiseLabel(String t) {
+    final lower = t.toLowerCase();
+    if (lower.contains('httpexception')) return true;
+    if (lower.contains('socketexception')) return true;
+    if (lower.contains('handshakeexception')) return true;
+    if (lower.contains('clientexception')) return true;
+    if (lower.contains('invalid statuscode')) return true;
+    if (lower.contains('statuscode:')) return true;
+    if (lower.contains('another exception was thrown')) return true;
+    if (lower.contains('renderflex overflowed')) return true;
+    if (lower.startsWith('exception:')) return true;
+    if (lower.startsWith('error:')) return true;
+    if (t.contains('uri = http')) return true;
+    // 整段就是 URL / 超长带 URL 的 dump
+    if (t.startsWith('http://') || t.startsWith('https://')) return true;
+    if (t.length > 64 &&
+        (lower.contains('https://') || lower.contains('http://'))) {
+      return true;
+    }
+    return false;
   }
 
   Map<String, dynamic> toJson() => {
@@ -233,26 +257,33 @@ class HitTargetResolver {
   }
 
   /// First usable (non-icon-font) plain text under [element].
+  ///
+  /// Skips [ErrorWidget] subtrees (broken Image 会把 HttpException 渲成 Text）。
+  /// Prefers short labels (菜单名) over long dumps.
   static String? _extractUsableText(Element element) {
-    String? found;
+    final found = <String>[];
     void visit(Element e) {
-      if (found != null) return;
       final w = e.widget;
+      if (w is ErrorWidget) return;
+      final type = w.runtimeType.toString();
+      if (type.contains('ErrorWidget')) return;
+
       if (w is Text && HitTarget._usable(w.data)) {
-        found = w.data!.trim();
-        return;
-      }
-      if (w is RichText) {
+        found.add(w.data!.trim());
+      } else if (w is RichText) {
         final t = w.text.toPlainText().trim();
-        if (HitTarget._usable(t)) {
-          found = t;
-          return;
-        }
+        if (HitTarget._usable(t)) found.add(t);
       }
       e.visitChildren(visit);
     }
 
     visit(element);
-    return found;
+    if (found.isEmpty) return null;
+    found.sort((a, b) {
+      final byLen = a.length.compareTo(b.length);
+      if (byLen != 0) return byLen;
+      return a.compareTo(b);
+    });
+    return found.first;
   }
 }

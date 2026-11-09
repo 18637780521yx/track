@@ -1,0 +1,50 @@
+# 用法：
+#   COMPOSE_PROJECT_NAME=track-test WEB_PORT=18765 docker compose --env-file .env.test up -d --build
+#   COMPOSE_PROJECT_NAME=track-prod WEB_PORT=28643 docker compose --env-file .env.prod up -d --build
+name: ${COMPOSE_PROJECT_NAME:-track-test}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: track
+      POSTGRES_PASSWORD: track
+      POSTGRES_DB: track
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U track -d track"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ./track-server-py
+    expose:
+      - "8080"
+    environment:
+      ADDR: ":8080"
+      DATABASE_URL: postgres://track:track@postgres:5432/track?sslmode=disable
+      TRACK_ENV: ${TRACK_ENV:-test}
+      TRACK_RETENTION_DAYS: ${TRACK_RETENTION_DAYS:-7}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: nginx:1.27-alpine
+    ports:
+      - "${WEB_PORT:-18765}:80"
+    volumes:
+      - ./track-console-dist:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - server
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+    name: ${PG_VOLUME:-track_test_pg_data}

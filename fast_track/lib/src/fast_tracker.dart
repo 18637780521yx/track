@@ -22,6 +22,7 @@ class FastTracker {
 
   TrackerConfig _config = const TrackerConfig();
   EventUploader? _uploader;
+  DioBodyBuilder? _bodyBuilder;
 
   bool _initialized = false;
   bool _initializing = false;
@@ -56,6 +57,28 @@ class FastTracker {
         initialCommonProperties: initialCommonProperties);
   }
 
+  /// 已初始化后切换上报地址（如 App 运行时切测试/正式环境）。
+  static void updateUploadUrl(
+    String url, {
+    Map<String, dynamic>? headers,
+  }) {
+    tracker._updateUploadUrl(url, headers: headers);
+  }
+
+  void _updateUploadUrl(String url, {Map<String, dynamic>? headers}) {
+    if (!_initialized) {
+      fastLog('updateUploadUrl skipped: not initialized');
+      return;
+    }
+    _uploader = createDioEventUploader(
+      url: url,
+      headers: headers,
+      bodyBuilder: _bodyBuilder,
+      config: _config,
+    );
+    fastLog('upload url updated -> $url');
+  }
+
   /// 初始化
   ///
   /// [url] 上报地址（使用内置 Dio uploader 时必需）
@@ -86,6 +109,7 @@ class FastTracker {
       await FastStorage.init();
 
       _config = config;
+      _bodyBuilder = bodyBuilder;
 
       if (uploader != null) {
         _uploader = uploader;

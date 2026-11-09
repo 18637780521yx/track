@@ -7,6 +7,8 @@ class Settings:
         "DATABASE_URL",
         "postgres://track:track@localhost:5432/track?sslmode=disable",
     )
+    # 埋点 / 会话报告等只保留最近 N 天（默认 7）
+    retention_days: int = int(os.getenv("TRACK_RETENTION_DAYS", "7"))
 
     @property
     def host(self) -> str:

@@ -218,10 +218,10 @@ GetPage<dynamic> _instrumentOne(GetPage<dynamic> page) {
 }
 
 /// Navigator observers for transition ledger / leak markPush.
+///
+/// [enabled] 由 [FastTrackMcp.navigatorObservers] 汇总 Debug / LeakOnline /
+/// [FastTrackMcp.releaseUiHooks]。
 List<NavigatorObserver> perfNavigatorObservers({bool enabled = true}) {
   if (!enabled) return const <NavigatorObserver>[];
-  if (kReleaseMode && !LeakOnline.instance.active) {
-    return const <NavigatorObserver>[];
-  }
   return <NavigatorObserver>[TransitionObserver()];
 }

@@ -555,6 +555,7 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
 
     from app.services.applog import ingest_app_log, is_app_log_event
     from app.services.noise import should_drop_noisy_event
+    from app.services.retention import is_past_retention
     from app.services.stability import ingest_stability, is_stability_event
 
     stored = 0
@@ -570,6 +571,11 @@ async def ingest(pool: asyncpg.Pool, events: list[TrackEvent]) -> tuple[int, int
             e.anonymous_id = anon
             e.session_id = session
             e.timestamp = ts
+
+            # 超过保留期的事件直接丢弃（默认 7 天）
+            if is_past_retention(ts):
+                dropped += 1
+                continue
 
             # 导播循环降噪：同设备同 content 的反复 play/end 不入库
             if should_drop_noisy_event(e):

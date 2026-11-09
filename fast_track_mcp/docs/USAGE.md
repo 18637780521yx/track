@@ -1,31 +1,66 @@
 # 使用教程
 
-报告时间线里能出现哪些操作 / 网络 / 告警事件，见仓库文档 [perf-events.md](../../doc/perf-events.md)。
+接入步骤见 [INTEGRATION.md](INTEGRATION.md)。事件名目录见仓库 [perf-events.md](../../doc/perf-events.md)（若存在）。
 
-## 前置
+有两条日常路径：
 
-1. 已接入 `FastTrackMcp`（见 [INTEGRATION.md](INTEGRATION.md)；**无需 Sleuth**）
-2. Cursor 已配置 `fast_track_mcp` MCP
-3. App 正在跑（建议 `--profile`）
+1. **手动点 App → track-console 会话报告**（联调埋点最常用）
+2. **Cursor MCP 自动化 → Bridge 报告**（回归 / 自然语言驱动）
+
+---
+
+## A. 埋点 + 控制台报告
+
+### 前置
+
+1. App 已按 INTEGRATION 接入（`FastTracker` + `FastTrackMcp`）
+2. `track-server-py` 在 `:8080`
+3. `track-console` 在 `:3000`
+4. 真机已 `adb reverse tcp:8080 tcp:8080`
+
+### 看报告
+
+打开 http://localhost:3000/reports  
+
+- 按用户聚合；登录用户显示 `identify` 后的 distinct_id  
+- 时间线：页面卡 + 操作 / 网络 / 告警；离开页底部附带 `转场 kind to`  
+- 裸路由 `/tabs` 会升成 `/tabs#work` 等逻辑 Tab  
+
+### 常见问题
+
+| 现象 | 处理 |
+|------|------|
+| `retry … code=null` | `adb reverse tcp:8080`；确认服务 `/health` |
+| 报告「匿名」 | 登录后 / 冷启已登录调 `identify` |
+| tap 挂在转场后的页 | 已修：按下时冻结路由；刷新控制台；App 需含新 SDK |
+| 登录后多余 `remove` 泄漏提示 | `Get.offAll` 清栈，报告侧已忽略 |
+
+---
+
+## B. Cursor MCP 自动化
+
+### 前置
+
+1. 已接入 App SDK，且 **Debug/Profile** 下 `ensureInitialized` 成功  
+2. Cursor 已配置 `fast_track_mcp`（见 INTEGRATION §5）  
+3. App 在跑；Bridge 可达：
 
 ```bash
-cd example_app && flutter run -d windows --profile --no-dds
 curl http://127.0.0.1:19288/health
+# 真机另需：adb reverse tcp:19288 tcp:19288
 ```
 
-## Cursor 自然语言示例
+建议：`flutter run --profile --no-dds`
 
-### 完整登录 → 滑动
+### 自然语言示例
 
 ```
 启动性能测试，名字：登录到列表滑动。
 1. 在 password_field 输入 123456
 2. 点击「登录」
-3. 向下滑动列表两次，distance 400
-停止测试，给我 JSON 和 HTML 报告路径，并列出告警。
+3. 向下滑动列表两次
+停止测试，给我报告路径并列出告警。
 ```
-
-### 只点一个按钮看性能
 
 ```
 start_perf_test 名字：点刷新
@@ -33,200 +68,85 @@ tap 刷新按钮
 stop_perf_test
 ```
 
-### 先看页面再操作
-
 ```
 启动测试「探路」
 调用 get_ui_snapshot 告诉我现在有哪些可点控件
-再点击登录按钮并停止，输出报告
+再点击登录并停止
 ```
 
-### 响应信封（0.6）
-
-所有 Bridge HTTP 与 MCP tool JSON：
+### 响应信封
 
 ```json
 { "code": 0, "data": { }, "msg": "ok" }
 ```
 
-`code == 0` 成功；非 0 见 `ApiCodes`（400 / 503 / 1001 无会话 / 1002 skill / 1004 动作失败）。`get_sleuth_*` 已下线（0.10）。
+`code == 0` 成功。`get_sleuth_*` 已下线（0.10）。
 
-### 自动性能（0.6.2）
+### 常用工具
 
-直接 `tap` / `input_text` / `scroll` / `skill_call`（手势）即可：
+| Tool | 说明 |
+|------|------|
+| `start_perf_test` / `stop_perf_test` | 开会话 / 出 JSON+HTML |
+| `tap` / `input_text` / `scroll` | 可自动开会话 |
+| `get_ui_snapshot` | 可交互控件 |
+| `skill_call` / `skill_list_methods` | flutter_skill |
+| `screenshot` | 按需截图 |
 
-1. 无会话时自动 `start`
-2. 每步前后采 Sleuth/RSS，写告警
-3. 覆盖更新 `reports/live_<sessionId>.json` / `.html`
-4. 测完调用 `stop_perf_test` 拿最终报告
+直接 `tap` / `input_text` 时：无会话会自动 start；测完仍建议显式 `stop_perf_test`。
 
-不必再先手动 `start_perf_test`（仍可显式调用）。
-
-### 统一账本：MCP + 手动（0.7.0）
-
-报告权威在 **App SDK**（`SessionJournal`），MCP 与手动共用：
-
-| 来源 | 怎么记步骤 | 怎么出报告 |
-|------|------------|------------|
-| MCP | 每步全量 upsert 路由章到 App SDK 账本 | `stop_perf_test` → **仅** `app_sdk` HTML（与手动同款） |
-| 手动 | 点击 hitTest（key/文案/hint） | App 顶栏「结束」或 Bridge `POST /session/stop` |
-
-手动用法：跑 `example_app`（debug/profile）→ 直接点界面（首次点击可自动开会话）→ 点顶栏 **结束** → 看 `reports/*_<sessionId>.json` / `.html`。步骤带 `source=mcp|manual`。  
-MCP 不再另写一份大 HTML；`live_<sessionId>.html` 也由 SDK 账本刷新。
-
-### flutter_skill（skill_call）
-
-常用仍用 `tap` / `input_text` / `scroll`；其余：
+### flutter_skill
 
 ```
 启动测试「skill_full」
 skill_list_methods
-skill_call method=interactive
 skill_call method=waitForElement args={text:登录}
 skill_call method=longPress args={text:登录}
-skill_screenshot
-get_sleuth_issues
+screenshot
 停止测试
 ```
 
-### 导出会话快照
-
-```
-启动测试「snapshot_demo」
-…操作…
-停止测试并 export_session_snapshot
-```
-
-## 不用 Cursor：命令行 Demo
+### 命令行 Demo
 
 ```bash
-# 终端1：跑 App
-cd example_app && flutter run -d macos --debug
-
-# 终端2：
-cd fast_track_mcp
-./scripts/demo.sh
+cd example_app && flutter run -d windows --profile --no-dds
+# 另开
+cd fast_track_mcp && ./scripts/demo.sh
 ```
 
-会跑通 `input_text → tap → scroll ×2`，并尝试打开最新 HTML 报告。
-
-## 报告里有什么
+### 报告产物（MCP 会话）
 
 | 产物 | 内容 |
 |------|------|
-| `reports/*.json` | 机器可读：`steps`/`alerts` + 派生 `view`（`timeline` 模块段 + `events`） |
-| `reports/*.html` | 可视化：时间线内嵌模块段（启动/页面/转场/告警），段内是事件 |
-| `reports/screenshots/<session>/` | 每步 PNG |
+| `reports/*_<sessionId>.json` | 机器可读 |
+| `reports/*_<sessionId>.html` | 可视化时间线 |
+| `reports/screenshots/...` | 截图（若开启） |
 
-HTML 结构（schemaVersion 9）：
+权威账本在 App SDK；MCP 与手动操作共用。
 
-1. **摘要**：耗时、步骤、告警、网络、FPS/RSS
-2. **全会话时间线**：按时间的模块段；每段内嵌事件（截图/操作/网络/跳转等）；chips 按模块筛选
-3. **环境与阈值**：阈值 + Sleuth diagnose
+---
 
 ## 配置调参
 
-编辑 `perf_agent_config.json`（MCP）：
+编辑 `perf_agent_config.json`：
 
 | 字段 | 含义 |
 |------|------|
-| `waitStableMs` | 操作后 Bridge 等待 |
-| `postActionSettleMs` | 额外 settle |
-| `navigationWaitMs` | 登录类点击后的跳转等待 |
-| `maxRetries` | flutter_skill 重试次数 |
+| `bridgePort` | 默认 19288 |
+| `waitStableMs` / `postActionSettleMs` | 操作后等待 |
 | `captureScreenshots` | 是否截图 |
 | `thresholds.*` | 告警阈值 |
+| `transition.*` | 转场泄漏探针参数 |
 
-Sleuth 性能采集总开关（0.9.9+，**默认关**）：
+### Release LeakOnline（可选）
 
-| 字段 | 含义 | 默认 |
-|------|------|------|
-| `sleuthPerfEnabled` | `FrameJankLatch` / `SleuthIssueLatch` / transition sleuth bind；MCP 侧 Sleuth issue 告警 | `false` |
-
-关闭时仍采集：`crash`、网络、WeakRef 泄漏、RSS `memory_increase`。App：`ensureInitialized(sleuthPerfEnabled: true)`；MCP：顶层或 `transition.sleuthPerfEnabled`。
-
-转场泄漏（App SDK `ensureInitialized` **或** MCP `perf_agent_config.json` → `transition`，开会话下推）：
-
-| 字段 | 含义 | 默认 |
-|------|------|------|
-| `leakTrackEnabled` | WeakRef 转场泄漏探针 | `true` |
-| `transitionSettleMs` | pop 后 settle 再检 WeakRef | `1500` |
-| `leakConfirmRounds` | 连续进出确认轮数（阶梯/持平） | `2` |
-| `leakRssRetainMb` | RSS 辅证阈值（MB） | `5` |
-| `leakOnlineEnabled` | Release 轻量线上采样总开关 | `false` |
-| `leakSampleRate` | 会话采样概率 `0`～`1`（`0` 关，`1` 全开） | `0.0` |
-| `onLeakOnlineEvent` | 线上事件回调（面包屑 / `transition_leak`） | `null` |
-| `alertOnWeakRef` | WeakRef 存活出主告警 | `true` |
-| `requireMultiRound` | 仅多轮确认后出 WeakRef 主告警（CI 友好） | `false` |
-| `alertOnSleuthOnly` | 仅 Sleuth hit 也出主告警（`sleuthPerfEnabled=false` 时强制关） | `true` |
-| `alertOnRssRetain` | RSS 辅证告警 | `true` |
-| `leakVmDeepProbe` | MCP opt-in VM GC/allocation 注记（不作唯一门禁） | `false` |
-
-```json
-"sleuthPerfEnabled": false,
-"transition": {
-  "leakTrackEnabled": true,
-  "transitionSettleMs": 1500,
-  "leakConfirmRounds": 2,
-  "leakRssRetainMb": 5,
-  "sleuthPerfEnabled": false,
-  "sleuthBindEnabled": true,
-  "alertOnWeakRef": true,
-  "requireMultiRound": false,
-  "alertOnSleuthOnly": true,
-  "alertOnRssRetain": true,
-  "leakVmDeepProbe": false
-}
-```
-
-### V3 modal / 门禁 / VM（0.9.0）
-
-- Dialog / BottomSheet / `fullscreenDialog` → `transitionKind`=`modal_dialog`|`modal_sheet`|`modal_page`；无名弹层合成 `#modal/N`
-- 关闭弹层（`from` 为 `#modal/…`）才会跑泄漏探针（与打开弹层区分）
-- example：我的 →「打开泄漏 Dialog」→ 关闭 → 应出现 `memory_leak`（`DialogLeakHolder`，挂在转场段）
-- `requireMultiRound: true`：单轮 pop 不出主告警，二轮确认后出
-- `leakVmDeepProbe: true`：WeakRef 泄漏时探针附带 `vmDeep`（无 VM 则 `skipped`）；**不得**单独作 CI 红线
-
-Sleuth 转场绑定（0.8.6）：push 时记录 issue 指纹，pop 后若新增 `heap_growing` / `stream_resource_growth` / `native_memory_growing`，写入探针 `sleuthHits`，`evidence` 可为 `sleuth` 或与 WeakRef 组合。需探测器实际 hit（常要 `--profile`）才会非空。
-
-手动验收多轮：「我的」Tab →「打开独立个人页（泄漏多轮演示）」→ 返回 → 再打开再返回；第二次 pop 后 HTML 转场段应出现「多轮确认」与 `weak_ref_multi`（`ProfilePushController.demoRetain` 故意握持；登记由 `FastTrackMcpDi.lazyPut` 自动完成）。
-
-告警可读性（0.8.4）：HTML 告警块会展开 `value`（如新增 Sleuth issue 的 title）；同一步多点击时 `memory_increase` 与步骤 `diff.memoryDeltaMb` 同源（章起点 RSS），不再出现「告警涨、diff 跌」打架。
-
-### GetX / Navigator 自动 hook（0.8.3）
-
-```dart
-GetMaterialApp(
-  getPages: FastTrackMcp.instrumentGetPages(AppPages.routes),
-  navigatorObservers: FastTrackMcp.navigatorObservers,
-);
-
-// Binding 内（推荐）
-FastTrackMcpDi.lazyPut(MyController.new);
-
-// 或 Controller：with FastTrackMcpLeakTrackMixin / extends FastTrackMcpGetxController
-```
-
-### 线上采样（0.8.7 首刀）
-
-Release 不启 Bridge / Sleuth 绑定。开启后按**进程会话**掷骰；中选才挂 `TransitionObserver`、WeakRef `track`、pop 探针，事件交给宿主埋点：
+不启 Bridge。按会话采样 WeakRef 转场泄漏：
 
 ```dart
 await FastTrackMcp.ensureInitialized(
   leakOnlineEnabled: true,
-  leakSampleRate: 0.01, // 1% 会话
-  onLeakOnlineEvent: (e) {
-    // e['type']: route_breadcrumb | transition_leak
-    // 接你们现有埋点 / 崩溃上报；SDK 不内置 HTTP 上报
-  },
+  leakSampleRate: 0.01,
+  wireLeakOnlineToFastTrack: true,
 );
-// 记得 navigatorObservers: FastTrackMcp.navigatorObservers
 ```
 
-事件也可 `LeakOnline.instance.drain()` 批量取走（ring≤64）。
-
-验收：
-
-- `leakSampleRate: 0` → 无 track / 无事件
-- `leakSampleRate: 1` + 故意 retain → 回调收到 `transition_leak` 且 `aliveCount ≥ 1`
-- example：`flutter run --release --dart-define=LEAK_ONLINE=true`
+example：`flutter run --release --dart-define=LEAK_ONLINE=true`

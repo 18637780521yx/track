@@ -1,36 +1,38 @@
 # 接入指南
 
-把 Fast Track MCP 接到任意 Flutter 工程。开发账本以 Debug / Profile 为主；Release 仅可选 LeakOnline。
+把 Fast Track MCP 接到 Flutter 工程。
 
-## 与 FastTrack 的分工（避免冲突）
+- **Debug / Profile**：检测 + Bridge + 抓包 + 手势（完整）
+- **Release**：建议保留 `CrashHandler` + `FastTracker` 上报；Bridge / 抓包默认关
+
+## 与 FastTrack 的分工
 
 | 能力 | Owner |
 |------|--------|
-| Dart Crash / Zone / `FlutterError` / Isolate / jank / RSS | **FastTrackMcp App SDK**（`detect/`）→ Journal + 可选 `FastTracker.track` |
-| 原生 Crash / Tombstone | **同插件**：Android Uncaught + ExitInfo(+trace tombstone) + 可读时 `/data/tombstones`；iOS Uncaught + pending + **MetricKit**（14+） |
-| ANR / App Hang | **原生插件**（Android Watchdog + ExitInfo ANR / iOS RunLoop）；非移动端 Soft Isolate 回退 |
-| SessionJournal / Bridge / MCP / 手势 / 全量 HTTP / WeakRef 转场 | **FastTrackMcp**（dev） |
-| 事件上传 / 批处理 / ObjectBox | **FastTrack**（`FastTracker`，仅 track，无 NavigatorObserver、无自建检测） |
+| 事件上传 / 批处理 / ObjectBox / identify | **`flutter_fast_track`**（`FastTracker`，零钩子） |
+| Crash / Zone / 原生崩溃 / Tombstone | **`FastTrackMcpCrashHandler`** |
+| ANR / jank / memory | **App SDK `detect/`**（`ensureInitialized` 内启动） |
+| 转场账本 / 手势 / HTTP 抓包 / Bridge | **`FastTrackMcp`**（Debug/Profile） |
+| 分析后台会话报告 | **`track-server-py` + `track-console`** |
 
-真冲突点：`HttpOverrides` 由 FastTrackMcp 独占（排除 track 上报 URL）。勿再叠 Sleuth。
+冲突点：`HttpOverrides` 由 FastTrackMcp 独占（务必 `excludeUrlSubstrings` 排除 track URL）。不要再叠旧 Sleuth。
 
 ## 1. 依赖
 
 ```yaml
-# pubspec.yaml
 dependencies:
-  fast_track_mcp:
-    path: /path/to/track/fast_track_mcp/app_sdk
   flutter_fast_track:
-    path: /path/to/track/fast_track
-  flutter_skill: ^0.9.37   # MCP 手势需要
+    path: ../track/fast_track
+  fast_track_mcp:
+    path: ../track/fast_track_mcp/app_sdk
+  flutter_skill: ^0.9.37   # Cursor MCP 手势需要；仅埋点也可保留
 ```
 
 ```bash
 flutter pub get
 ```
 
-## 2. 初始化
+## 2. 初始化（顺序不能反）
 
 ```dart
 import 'package:flutter/foundation.dart';
@@ -38,36 +40,79 @@ import 'package:flutter_fast_track/flutter_fast_track.dart';
 import 'package:fast_track_mcp/fast_track_mcp.dart';
 
 Future<void> main() async {
+  // Release 也建议包住：崩溃 → app_crash → FastTracker
   await FastTrackMcpCrashHandler.run(() async {
     WidgetsFlutterBinding.ensureInitialized();
 
+    // ① 先上报管道
     await FastTracker.init(
-      url: 'https://your-track-server/v1/events',
-      config: const TrackerConfig(dryRun: true), // 或生产 URL
+      url: const String.fromEnvironment(
+        'FAST_TRACK_URL',
+        defaultValue: 'http://127.0.0.1:8080/track',
+      ),
+      config: TrackerConfig(
+        dryRun: kReleaseMode && !const bool.fromEnvironment('TRACK_UPLOAD'),
+        enableDebugLog: !kReleaseMode,
+        flushInterval: const Duration(seconds: 5),
+      ),
     );
+    FastTracker.tracker.onForeground(); // 冷启换新 session（可选）
 
+    // 已登录则立刻绑定，避免会话挂在「匿名」
+    // FastTracker.tracker.identify(userId);
+
+    // ② 再 MCP：Release 也调（只开 ANR/jank/memory，SDK 内不启 Bridge）
+    await FastTrackMcp.ensureInitialized(
+      host: '127.0.0.1',
+      port: 19288,
+      wireLeakOnlineToFastTrack: true,
+      leakTrackEnabled: !kReleaseMode,
+    );
     if (!kReleaseMode) {
-      await FastTrackMcp.ensureInitialized(
-        host: '127.0.0.1',
-        port: 19288,
-        wireLeakOnlineToFastTrack: true,
-      );
+      // Tab / 壳路由：把 /tabs 升成 /tabs#work
+      FastTrackMcpNetwork.routeProvider = () => /* 你的逻辑路由 */ Get.currentRoute;
     }
 
     runApp(const MyApp());
 
+    // ③ runApp 之后装 HTTP 抓包（仅 Debug/Profile）
     if (!kReleaseMode) {
-      FastTrackMcp.installHttpCaptureDeferred();
+      FastTrackMcp.installHttpCaptureDeferred(
+        excludeUrlSubstrings: const ['/track'],
+      );
     }
   });
 }
 ```
 
-`navigatorObservers` 挂：`FastTrackMcp.navigatorObservers`（含转场 / 生命周期；**不要**再挂 FastTrack 的 NavigatorObserver）。
+### MaterialApp / GetX
 
-GetX：`FastTrackMcp.instrumentGetPages(...)` + `FastTrackMcpDi.lazyPut` 自动 WeakRef。
+```dart
+GetMaterialApp(
+  navigatorObservers: [
+    ...FastTrackMcp.navigatorObservers, // Release 可传空列表
+  ],
+  getPages: FastTrackMcp.instrumentGetPages(AppPages.routes),
+);
+```
 
-## 3. 给控件加稳定定位
+- **不要**再挂旧的 FastTrack NavigatorObserver（本包已无）。
+- Bottom Tab：索引变更时调用 `TransitionLedger.instance.onLogicalChange(to, fromName: from)`，并在首屏 `seedShell('/tabs#work')`，避免转场 `from` 错乱。
+- Binding 内推荐 `FastTrackMcpDi.lazyPut(...)` 做 WeakRef 泄漏跟踪。
+
+### 用户身份
+
+```dart
+// 登录成功
+FastTracker.tracker.identify('$userId');
+
+// 退出
+FastTracker.tracker.resetIdentity();
+```
+
+冷启若本地已有登录态，在 `FastTracker.init` 之后立刻 `identify`，否则会话报告会显示「匿名」。
+
+## 3. 控件稳定定位（给 MCP 点选用）
 
 ```dart
 TextField(key: const Key('password_field'), ...)
@@ -75,39 +120,69 @@ FilledButton(
   key: const Key('login_button'),
   child: const Text('登录'),
 )
-// 或
-Semantics(label: '登录按钮', button: true, child: ...)
 ```
 
-MCP / flutter_skill 优先用 **Key** 或可见 **Text**；语义 label 作补充。
+优先 **Key** / 可见 **Text**；`Semantics` 作补充。
 
-## 4. 配置 MCP（Cursor）
+## 4. 本地联调
+
+```bash
+# 埋点服务
+cd track/track-server-py && python -m app.main   # :8080
+
+# 分析后台
+cd track/track-console && npm run dev            # :3000 → /reports
+
+# 真机 USB
+adb reverse tcp:8080 tcp:8080
+adb reverse tcp:19288 tcp:19288
+```
+
+未做 `adb reverse` 时，App 访问 `127.0.0.1:8080` 会连续 `retry code=null`。
+
+## 5. Cursor MCP（可选）
 
 ```json
 {
   "mcpServers": {
     "fast_track_mcp": {
-      "command": "/path/to/dart",
+      "command": "dart",
       "args": [
-        "/path/to/fast_track_mcp/mcp_server/bin/server.dart",
+        "C:/path/to/track/fast_track_mcp/mcp_server/bin/server.dart",
         "--config",
-        "/path/to/fast_track_mcp/perf_agent_config.json"
+        "C:/path/to/track/fast_track_mcp/perf_agent_config.json"
       ]
     }
   }
 }
 ```
 
-重启 Cursor 后即可在对话里调用工具。`get_sleuth_*` 已下线；看告警用会话报告 / Bridge snapshot。
+重启 Cursor。用法见 [USAGE.md](USAGE.md)。`get_sleuth_*` 已下线。
 
-## 5. Android 模拟器注意
+## 6. Release
 
-Bridge 绑在 App 内 `127.0.0.1`。宿主机访问模拟器内端口需：
+| 做 | 不做（默认） |
+|----|----------------|
+| `FastTrackMcpCrashHandler.run` | **Bridge `:19288`** |
+| `FastTracker.init`（**生产 URL**，勿 dryRun） | MCP 自动化 / flutter_skill |
+| ANR / jank / memory | 全量 WeakRef（可用 `leakOnlineEnabled` 采样） |
+| 手势 `ui_tap` / `ui_scroll` | |
+| Tab / 路由转场账本（`releaseUiHooks=true`） | |
+| HTTP 抓包：`allowInRelease` + **`captureBodyOnFailureOnly`**（成功无 body，失败才带） | |
 
-```bash
-adb reverse tcp:19288 tcp:19288
+```dart
+FastTrackMcp.releaseUiHooks = true;
+ManualGestureRecorder.instance.ensureStarted();
+FastTrackMcp.installHttpCaptureDeferred(
+  allowInRelease: true,
+  captureBodyOnFailureOnly: true, // 仅失败带 body
+  maxBodyBytes: 32 * 1024,
+  excludeUrlSubstrings: const ['/track'],
+);
 ```
 
-## 6. Release LeakOnline（可选）
+未配 `FAST_TRACK_URL` 时 Release 仍可能 `dryRun`——监控事件会记但发不出去。
 
-不启 Bridge。事件类型：`route_breadcrumb`、`transition_leak`。见 `ensureInitialized(leakOnlineEnabled: true, …)`。
+## 参考实现
+
+业务侧可参考 `lianqiaoapp/lib/app/perf/perf_bootstrap.dart`（Tracker → MCP → Tab 路由 → identify）。

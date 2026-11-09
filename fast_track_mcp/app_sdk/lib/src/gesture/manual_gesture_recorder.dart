@@ -23,6 +23,8 @@ class ManualGestureRecorder {
   Offset? _downPos;
   DateTime? _downAt;
   int? _downPointer;
+  /// 按下瞬间的逻辑路由；Tab onTap 会先改 index，抬起后再读会变成目标页。
+  String? _routeAtDown;
   int _mcpGuardDepth = 0;
 
   bool get suppressManual => _mcpGuardDepth > 0;
@@ -53,6 +55,7 @@ class ManualGestureRecorder {
       _downPos = event.position;
       _downPointer = event.pointer;
       _downAt = DateTime.now();
+      _routeAtDown = FastTrackMcpNetwork.currentRoute();
       return;
     }
 
@@ -60,14 +63,23 @@ class ManualGestureRecorder {
       if (_downPointer != null && event.pointer != _downPointer) return;
       final down = _downPos;
       final gestureAt = _downAt ?? DateTime.now();
+      final routeAtDown = _routeAtDown;
       _downPos = null;
       _downPointer = null;
       _downAt = null;
+      _routeAtDown = null;
       if (down == null) return;
 
       final moved = (event.position - down).distance;
       if (moved > 24) {
-        unawaited(_recordScroll(down, event.position, gestureAt: gestureAt));
+        unawaited(
+          _recordScroll(
+            down,
+            event.position,
+            gestureAt: gestureAt,
+            routeAtDown: routeAtDown,
+          ),
+        );
         return;
       }
 
@@ -76,6 +88,7 @@ class ManualGestureRecorder {
           event.position,
           viewId: event.viewId,
           gestureAt: gestureAt,
+          routeAtDown: routeAtDown,
         ),
       );
     }
@@ -85,6 +98,7 @@ class ManualGestureRecorder {
     Offset position, {
     required int viewId,
     required DateTime gestureAt,
+    String? routeAtDown,
   }) async {
     if (_busy || suppressManual) return;
     final now = DateTime.now();
@@ -95,7 +109,9 @@ class ManualGestureRecorder {
     _busy = true;
     _lastAt = now;
     try {
-      final routeAtStart = FastTrackMcpNetwork.currentRoute();
+      // 优先按下时路由；Tab 切换会在 onTap 里先改 index，抬起后再读已是目标页。
+      final routeAtStart =
+          routeAtDown ?? FastTrackMcpNetwork.currentRoute();
       // 立刻命中：若先 delay，弹窗/转场会抢在 hit-test 前打开，落到图标 Listener。
       final target = HitTargetResolver.resolve(position, viewId: viewId);
 
@@ -130,11 +146,13 @@ class ManualGestureRecorder {
     Offset from,
     Offset to, {
     required DateTime gestureAt,
+    String? routeAtDown,
   }) async {
     if (_busy || suppressManual) return;
     _busy = true;
     try {
-      final routeAtStart = FastTrackMcpNetwork.currentRoute();
+      final routeAtStart =
+          routeAtDown ?? FastTrackMcpNetwork.currentRoute();
       await Future<void>.delayed(const Duration(milliseconds: 80));
       final dx = to.dx - from.dx;
       final dy = to.dy - from.dy;

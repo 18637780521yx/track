@@ -92,6 +92,9 @@ class FastTrackMcpNetwork {
   /// When true, emit FastTrack `perf_*` alerts for slow / large / HTTP errors.
   static bool emitQualityAlerts = true;
 
+  /// 为 true 时：成功请求不带 request/response body；仅失败（HTTP≥400 / 客户端错误 / 取消）带 body。
+  static bool captureBodyOnFailureOnly = false;
+
   static bool get isInstalled =>
       _overrides != null && identical(HttpOverrides.current, _overrides);
 
@@ -192,8 +195,10 @@ class FastTrackMcpNetwork {
     bool? httpsOnly,
     bool? allowHttpLoopback,
     bool? redactSensitiveHeaders,
+    bool? captureBodyOnFailureOnly,
+    bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
+    if (kReleaseMode && !allowInRelease) return;
     PerfNetworkStore.instance.maxBodyBytes = maxBodyBytes;
     PerfNetworkStore.instance.capacity = capacity;
     if (excludeUrlSubstrings != null) {
@@ -209,6 +214,9 @@ class FastTrackMcpNetwork {
     if (redactSensitiveHeaders != null) {
       _redactSensitiveHeaders = redactSensitiveHeaders;
     }
+    if (captureBodyOnFailureOnly != null) {
+      FastTrackMcpNetwork.captureBodyOnFailureOnly = captureBodyOnFailureOnly;
+    }
     if (identical(HttpOverrides.current, _overrides) && _overrides != null) {
       return;
     }
@@ -217,9 +225,10 @@ class FastTrackMcpNetwork {
     );
     HttpOverrides.global = _overrides;
     debugPrint(
-      '[FastTrackMcp] HTTP full capture installed '
+      '[FastTrackMcp] HTTP capture installed '
       '(hosts=${_allowedHosts.isEmpty ? "ALL" : _allowedHosts.join(",")}; '
-      'httpsOnly=$_httpsOnly)',
+      'httpsOnly=$_httpsOnly; '
+      'bodyOnFailureOnly=$captureBodyOnFailureOnly)',
     );
   }
 
@@ -234,8 +243,10 @@ class FastTrackMcpNetwork {
     bool? httpsOnly,
     bool? allowHttpLoopback,
     bool? redactSensitiveHeaders,
+    bool? captureBodyOnFailureOnly,
+    bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
+    if (kReleaseMode && !allowInRelease) return;
     void go() => install(
           maxBodyBytes: maxBodyBytes,
           capacity: capacity,
@@ -244,6 +255,8 @@ class FastTrackMcpNetwork {
           httpsOnly: httpsOnly,
           allowHttpLoopback: allowHttpLoopback,
           redactSensitiveHeaders: redactSensitiveHeaders,
+          captureBodyOnFailureOnly: captureBodyOnFailureOnly,
+          allowInRelease: allowInRelease,
         );
     go();
     Future<void>.delayed(delay, go);
@@ -526,6 +539,7 @@ class _CaptureRequest implements HttpClientRequest {
     if (_emitted) return;
     _emitted = true;
     final reqBytes = _reqBody.takeBytes();
+    // 客户端失败：始终可带 request body
     final decoded = _decodeBody(reqBytes, headers.contentType?.mimeType);
     try {
       final durationMs = DateTime.now().difference(startedAt).inMilliseconds;
@@ -736,6 +750,12 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
       cancelled: cancelled,
       error: error,
     );
+    final failed = cancelled ||
+        (error != null && error.isNotEmpty) ||
+        statusCode >= 400 ||
+        statusCode < 0;
+    final keepBody =
+        !FastTrackMcpNetwork.captureBodyOnFailureOnly || failed;
     try {
       final record = NetworkRequest(
         url: url,
@@ -748,16 +768,18 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
         cancelled: cancelled,
         contentType: mime,
         requestHeaders: requestHeaders,
-        requestBody: requestBody,
-        requestBodyTruncated: requestBodyTruncated,
+        requestBody: keepBody ? requestBody : null,
+        requestBodyTruncated: keepBody ? requestBodyTruncated : false,
         requestBytes: requestBytes,
         responseHeaders: _headersMap(headers, redactSensitiveHeaders),
-        responseBody: decoded.$1,
-        responseBodyTruncated: skipBody
+        responseBody: keepBody ? decoded.$1 : null,
+        responseBodyTruncated: !keepBody
             ? false
-            : (decoded.$2 ||
-                captured.length >= max ||
-                bytesReceived > captured.length),
+            : skipBody
+                ? false
+                : (decoded.$2 ||
+                    captured.length >= max ||
+                    bytesReceived > captured.length),
         error: error,
         source: 'full',
         finalUrl: resolvedUrl == url ? null : resolvedUrl,
@@ -1007,10 +1029,24 @@ List<String> _qualityFlags({
 
 void _commitRecord(NetworkRequest record) {
   PerfNetworkStore.instance.add(record);
+  // 全部请求进埋点（控制台页面时间线）；慢/错/大 另发 perf_* 告警。
+  unawaited(_trackNetworkEvent(record));
   if (!FastTrackMcpNetwork.emitQualityAlerts) return;
   if (record.flags.isEmpty) return;
   try {
     _maybeAlertQuality(record);
+  } catch (_) {}
+}
+
+Future<void> _trackNetworkEvent(NetworkRequest record) async {
+  try {
+    await FastTrackMcpDetectSink.track(
+      'app_network',
+      properties: {
+        ...record.toJson(),
+        'action': 'network:${record.method}',
+      },
+    );
   } catch (_) {}
 }
 

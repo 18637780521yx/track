@@ -34,9 +34,14 @@ class FastTrackMcp {
 
   static Future<void>? get ready => _startFuture;
 
+  /// Release 下启转场观察者 / 手势（仍不启 Bridge）。由宿主在 init 后置 true。
+  static bool releaseUiHooks = false;
+
   static List<NavigatorObserver> get navigatorObservers =>
       getx_hook.perfNavigatorObservers(
-        enabled: !kReleaseMode || LeakOnline.instance.active,
+        enabled: !kReleaseMode ||
+            LeakOnline.instance.active ||
+            releaseUiHooks,
       );
 
   static List<GetPage<dynamic>> instrumentGetPages(
@@ -151,8 +156,10 @@ class FastTrackMcp {
     bool httpsOnly = false,
     bool allowHttpLoopback = true,
     List<String>? excludeUrlSubstrings,
+    bool captureBodyOnFailureOnly = false,
+    bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
+    if (kReleaseMode && !allowInRelease) return;
     FastTrackMcpNetwork.install(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -160,6 +167,8 @@ class FastTrackMcp {
       httpsOnly: httpsOnly,
       allowHttpLoopback: allowHttpLoopback,
       excludeUrlSubstrings: excludeUrlSubstrings,
+      captureBodyOnFailureOnly: captureBodyOnFailureOnly,
+      allowInRelease: allowInRelease,
     );
   }
 
@@ -170,8 +179,10 @@ class FastTrackMcp {
     bool httpsOnly = false,
     bool allowHttpLoopback = true,
     List<String>? excludeUrlSubstrings,
+    bool captureBodyOnFailureOnly = false,
+    bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
+    if (kReleaseMode && !allowInRelease) return;
     FastTrackMcpNetwork.installDeferred(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -179,6 +190,8 @@ class FastTrackMcp {
       httpsOnly: httpsOnly,
       allowHttpLoopback: allowHttpLoopback,
       excludeUrlSubstrings: excludeUrlSubstrings,
+      captureBodyOnFailureOnly: captureBodyOnFailureOnly,
+      allowInRelease: allowInRelease,
     );
   }
 

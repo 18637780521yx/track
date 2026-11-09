@@ -6,6 +6,7 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import '../detect/detect_sink.dart';
+import '../leak/transition_ledger.dart';
 import '../network/network_capture.dart';
 import 'cold_start_clock.dart';
 
@@ -67,6 +68,11 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     final route = routeHint ?? FastTrackMcpNetwork.currentRoute();
     final ttff = (metrics['ttffMs'] as num?)?.toDouble();
     final tti = (metrics['ttiMs'] as num?)?.toDouble();
+
+    // 冷启落地路由写入栈，避免随后 Get.toNamed 的 from 竞态成目标页自身。
+    if (route != null && route.isNotEmpty) {
+      TransitionLedger.instance.seedShell(route);
+    }
 
     _record(
       kind: 'cold_start',

@@ -1,6 +1,7 @@
+import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import { Button, DatePicker, Empty, Popconfirm, Spin, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type Key } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { api, DateRange, defaultRange, normalizeRange } from '../api/client';
 import {
@@ -37,6 +38,79 @@ function shortId(id: string, head = 8, tail = 4): string {
   return `${id.slice(0, head)}…${id.slice(-tail)}`;
 }
 
+function prettyBody(raw: unknown): string {
+  if (raw == null) return '';
+  const s = typeof raw === 'string' ? raw : JSON.stringify(raw);
+  const t = s.trim();
+  if (!t) return '';
+  if (t.startsWith('{') || t.startsWith('[')) {
+    try {
+      return JSON.stringify(JSON.parse(t), null, 2);
+    } catch {
+      /* keep raw */
+    }
+  }
+  return s;
+}
+
+function prettyHeaders(h: unknown): string {
+  if (h == null) return '';
+  if (typeof h === 'string') return h;
+  try {
+    return JSON.stringify(h, null, 2);
+  } catch {
+    return String(h);
+  }
+}
+
+function NetworkDetail({ detail }: { detail?: Record<string, unknown> }) {
+  if (!detail) return null;
+  const status = detail.statusCode ?? detail.status_code;
+  const bytes = detail.responseBytes ?? detail.response_bytes;
+  const url = String(detail.finalUrl ?? detail.url ?? '');
+  const reqH = prettyHeaders(detail.requestHeaders ?? detail.request_headers);
+  const resH = prettyHeaders(detail.responseHeaders ?? detail.response_headers);
+  const reqB = prettyBody(detail.requestBody ?? detail.request_body);
+  const resB = prettyBody(detail.responseBody ?? detail.response_body);
+  const hasBody = !!(reqH || resH || reqB || resB || url);
+  if (!hasBody && status == null) return null;
+
+  const statusNum = typeof status === 'number' ? status : Number(status);
+  const statusCls =
+    Number.isFinite(statusNum) && statusNum >= 400
+      ? 'bad'
+      : Number.isFinite(statusNum) && statusNum >= 300
+        ? 'warn'
+        : 'ok';
+
+  return (
+    <details className="rpt-net-card">
+      <summary>
+        查看请求详情
+        {status != null && (
+          <span className={`rpt-net-status ${statusCls}`}>HTTP {String(status)}</span>
+        )}
+        {bytes != null && <span className="rpt-net-bytes">{String(bytes)} B</span>}
+        {url ? <span className="rpt-net-url">{url}</span> : null}
+      </summary>
+      <div className="rpt-net-grid">
+        <div>
+          <h4>Request Headers</h4>
+          <pre>{reqH || '(none)'}</pre>
+          <h4>Request Body</h4>
+          <pre>{reqB || '(empty)'}</pre>
+        </div>
+        <div>
+          <h4>Response Headers</h4>
+          <pre>{resH || '(none)'}</pre>
+          <h4>Response Body</h4>
+          <pre>{resB || '(empty)'}</pre>
+        </div>
+      </div>
+    </details>
+  );
+}
+
 function EventRow({ ev }: { ev: TimelineEvent }) {
   if (ev.type === 'alert') {
     return (
@@ -61,18 +135,23 @@ function EventRow({ ev }: { ev: TimelineEvent }) {
 
   return (
     <div
-      className={`rpt-ar rpt-ar-${ev.type}${ev.ok ? '' : ' fail'}${
-        isTotal ? ' total' : ''
-      }${highlight ? ' highlight' : ''}`}
+      className={`rpt-ar-wrap${ev.type === 'network' ? ' is-net' : ''}`}
     >
-      <span className="rpt-ar-dot" />
-      <span className="rpt-ar-label">
-        {ev.label}
-        {note ? <span className="rpt-ar-note"> · {note}</span> : null}
-      </span>
-      {pct != null && <span className="rpt-ar-pct">{pct}%</span>}
-      {ev.ms != null && <span className="rpt-ar-ms">{Math.round(ev.ms)} ms</span>}
-      {ev.source && <span className={`rpt-badge src-${ev.source}`}>{ev.source}</span>}
+      <div
+        className={`rpt-ar rpt-ar-${ev.type}${ev.ok ? '' : ' fail'}${
+          isTotal ? ' total' : ''
+        }${highlight ? ' highlight' : ''}`}
+      >
+        <span className="rpt-ar-dot" />
+        <span className="rpt-ar-label">
+          {ev.label}
+          {note ? <span className="rpt-ar-note"> · {note}</span> : null}
+        </span>
+        {pct != null && <span className="rpt-ar-pct">{pct}%</span>}
+        {ev.ms != null && <span className="rpt-ar-ms">{Math.round(ev.ms)} ms</span>}
+        {ev.source && <span className={`rpt-badge src-${ev.source}`}>{ev.source}</span>}
+      </div>
+      {ev.type === 'network' && <NetworkDetail detail={ev.detail} />}
     </div>
   );
 }
@@ -80,6 +159,9 @@ function EventRow({ ev }: { ev: TimelineEvent }) {
 function SegmentCard({ seg, index }: { seg: TimelineSegment; index: number }) {
   return (
     <li className={`rpt-seg-item ${seg.module}`} data-module={seg.module}>
+      <div className="rpt-seg-time" title={fmtTime(seg.at)}>
+        {fmtTime(seg.at)}
+      </div>
       <div className="rpt-seg">
         <div className="rpt-seg-head">
           <div>
@@ -115,21 +197,9 @@ function SegmentCard({ seg, index }: { seg: TimelineSegment; index: number }) {
               <div className="rpt-seg-meta">route: {seg.route}</div>
             )}
           </div>
-          <div className="rpt-seg-time">{fmtTime(seg.at)}</div>
         </div>
 
-        {seg.module === 'transition' && (
-          <div className="rpt-tr-row">
-            {seg.transitionKind && (
-              <span className="rpt-kind-chip">
-                kind <b>{seg.transitionKind}</b>
-              </span>
-            )}
-            {seg.leakHint && <div className="rpt-tr-warn">{seg.leakHint}</div>}
-          </div>
-        )}
-
-        {seg.module === 'page' && seg.events.length === 0 && (
+        {seg.module === 'page' && seg.events.length === 0 && !seg.exitTo && (
           <div className="rpt-empty-ops">无操作</div>
         )}
 
@@ -138,6 +208,26 @@ function SegmentCard({ seg, index }: { seg: TimelineSegment; index: number }) {
             {seg.events.map((ev) => (
               <EventRow key={ev.id} ev={ev} />
             ))}
+          </div>
+        )}
+
+        {seg.module === 'page' && seg.exitTo && (
+          <div className="rpt-tr-row rpt-tr-exit">
+            <span className="rpt-badge mod-transition">转场</span>
+            {seg.modalPhase && (
+              <span className={`rpt-kind-chip phase-${seg.modalPhase}`}>
+                {seg.modalPhase === 'open' ? '出现' : '消失'}
+              </span>
+            )}
+            {seg.exitKind && (
+              <span className="rpt-kind-chip">
+                kind <b>{seg.exitKind}</b>
+              </span>
+            )}
+            <span className="rpt-kind-chip">
+              to <b>{seg.exitTo}</b>
+            </span>
+            {seg.leakHint && <div className="rpt-tr-warn">{seg.leakHint}</div>}
           </div>
         )}
       </div>
@@ -149,7 +239,10 @@ function SessionDetail({ session, onBack }: { session: SessionReport; onBack: ()
   const [filter, setFilter] = useState<FilterKey>('all');
 
   const visible = useMemo(() => {
-    if (filter === 'all') return session.segments;
+    if (filter === 'all') return session.segments.filter((s) => s.module !== 'transition');
+    if (filter === 'transition') {
+      return session.segments.filter((s) => s.module === 'page' && !!s.exitTo);
+    }
     return session.segments.filter((s) => s.module === filter);
   }, [session.segments, filter]);
 
@@ -199,7 +292,7 @@ function SessionDetail({ session, onBack }: { session: SessionReport; onBack: ()
 
       <h3 className="rpt-section-title">全会话时间线</h3>
       <p className="rpt-hint">
-        页面级操作路径：生命周期 / 页面 / 转场。性能问题作为事件内联在对应段内。
+        页面级操作路径：生命周期 / 页面；离开页末尾附带转场（kind / to）。性能问题内联在对应段内。
       </p>
       <div className="rpt-filters">
         {(
@@ -254,11 +347,75 @@ function useReportSessions(range: DateRange) {
   };
 }
 
+interface UserReportGroup {
+  key: string;
+  distinctId?: string | null;
+  anonymousId: string;
+  deviceLabel: string;
+  deviceUdid: string;
+  deviceOs: string;
+  appName: string;
+  appVersion: string;
+  sessions: SessionReport[];
+  latestStartAt: string;
+  totalDurationMs: number;
+  sessionCount: number;
+  alertCount: number;
+  stepCount: number;
+}
+
+function userGroupKey(s: SessionReport): string {
+  return s.distinctId || s.anonymousId || s.deviceUdid || s.sessionId;
+}
+
+function groupSessionsByUser(sessions: SessionReport[]): UserReportGroup[] {
+  const map = new Map<string, SessionReport[]>();
+  for (const s of sessions) {
+    const key = userGroupKey(s);
+    const list = map.get(key);
+    if (list) list.push(s);
+    else map.set(key, [s]);
+  }
+  const groups: UserReportGroup[] = [];
+  for (const [key, list] of map) {
+    const sorted = [...list].sort(
+      (a, b) => new Date(b.startAt).getTime() - new Date(a.startAt).getTime(),
+    );
+    const head = sorted[0];
+    groups.push({
+      key,
+      distinctId: head.distinctId,
+      anonymousId: head.anonymousId,
+      deviceLabel: head.deviceLabel,
+      deviceUdid: head.deviceUdid,
+      deviceOs: head.deviceOs,
+      appName: head.appName,
+      appVersion: head.appVersion,
+      sessions: sorted,
+      latestStartAt: head.startAt,
+      totalDurationMs: sorted.reduce((n, s) => n + s.durationMs, 0),
+      sessionCount: sorted.length,
+      alertCount: sorted.reduce((n, s) => n + s.alertCount, 0),
+      stepCount: sorted.reduce((n, s) => n + s.stepCount, 0),
+    });
+  }
+  return groups.sort(
+    (a, b) => new Date(b.latestStartAt).getTime() - new Date(a.latestStartAt).getTime(),
+  );
+}
+
 export function PerfReportPage() {
   const [range, setRange] = useState<DateRange>(defaultRange());
   const { loading, sessions, reload } = useReportSessions(range);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [expandedKeys, setExpandedKeys] = useState<readonly Key[]>([]);
   const navigate = useNavigate();
+
+  const users = useMemo(() => groupSessionsByUser(sessions), [sessions]);
+
+  useEffect(() => {
+    setExpandedKeys(users.map((u) => u.key));
+  }, [users]);
 
   const onDelete = async (sessionId: string) => {
     setDeletingId(sessionId);
@@ -276,7 +433,79 @@ export function PerfReportPage() {
     }
   };
 
-  const columns: ColumnsType<SessionReport> = [
+  const sessionColumns: ColumnsType<SessionReport> = [
+    {
+      title: '开始时间',
+      dataIndex: 'startAt',
+      width: 180,
+      render: (v: string) => fmtTime(v),
+    },
+    {
+      title: '时长',
+      dataIndex: 'durationMs',
+      width: 88,
+      render: (ms: number) => fmtDuration(ms),
+    },
+    {
+      title: '段 / 告警',
+      key: 'stats',
+      width: 100,
+      render: (_: unknown, row) => (
+        <span>
+          {row.stepCount}
+          {row.alertCount > 0 ? (
+            <>
+              {' / '}
+              <span style={{ color: '#b42318', fontWeight: 600 }}>{row.alertCount}</span>
+            </>
+          ) : (
+            ' / 0'
+          )}
+        </span>
+      ),
+    },
+    {
+      title: 'session',
+      dataIndex: 'sessionId',
+      ellipsis: true,
+      render: (id: string) => (
+        <Text code style={{ fontSize: 11 }}>
+          {shortId(id, 10, 6)}
+        </Text>
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 88,
+      render: (_: unknown, row) => (
+        <Popconfirm
+          title="删除该会话报告？"
+          description="将删除该 session 下埋点 / 日志 / 稳定性事件"
+          okText="删除"
+          cancelText="取消"
+          okButtonProps={{ danger: true }}
+          onConfirm={(e) => {
+            e?.stopPropagation();
+            return onDelete(row.sessionId);
+          }}
+          onCancel={(e) => e?.stopPropagation()}
+        >
+          <Button
+            type="link"
+            danger
+            size="small"
+            loading={deletingId === row.sessionId}
+            onClick={(e) => e.stopPropagation()}
+          >
+            删除
+          </Button>
+        </Popconfirm>
+      ),
+    },
+  ];
+
+  const columns: ColumnsType<UserReportGroup> = [
     {
       title: '用户标识',
       key: 'user',
@@ -327,15 +556,21 @@ export function PerfReportPage() {
       ),
     },
     {
-      title: '开始时间',
-      dataIndex: 'startAt',
+      title: '会话数',
+      dataIndex: 'sessionCount',
+      width: 80,
+      render: (n: number) => <Tag color={n > 1 ? 'blue' : undefined}>{n} 次</Tag>,
+    },
+    {
+      title: '最近开始',
+      dataIndex: 'latestStartAt',
       width: 180,
       render: (v: string) => fmtTime(v),
     },
     {
-      title: '时长',
-      dataIndex: 'durationMs',
-      width: 88,
+      title: '合计时长',
+      dataIndex: 'totalDurationMs',
+      width: 100,
       render: (ms: number) => fmtDuration(ms),
     },
     {
@@ -364,35 +599,6 @@ export function PerfReportPage() {
       render: (_: unknown, row) =>
         [row.appName, row.appVersion ? `v${row.appVersion}` : ''].filter(Boolean).join(' ') || '—',
     },
-    {
-      title: '操作',
-      key: 'actions',
-      width: 88,
-      render: (_: unknown, row) => (
-        <Popconfirm
-          title="删除该会话报告？"
-          description="将删除该 session 下埋点 / 日志 / 稳定性事件"
-          okText="删除"
-          cancelText="取消"
-          okButtonProps={{ danger: true }}
-          onConfirm={(e) => {
-            e?.stopPropagation();
-            return onDelete(row.sessionId);
-          }}
-          onCancel={(e) => e?.stopPropagation()}
-        >
-          <Button
-            type="link"
-            danger
-            size="small"
-            loading={deletingId === row.sessionId}
-            onClick={(e) => e.stopPropagation()}
-          >
-            删除
-          </Button>
-        </Popconfirm>
-      ),
-    },
   ];
 
   return (
@@ -405,17 +611,46 @@ export function PerfReportPage() {
           allowClear={false}
         />
       </div>
+      <p className="rpt-hint" style={{ marginTop: -8, marginBottom: 12 }}>
+        按用户聚合；同一匿名/登录用户的多次冷启会并成一行，展开查看各 session。
+      </p>
 
       <Table
-        rowKey="sessionId"
+        rowKey="key"
         size="middle"
         pagination={{ pageSize: 20, showSizeChanger: false }}
-        dataSource={sessions}
+        dataSource={users}
         columns={columns}
-        onRow={(row) => ({
-          onClick: () => navigate(`/reports/${encodeURIComponent(row.sessionId)}`),
-          style: { cursor: 'pointer' },
-        })}
+        expandable={{
+          expandIconColumnIndex: columns.length,
+          expandedRowKeys: expandedKeys,
+          onExpandedRowsChange: setExpandedKeys,
+          expandIcon: ({ expanded, onExpand, record }) => (
+            <button
+              type="button"
+              className="rpt-expand-btn"
+              aria-label={expanded ? '收起行' : '展开行'}
+              aria-expanded={expanded}
+              onClick={(e) => onExpand(record, e)}
+            >
+              {expanded ? <DownOutlined /> : <RightOutlined />}
+            </button>
+          ),
+          expandedRowRender: (user) => (
+            <Table
+              rowKey="sessionId"
+              size="small"
+              pagination={false}
+              dataSource={user.sessions}
+              columns={sessionColumns}
+              onRow={(row) => ({
+                onClick: () => navigate(`/reports/${encodeURIComponent(row.sessionId)}`),
+                style: { cursor: 'pointer' },
+              })}
+            />
+          ),
+          rowExpandable: (user) => user.sessionCount > 0,
+        }}
         locale={{ emptyText: <Empty description="暂无报告埋点" /> }}
       />
     </Spin>

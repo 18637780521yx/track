@@ -5,6 +5,7 @@ export const REPORT_EVENTS = [
   'app_lifecycle',
   'app_page',
   'app_transition',
+  'app_network',
   'ui_tap',
   'ui_scroll',
   'perf_mcp_step',
@@ -74,6 +75,12 @@ export interface TimelineSegment {
   from?: string;
   to?: string;
   transitionKind?: string;
+  /** 离开本页时的转场（内联在页卡末尾，不再单独成卡） */
+  exitTo?: string;
+  exitKind?: string;
+  exitFrom?: string;
+  /** 弹层：出现 / 消失（由 kind 或 from/to 推断） */
+  modalPhase?: 'open' | 'close';
   ttffMs?: number;
   ttiMs?: number;
   /** 冷启动分阶段（Pre-Dart / Framework / 业务启动 / 首帧 / TTFF / TTI） */
@@ -82,6 +89,39 @@ export interface TimelineSegment {
   networkCount: number;
   alertCount: number;
   leakHint?: string;
+}
+
+/** 路由壳：`/tabs#work` → `/tabs` */
+export function routeShell(route?: string | null): string {
+  if (!route) return '';
+  return route.split('#')[0] || route;
+}
+
+/** 裸壳升成带 tab 的逻辑路由：`/tabs` → `/tabs#work` */
+export function isShellRouteUpgrade(from?: string | null, to?: string | null): boolean {
+  if (!from || !to || from === to) return false;
+  return !from.includes('#') && to.includes('#') && routeShell(from) === routeShell(to);
+}
+
+/** 弹层出现/消失：新 kind 优先，旧 modal_* 用 from/to 推断 */
+export function inferModalPhase(
+  kind?: string,
+  from?: string,
+  to?: string,
+): 'open' | 'close' | undefined {
+  const k = (kind || '').toLowerCase();
+  if (k.endsWith('_open') && k.startsWith('modal_')) return 'open';
+  if (k.endsWith('_close') && k.startsWith('modal_')) return 'close';
+  const fromModal =
+    !!from && (from.startsWith('#modal/') || from.includes('#modal/'));
+  const toModal = !!to && (to.startsWith('#modal/') || to.includes('#modal/'));
+  if (toModal && !fromModal) return 'open';
+  if (fromModal && !toModal) return 'close';
+  if (k.startsWith('modal_')) {
+    if (toModal) return 'open';
+    if (fromModal) return 'close';
+  }
+  return undefined;
 }
 
 export interface StartupPhase {
@@ -163,10 +203,25 @@ function lifecycleTitle(kind: string): string {
   }
 }
 
-/** 图标字体 / PUA 在网页里会显示成 □，不当作有效文案 */
+/** 图标字体 / PUA / 网络 ErrorWidget 文案，不当作有效点击名 */
 function isUsableLabel(s: string): boolean {
   const t = s.trim();
   if (!t) return false;
+  const lower = t.toLowerCase();
+  if (
+    lower.includes('httpexception') ||
+    lower.includes('socketexception') ||
+    lower.includes('invalid statuscode') ||
+    lower.includes('statuscode:') ||
+    t.includes('uri = http') ||
+    lower.startsWith('exception:') ||
+    lower.startsWith('error:') ||
+    t.startsWith('http://') ||
+    t.startsWith('https://') ||
+    (t.length > 64 && (lower.includes('https://') || lower.includes('http://')))
+  ) {
+    return false;
+  }
   for (const ch of t) {
     const c = ch.codePointAt(0)!;
     if (c <= 0x1f || c === 0x7f) continue;
@@ -310,6 +365,54 @@ function finalizeColdStartOrder(segments: TimelineSegment[]): TimelineSegment[] 
   return [...keptBefore, cold, ...after];
 }
 
+/**
+ * 去掉「空落地页 → 转场到同路由 → 再一张同路由页」里的空页；
+ * 以及相邻同路由空页。
+ */
+function coalesceDuplicatePages(segments: TimelineSegment[]): TimelineSegment[] {
+  const out: TimelineSegment[] = [];
+  for (let i = 0; i < segments.length; i++) {
+    const s = segments[i];
+    const next = segments[i + 1];
+    // `/tabs`（可含告警）+ `/tabs#work` → 事件并入逻辑 Tab，丢掉裸壳页卡
+    if (
+      s.module === 'page' &&
+      s.route &&
+      next?.module === 'page' &&
+      next.route &&
+      isShellRouteUpgrade(s.route, next.route)
+    ) {
+      next.events = [...s.events, ...next.events].sort(
+        (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime(),
+      );
+      next.at = s.at;
+      recount(next);
+      continue;
+    }
+    if (s.module === 'page' && s.events.length === 0 && s.route) {
+      const next2 = segments[i + 2];
+      // 空页 + 转场(to=此路由) → 丢空页（后面会有落地页）
+      if (next?.module === 'transition' && next.to === s.route) {
+        continue;
+      }
+      // 空页 + 同路由页 → 丢空页
+      if (next?.module === 'page' && next.route === s.route) {
+        continue;
+      }
+      // 空页夹在冷启动与同路由转场之间已在上面覆盖；冷启动后仅空页且后面无内容则保留到 merge
+      if (
+        next?.module === 'transition' &&
+        next2?.module === 'page' &&
+        next2.route === s.route
+      ) {
+        continue;
+      }
+    }
+    out.push(s);
+  }
+  return out;
+}
+
 function emptyPage(route: string, at: string, id: string): TimelineSegment {
   return {
     id,
@@ -347,8 +450,35 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
     currentPage = null;
   };
 
+  const upgradeShellRefs = (bare: string, enriched: string) => {
+    if (lastTransition?.to && isShellRouteUpgrade(lastTransition.to, enriched)) {
+      lastTransition.to = enriched;
+      lastTransition.title = `${lastTransition.from || '?'} → ${enriched}`;
+    }
+    for (let i = segments.length - 1; i >= 0; i--) {
+      const s = segments[i];
+      if (s.module === 'page' && s.exitTo && isShellRouteUpgrade(s.exitTo, enriched)) {
+        s.exitTo = enriched;
+        break;
+      }
+      if (s.module === 'page' && s.route === bare) break;
+    }
+  };
+
   const ensurePage = (route: string, at: string) => {
     if (currentPage && (currentPage.route === route || !route)) return currentPage;
+    // `/tabs` 空壳 → `/tabs#work`：原地升级，不新开页卡
+    if (currentPage?.route && route && isShellRouteUpgrade(currentPage.route, route)) {
+      const bare = currentPage.route;
+      currentPage.route = route;
+      currentPage.title = route;
+      upgradeShellRefs(bare, route);
+      return currentPage;
+    }
+    // 已是 `/tabs#work`，后续裸 `/tabs` 忽略
+    if (currentPage?.route && route && isShellRouteUpgrade(route, currentPage.route)) {
+      return currentPage;
+    }
     flushPage();
     currentPage = emptyPage(route, at, `seg_${seq++}`);
     lastTransition = null;
@@ -449,46 +579,123 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
     }
 
     if (e.name === 'app_transition') {
-      const from = propStr(e, 'from');
+      let from = propStr(e, 'from');
       const to = propStr(e, 'to');
-      // 首屏 GetX 常打出 / → / 的 push，忽略以免污染路径
+      // GetX 占位 `/`：用当前页路由修正 modal/转场 from
+      if ((!from || from === '/') && currentPage?.route) {
+        from = currentPage.route;
+      }
+      // GetX 竞态：from===to（如 email→email）。若当前页已是来源业务页，用它修正 from；
+      // 否则忽略这条自环转场，避免多出一张空目标页卡。
       if (from && to && from === to) {
-        if (!currentPage) currentPage = emptyPage(to, at, `seg_${seq++}`);
+        if (
+          currentPage?.route &&
+          currentPage.route !== to &&
+          currentPage.route !== '/'
+        ) {
+          from = currentPage.route;
+        } else {
+          if (!currentPage) currentPage = emptyPage(to, at, `seg_${seq++}`);
+          continue;
+        }
+      }
+      // 首屏 seed：/tabs → /tabs#work 且当前已是空落地页 → 不单独成转场，避免双页卡
+      const softTabSeed =
+        propStr(e, 'kind') === 'tab_change' &&
+        from === '/tabs' &&
+        !!to &&
+        currentPage != null &&
+        currentPage.events.length === 0 &&
+        (currentPage.route === to || !currentPage.route);
+      if (softTabSeed) {
+        if (currentPage && !currentPage.route && to) {
+          currentPage.route = to;
+          currentPage.title = to;
+        }
         continue;
       }
-      flushPage();
+
       const tKind = propStr(e, 'kind') || 'route_change';
-      const leak =
-        tKind === 'remove' && from
-          ? `可能存在路由泄漏：${from} 未正确退出`
-          : undefined;
-      const seg: TimelineSegment = {
-        id: `seg_${seq++}`,
+      // Get.offAllNamed：push(tabs) 后紧跟 remove(login)——清栈，不是二次跳转
+      if (
+        (tKind === 'remove' || tKind === 'stack_clear') &&
+        lastTransition &&
+        (lastTransition.transitionKind === 'push' ||
+          lastTransition.transitionKind === 'replace') &&
+        to &&
+        lastTransition.to === to &&
+        Math.abs(new Date(at).getTime() - new Date(lastTransition.at).getTime()) <
+          2000
+      ) {
+        continue;
+      }
+
+      // 当前空页已是转场目标：复用；否则把转场挂到离开页末尾（不再单独成卡）
+      let reusePage: TimelineSegment | null = null;
+      let sourcePage: TimelineSegment | null = null;
+      if (currentPage) {
+        if (
+          currentPage.events.length === 0 &&
+          to &&
+          currentPage.route === to
+        ) {
+          reusePage = currentPage;
+          currentPage = null;
+        } else if (
+          currentPage.events.length === 0 &&
+          from &&
+          currentPage.route === from
+        ) {
+          sourcePage = currentPage;
+          currentPage = null;
+        } else {
+          sourcePage = currentPage;
+          currentPage = null;
+        }
+      }
+      if (!sourcePage) {
+        for (let i = segments.length - 1; i >= 0; i--) {
+          const s = segments[i];
+          if (s.module !== 'page') {
+            if (s.module === 'lifecycle') break;
+            continue;
+          }
+          if (!from || s.route === from || isShellRouteUpgrade(from, s.route || '')) {
+            sourcePage = s;
+            break;
+          }
+        }
+      }
+
+      const modalPhase = inferModalPhase(tKind, from || undefined, to || undefined);
+      if (sourcePage) {
+        sourcePage.exitFrom = from || sourcePage.route || undefined;
+        sourcePage.exitTo = to || undefined;
+        sourcePage.exitKind = tKind;
+        sourcePage.modalPhase = modalPhase;
+        if (!segments.includes(sourcePage)) {
+          recount(sourcePage);
+          segments.push(sourcePage);
+        }
+      }
+
+      lastTransition = {
+        id: `exit_${e.event_id}`,
         module: 'transition',
         title: `${from || '?'} → ${to || '?'}`,
         at,
         from: from || undefined,
         to: to || undefined,
         transitionKind: tKind,
-        leakHint: leak,
-        events: [
-          {
-            id: e.event_id,
-            type: 'navigate',
-            at,
-            label: 'navigate',
-            ok: true,
-            detail: e.properties,
-          },
-        ],
+        modalPhase,
+        events: [],
         actionCount: 0,
         networkCount: 0,
         alertCount: 0,
       };
-      recount(seg);
-      segments.push(seg);
-      lastTransition = seg;
-      if (to) {
+      if (reusePage) {
+        currentPage = reusePage;
+      } else if (to) {
         currentPage = emptyPage(to, at, `seg_${seq++}`);
       }
       continue;
@@ -506,55 +713,126 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
     }
 
     if (e.name === 'ui_tap' || e.name === 'ui_scroll' || e.name === 'perf_mcp_step') {
+      const durationMs = propNum(e, 'duration_ms') ?? 0;
+      const gestureAtMs = new Date(at).getTime() - Math.max(0, durationMs);
+      // 用按下时刻排序，保证「tap → 转场」叙事（上报常晚于 modal push）
+      const actionAt = new Date(gestureAtMs).toISOString();
       const actionEv: TimelineEvent = {
         id: e.event_id,
         type: e.name === 'perf_mcp_step' ? 'mcp' : 'action',
-        at,
+        at: actionAt,
         label: actionLabel(e),
         ok: prop(e, 'ok') !== false,
         source: eventSource(e),
         route: route || undefined,
-        ms: propNum(e, 'duration_ms'),
+        ms: durationMs > 0 ? durationMs : propNum(e, 'duration_ms'),
         detail: e.properties,
       };
 
-      // 手势解析有延迟：若手势开始早于最近转场，应挂回转场前的 from 页
-      const durationMs = propNum(e, 'duration_ms') ?? 0;
-      const gestureAtMs = new Date(at).getTime() - Math.max(0, durationMs);
-      const preferRoute = route || currentPage?.route || '';
+      // Tab onTap 会先改 index 再打转场，ui_tap.route 常已是目标页。
+      // 手势早于转场时：强制挂回离开页（exitTo / from），不要用目标路由开新卡。
+      const routeAfter = propStr(e, 'route_after');
+      let preferRoute = route || currentPage?.route || '';
       if (
         lastTransition &&
-        lastTransition.from &&
-        preferRoute &&
-        lastTransition.from === preferRoute &&
-        gestureAtMs <= new Date(lastTransition.at).getTime()
+        gestureAtMs <= new Date(lastTransition.at).getTime() + 80
       ) {
-        const tIdx = segments.indexOf(lastTransition);
-        let pageIdx = -1;
+        const exitTo = lastTransition.to || '';
+        const exitFrom = lastTransition.from || '';
+        // route 已被改成 to（或等于 route_after）→ 用 from
         if (
-          tIdx > 0 &&
-          segments[tIdx - 1].module === 'page' &&
-          segments[tIdx - 1].route === preferRoute
+          preferRoute &&
+          exitTo &&
+          (preferRoute === exitTo ||
+            isShellRouteUpgrade(preferRoute, exitTo) ||
+            preferRoute === routeAfter)
         ) {
-          pageIdx = tIdx - 1;
-        } else if (tIdx >= 0) {
-          const page = emptyPage(preferRoute, at, `seg_${seq++}`);
-          segments.splice(tIdx, 0, page);
-          pageIdx = tIdx;
+          preferRoute = exitFrom || preferRoute;
+        }
+
+        let pageIdx = -1;
+        // 1) 优先：刚写下 exitTo 的来源页
+        for (let i = segments.length - 1; i >= 0; i--) {
+          const s = segments[i];
+          if (s.module !== 'page') {
+            if (s.module === 'lifecycle') break;
+            continue;
+          }
+          if (s.exitTo && (!exitTo || s.exitTo === exitTo)) {
+            pageIdx = i;
+            break;
+          }
+        }
+        // 2) 其次：route === from
+        if (pageIdx < 0 && exitFrom) {
+          for (let i = segments.length - 1; i >= 0; i--) {
+            const s = segments[i];
+            if (s.module !== 'page') continue;
+            if (
+              s.route === exitFrom ||
+              isShellRouteUpgrade(exitFrom, s.route || '')
+            ) {
+              pageIdx = i;
+              break;
+            }
+          }
+        }
+        if (pageIdx < 0 && preferRoute && preferRoute !== exitTo) {
+          const page = emptyPage(preferRoute, actionAt, `seg_${seq++}`);
+          page.exitTo = exitTo || undefined;
+          page.exitKind = lastTransition.transitionKind;
+          page.exitFrom = preferRoute;
+          segments.push(page);
+          pageIdx = segments.length - 1;
         }
         if (pageIdx >= 0) {
-          segments[pageIdx].events.push(actionEv);
-          segments[pageIdx].events.sort(
+          const page = segments[pageIdx];
+          actionEv.route = page.route || exitFrom || actionEv.route;
+          page.events.push(actionEv);
+          page.events.sort(
             (a, b) => new Date(a.at).getTime() - new Date(b.at).getTime(),
           );
-          recount(segments[pageIdx]);
+          recount(page);
           continue;
         }
       }
 
-      const page = ensurePage(preferRoute, at);
+      const page = ensurePage(preferRoute, actionAt);
       actionEv.route = actionEv.route || page.route;
       page.events.push(actionEv);
+      continue;
+    }
+
+    if (e.name === 'app_network') {
+      const method = propStr(e, 'method') || propStr(e, 'action').replace(/^network:/, '') || 'HTTP';
+      const path = propStr(e, 'path') || propStr(e, 'url') || '';
+      const status = propNum(e, 'statusCode') ?? propNum(e, 'status_code');
+      const preferRoute = route || currentPage?.route || '';
+      const target = currentPage?.route === preferRoute || !preferRoute
+        ? (currentPage ?? ensurePage(preferRoute, at))
+        : ensurePage(preferRoute, at);
+      // 请求完成晚于转场时：若 route 仍是旧页，但当前已是新页，挂当前页
+      const page =
+        currentPage &&
+        preferRoute &&
+        currentPage.route &&
+        currentPage.route !== preferRoute &&
+        lastTransition &&
+        lastTransition.to === currentPage.route &&
+        new Date(at).getTime() >= new Date(lastTransition.at).getTime()
+          ? currentPage
+          : target;
+      const statusBit = status != null ? ` · HTTP ${status}` : '';
+      page.events.push({
+        id: e.event_id,
+        type: 'network',
+        at,
+        label: path ? `${method} ${path}${statusBit}` : `${method}${statusBit}`,
+        ok: status == null || (status >= 0 && status < 400),
+        route: page.route || preferRoute || undefined,
+        ms: propNum(e, 'durationMs') ?? propNum(e, 'duration_ms'),
+        detail: e.properties,
+      });
       continue;
     }
 
@@ -569,39 +847,58 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
         ms: propNum(e, 'duration_ms') ?? propNum(e, 'durationMs'),
         detail: e.properties,
       };
-      // 慢请求等网络类：显示为 network 行 + 内联 alert 更贴近设计；这里统一 alert 行
+      // 慢/错/大：优先只挂告警；若尚无对应 app_network 行则补一条（兼容旧数据）
       if (e.name === 'perf_slow_request' || e.name === 'perf_http_error' || e.name === 'perf_large_response') {
         const method = propStr(e, 'method') || propStr(e, 'action').replace(/^network:/, '') || 'HTTP';
         const path = propStr(e, 'path') || propStr(e, 'url') || '';
-        const target = currentPage ?? lastTransition ?? (() => {
+        const status = propNum(e, 'statusCode') ?? propNum(e, 'status_code');
+        const target = currentPage ?? (() => {
           const p = ensurePage(route, at);
           return p;
         })();
-        target.events.push({
-          id: `${e.event_id}_net`,
-          type: 'network',
-          at,
-          label: path ? `${method} ${path}` : method,
-          ok: e.name !== 'perf_http_error',
-          route: route || undefined,
-          ms: propNum(e, 'durationMs') ?? propNum(e, 'duration_ms'),
-          detail: e.properties,
-        });
+        const atMs = new Date(at).getTime();
+        const hasNet = target.events.some(
+          (ev) =>
+            ev.type === 'network' &&
+            Math.abs(new Date(ev.at).getTime() - atMs) < 5000 &&
+            (path ? ev.label.includes(path) : true),
+        );
+        if (!hasNet) {
+          const statusBit = status != null ? ` · HTTP ${status}` : '';
+          target.events.push({
+            id: `${e.event_id}_net`,
+            type: 'network',
+            at,
+            label: path ? `${method} ${path}${statusBit}` : `${method}${statusBit}`,
+            ok: e.name !== 'perf_http_error' && (status == null || status < 400),
+            route: route || undefined,
+            ms: propNum(e, 'durationMs') ?? propNum(e, 'duration_ms'),
+            detail: e.properties,
+          });
+        }
         target.events.push(alertEv);
         continue;
       }
 
-      // 转场泄漏类优先挂转场
+      // 转场泄漏类优先挂到刚离开的页卡
       if (
         (e.name === 'perf_transition_leak' || e.name === 'app_memory_leak' || e.name.includes('leak')) &&
-        lastTransition &&
-        !currentPage?.events.length
+        lastTransition
       ) {
-        lastTransition.events.push(alertEv);
-        if (!lastTransition.leakHint) {
-          lastTransition.leakHint = alertEv.label;
+        let exitPage: TimelineSegment | null = null;
+        for (let i = segments.length - 1; i >= 0; i--) {
+          const s = segments[i];
+          if (s.module === 'page' && s.exitTo) {
+            exitPage = s;
+            break;
+          }
         }
-        continue;
+        if (exitPage) {
+          exitPage.events.push(alertEv);
+          if (!exitPage.leakHint) exitPage.leakHint = alertEv.label;
+          recount(exitPage);
+          continue;
+        }
       }
 
       // 慢冷启动挂到最近的 App 启动段
@@ -634,7 +931,7 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
 
   flushPage();
   for (const s of segments) recount(s);
-  return finalizeColdStartOrder(segments);
+  return coalesceDuplicatePages(finalizeColdStartOrder(segments));
 }
 
 export function buildSessionReports(records: EventRecord[]): SessionReport[] {

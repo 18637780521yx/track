@@ -30,14 +30,47 @@ async def _app_log_ttl_loop(stop: asyncio.Event) -> None:
             pass
 
 
+async def _retention_loop(stop: asyncio.Event) -> None:
+    """每小时清掉超过保留期的埋点 / 报告衍生数据（默认 7 天）。"""
+    from app.services.retention import purge_expired, summarize
+
+    # 启动后稍等再扫，避免和迁移抢连接
+    try:
+        await asyncio.wait_for(stop.wait(), timeout=15)
+        return
+    except asyncio.TimeoutError:
+        pass
+
+    while not stop.is_set():
+        try:
+            pool = get_pool()
+            async with pool.acquire() as conn:
+                deleted = await purge_expired(conn)
+                summary = summarize(deleted)
+                if summary:
+                    print(
+                        f"[retention] purged ({settings.retention_days}d): {summary}",
+                        flush=True,
+                    )
+        except Exception as exc:
+            print(f"[retention] purge failed: {exc}", flush=True)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=3600)
+        except asyncio.TimeoutError:
+            pass
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_pool()
     stop = asyncio.Event()
-    task = asyncio.create_task(_app_log_ttl_loop(stop))
+    tasks = [
+        asyncio.create_task(_app_log_ttl_loop(stop)),
+        asyncio.create_task(_retention_loop(stop)),
+    ]
     yield
     stop.set()
-    await task
+    await asyncio.gather(*tasks, return_exceptions=True)
     await close_pool()
 
 
