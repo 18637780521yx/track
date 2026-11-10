@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/widgets.dart';
@@ -39,7 +40,13 @@ class FastTrackMcpJankMonitor {
   static double _maxRasterMs = 0;
   static double _sumSlowMs = 0;
   static DateTime? _lastFrozenReportAt;
-  static bool _reporting = false;
+  static Future<void>? _draining;
+  static Map<String, dynamic>? _pendingWindow;
+  static Map<String, dynamic>? _pendingFrozen;
+  static bool _autoFps = true;
+  static int _windowBuildSlow = 0;
+  static int _windowRasterSlow = 0;
+  static int _windowHighLatency = 0;
 
   /// 测试注入。
   @visibleForTesting
@@ -50,20 +57,21 @@ class FastTrackMcpJankMonitor {
 
   /// 启动监测。需在 [WidgetsFlutterBinding.ensureInitialized] 之后。
   static void start({
-    int fpsTarget = _defaultFpsTarget,
+    int? fpsTarget,
     Duration reportInterval = _defaultReportInterval,
     Duration frozenFrameThreshold = _defaultFrozenThreshold,
     int minSlowFramesToReport = 3,
     Future<void> Function(Map<String, dynamic> properties)? onJank,
   }) {
     if (_started) return;
-    if (fpsTarget <= 0) {
+    if (fpsTarget != null && fpsTarget <= 0) {
       debugPrint('[ftm] jank monitor skipped: fpsTarget must be > 0');
       return;
     }
 
-    _fpsTarget = fpsTarget;
-    _budgetMs = 1000.0 / fpsTarget;
+    _autoFps = fpsTarget == null;
+    _fpsTarget = fpsTarget ?? _displayFps();
+    _budgetMs = 1000.0 / _fpsTarget;
     _reportInterval = reportInterval;
     _frozenThreshold = frozenFrameThreshold;
     _minSlowFramesToReport =
@@ -89,10 +97,12 @@ class FastTrackMcpJankMonitor {
 
   static Future<void> stop() async {
     if (!_started) return;
+    _started = false;
     WidgetsBinding.instance.removeTimingsCallback(_onTimings);
     _reportTimer?.cancel();
     _reportTimer = null;
     await _flushWindow(reason: 'stop');
+    await _draining;
     _started = false;
     _onJank = null;
   }
@@ -108,7 +118,9 @@ class FastTrackMcpJankMonitor {
     _onJank = null;
     debugOnReport = null;
     _lastFrozenReportAt = null;
-    _reporting = false;
+    await _draining;
+    _pendingWindow = null;
+    _pendingFrozen = null;
     _resetWindow();
     _fpsTarget = _defaultFpsTarget;
     _budgetMs = 1000 / _defaultFpsTarget;
@@ -128,12 +140,23 @@ class FastTrackMcpJankMonitor {
 
   static void _onTimings(List<FrameTiming> timings) {
     if (!_started) return;
+    if (_autoFps) {
+      final fps = _displayFps();
+      if (fps != _fpsTarget) {
+        unawaited(_flushWindow(reason: 'refresh_rate_changed'));
+        _fpsTarget = fps;
+        _budgetMs = 1000.0 / fps;
+      }
+    }
     for (final t in timings) {
       final totalMs = t.totalSpan.inMicroseconds / 1000.0;
       final buildMs = t.buildDuration.inMicroseconds / 1000.0;
       final rasterMs = t.rasterDuration.inMicroseconds / 1000.0;
 
       _windowFrames++;
+      if (buildMs > _budgetMs) _windowBuildSlow++;
+      if (rasterMs > _budgetMs) _windowRasterSlow++;
+      if (totalMs > _budgetMs) _windowHighLatency++;
       if (totalMs > _maxTotalMs) _maxTotalMs = totalMs;
       if (buildMs > _maxBuildMs) _maxBuildMs = buildMs;
       if (rasterMs > _maxRasterMs) _maxRasterMs = rasterMs;
@@ -151,7 +174,7 @@ class FastTrackMcpJankMonitor {
         continue;
       }
 
-      if (totalMs > _budgetMs) {
+      if (buildMs > _budgetMs || rasterMs > _budgetMs) {
         _windowSlow++;
         _sumSlowMs += totalMs;
       }
@@ -202,6 +225,9 @@ class FastTrackMcpJankMonitor {
       'window_ms': _reportInterval.inMilliseconds,
       'total_frames': _windowFrames,
       'slow_frames': _windowSlow,
+      'build_slow_frames': _windowBuildSlow,
+      'raster_slow_frames': _windowRasterSlow,
+      'high_latency_frames': _windowHighLatency,
       'frozen_frames': _windowFrozen,
       'max_total_ms': double.parse(_maxTotalMs.toStringAsFixed(2)),
       'max_build_ms': double.parse(_maxBuildMs.toStringAsFixed(2)),
@@ -217,9 +243,77 @@ class FastTrackMcpJankMonitor {
     await _emit(props);
   }
 
-  static Future<void> _emit(Map<String, dynamic> properties) async {
-    if (_reporting) return;
-    _reporting = true;
+  static int _displayFps() {
+    final views = PlatformDispatcher.instance.views;
+    final rate = views.isEmpty ? 0.0 : views.first.display.refreshRate;
+    return rate.isFinite && rate > 0 ? rate.round() : _defaultFpsTarget;
+  }
+
+  // At most one pending aggregate per kind; merge windows while uploads are slow.
+  static Future<void> _emit(Map<String, dynamic> properties) {
+    if (properties['type'] == 'frame_window') {
+      final previous = _pendingWindow;
+      _pendingWindow =
+          previous == null ? properties : _mergeWindows(previous, properties);
+    } else {
+      if (_pendingFrozen == null ||
+          (properties['total_ms'] as num) >
+              (_pendingFrozen!['total_ms'] as num)) {
+        _pendingFrozen = properties;
+      }
+    }
+    if (_draining != null) return _draining!;
+    final completed = Completer<void>();
+    _draining = completed.future;
+    unawaited(() async {
+      try {
+        while (_pendingFrozen != null || _pendingWindow != null) {
+          final next = _pendingFrozen ?? _pendingWindow!;
+          if (_pendingFrozen != null) {
+            _pendingFrozen = null;
+          } else {
+            _pendingWindow = null;
+          }
+          await _deliver(next);
+        }
+      } finally {
+        _draining = null;
+        completed.complete();
+      }
+    }());
+    return completed.future;
+  }
+
+  static Map<String, dynamic> _mergeWindows(
+      Map<String, dynamic> a, Map<String, dynamic> b) {
+    final merged = <String, dynamic>{...b, 'reason': 'merged'};
+    for (final key in [
+      'total_frames',
+      'slow_frames',
+      'frozen_frames',
+      'build_slow_frames',
+      'raster_slow_frames',
+      'high_latency_frames',
+      'window_ms'
+    ]) {
+      merged[key] = (a[key] as num) + (b[key] as num);
+    }
+    for (final key in ['max_total_ms', 'max_build_ms', 'max_raster_ms']) {
+      merged[key] = math.max(a[key] as num, b[key] as num);
+    }
+    final slow = merged['slow_frames'] as num;
+    merged['avg_slow_ms'] = slow == 0
+        ? 0
+        : ((a['avg_slow_ms'] as num) * (a['slow_frames'] as num) +
+                (b['avg_slow_ms'] as num) * (b['slow_frames'] as num)) /
+            slow;
+    merged['jank_rate'] = slow / (merged['total_frames'] as num);
+    merged['severity'] =
+        (merged['frozen_frames'] as num) > 0 ? 'frozen' : 'slow';
+    return merged;
+  }
+
+  static Future<void> _deliver(Map<String, dynamic> properties) async {
     try {
       final hook = debugOnReport;
       if (hook != null) {
@@ -238,12 +332,13 @@ class FastTrackMcpJankMonitor {
       }
     } catch (e) {
       debugPrint('[ftm] jank report failed: $e');
-    } finally {
-      _reporting = false;
     }
   }
 
   static void _resetWindow() {
+    _windowBuildSlow = 0;
+    _windowRasterSlow = 0;
+    _windowHighLatency = 0;
     _windowFrames = 0;
     _windowSlow = 0;
     _windowFrozen = 0;

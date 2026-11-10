@@ -215,7 +215,7 @@ class TransitionLedger {
       final probe = await TransitionLeakTracker.instance.probeAfterPop(
         poppedRoute: route,
       );
-      if (!probe.hasWeakRefLeak) return;
+      if (!TransitionLeakTracker.instance.shouldAlertLeak(probe)) return;
       LeakOnline.instance.emitTransitionLeak(
         route: probe.route,
         aliveCount: probe.alive.length,

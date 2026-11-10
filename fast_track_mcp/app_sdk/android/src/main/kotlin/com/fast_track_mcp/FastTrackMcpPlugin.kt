@@ -25,6 +25,7 @@ class FastTrackMcpPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         anrEvents.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 anrSink = events
+                anrDetector?.replayPending()
             }
 
             override fun onCancel(arguments: Any?) {
@@ -72,6 +73,14 @@ class FastTrackMcpPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 val timeoutMs = (call.argument<Number>("timeoutMs")?.toLong() ?: 5_000L)
                 anrDetector?.start(timeoutMs)
                 result.success(mapOf("ok" to true, "mode" to "native"))
+            }
+            "ackAnr" -> {
+                try {
+                    call.argument<String>("anr_id")?.let { anrDetector?.acknowledge(it) }
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("anr_ack_failed", e.message, null)
+                }
             }
             "stop" -> {
                 anrDetector?.stop()

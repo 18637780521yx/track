@@ -53,7 +53,7 @@ class TransitionLeakProbe {
   @Deprecated('Leak detection no longer uses an external issue window.')
   bool get hasSleuthLeak => false;
 
-  bool get hasLeak => hasWeakRefLeak;
+  bool get hasLeak => hasWeakRefLeak && multiRoundConfirmed;
 
   double? get rssDeltaMb {
     if (rssBeforeMb == null || rssAfterMb == null) return null;
@@ -69,7 +69,7 @@ class TransitionLeakProbe {
   /// weak_ref_multi | weak_ref | none
   String get evidence {
     if (!hasWeakRefLeak) return 'none';
-    return multiRoundConfirmed ? 'weak_ref_multi' : 'weak_ref';
+    return multiRoundConfirmed ? 'weak_ref_multi_suspect' : 'weak_ref_suspect';
   }
 
   Map<String, dynamic> toJson() => {
@@ -85,12 +85,14 @@ class TransitionLeakProbe {
         'multiRoundConfirmed': multiRoundConfirmed,
         'sleuthHits': const <Map<String, dynamic>>[],
         'evidence': evidence,
+        'severity': 'leak_suspect',
+        'gc_verified': false,
       };
 }
 
 /// Registers objects per route and checks WeakRef liveness after pop.
 ///
-/// Does **not** call VM forced GC — still-reachable objects are leaks.
+/// Does not force GC. A live weak reference is a suspicion, not proof of a leak.
 /// Keeps per-route [aliveCounts] history for multi-round confirmation.
 /// A leak is WeakRef liveness plus optional RSS retain.
 class TransitionLeakTracker {
@@ -113,7 +115,7 @@ class TransitionLeakTracker {
   bool alertOnWeakRef = true;
 
   /// Gate: only alert WeakRef when [multiRoundConfirmed].
-  bool requireMultiRound = false;
+  bool requireMultiRound = true;
 
   /// Gate: RSS retain auxiliary alert.
   bool alertOnRssRetain = true;
@@ -163,6 +165,7 @@ class TransitionLeakTracker {
 
   /// Whether the gate policy allows a main `memory_leak` alert.
   bool shouldAlertLeak(TransitionLeakProbe probe) {
+    if (!enabled || !_allowTrack) return false;
     if (probe.hasWeakRefLeak) {
       if (!alertOnWeakRef) return false;
       if (requireMultiRound && !probe.multiRoundConfirmed) return false;
@@ -217,7 +220,7 @@ class TransitionLeakTracker {
     int? settleOverrideMs,
   }) async {
     final wait = settleOverrideMs ?? settleMs;
-    final rssBefore = _rssAtPush[poppedRoute];
+    final rssBefore = _rssAtPush.remove(poppedRoute);
     await Future<void>.delayed(Duration(milliseconds: wait));
 
     // Drop dead refs first.
@@ -289,18 +292,17 @@ class TransitionLeakTracker {
       final parts = <String>[];
       if (probe.hasWeakRefLeak) {
         final names = probe.alive.map((e) => e['name']).join(', ');
-        parts.add('仍可达: $names（WeakRef）');
+        parts.add(
+            'Suspected retained objects: $names (WeakRef; GC not verified)');
       }
-      final multiNote = probe.multiRoundConfirmed
-          ? '；多轮确认：${probe.multiRoundSummary}'
-          : '';
+      final multiNote =
+          probe.multiRoundConfirmed ? '；多轮确认：${probe.multiRoundSummary}' : '';
       out.add(
         AlertItem(
           type: 'memory_leak',
           stepId: stepId,
           action: action,
-          message:
-              'pop ${probe.route} 后 ${parts.join('；')}$multiNote'
+          message: 'pop ${probe.route} 后 ${parts.join('；')}$multiNote'
               ' · evidence=${probe.evidence}',
           value: probe.toJson(),
         ),
@@ -328,10 +330,7 @@ class TransitionLeakTracker {
 
   static String _historyKey(String route) => route.split('#').first;
 
-  static bool _routeMatch(String a, String b) {
-    if (a == b) return true;
-    return a.split('#').first == b.split('#').first;
-  }
+  static bool _routeMatch(String a, String b) => a == b;
 }
 
 // FastTrackMcpLeakTrackMixin / FastTrackMcpGetxController / FastTrackMcpDi live in getx_leak_hook.dart.

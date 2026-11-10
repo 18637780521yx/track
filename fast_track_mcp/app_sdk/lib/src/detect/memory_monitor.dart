@@ -35,8 +35,8 @@ class FastTrackMcpMemoryMonitor {
   static int _pressureBytes = _defaultPressureBytes;
 
   static final ListQueue<int> _rssHistory = ListQueue<int>();
-  static DateTime? _lastReportAt;
-  static bool _reporting = false;
+  static final Map<String, DateTime> _lastReportAt = {};
+  static final Set<String> _reportingTypes = {};
   static int? _baselineRss;
 
   static Future<void> Function(Map<String, dynamic> properties)? _onMemory;
@@ -80,7 +80,7 @@ class FastTrackMcpMemoryMonitor {
     _rssReader = rssReader;
     _rssHistory.clear();
     _baselineRss = null;
-    _lastReportAt = null;
+    _lastReportAt.clear();
 
     _timer?.cancel();
     _timer = Timer.periodic(sampleInterval, (_) => unawaited(_sample()));
@@ -107,8 +107,8 @@ class FastTrackMcpMemoryMonitor {
   static Future<void> debugReset() async {
     await stop();
     debugOnReport = null;
-    _lastReportAt = null;
-    _reporting = false;
+    _lastReportAt.clear();
+    _reportingTypes.clear();
     _baselineRss = null;
     _sampleInterval = _defaultSampleInterval;
     _coolDown = _defaultCoolDown;
@@ -193,7 +193,7 @@ class FastTrackMcpMemoryMonitor {
     final start = list.length - (_growthStreak + 1);
     for (var i = start; i < list.length - 1; i++) {
       final delta = list[i + 1] - list[i];
-      if (delta < _minGrowthBytes) return false;
+      if (delta <= 0 || delta < _minGrowthBytes) return false;
     }
     return true;
   }
@@ -214,14 +214,15 @@ class FastTrackMcpMemoryMonitor {
     required int? imageCacheBytes,
     Map<String, dynamic>? extra,
   }) async {
-    if (_reporting) return;
+    if (_reportingTypes.contains(type)) return;
     final now = DateTime.now();
-    if (_lastReportAt != null && now.difference(_lastReportAt!) < _coolDown) {
+    if (_lastReportAt[type] != null &&
+        now.difference(_lastReportAt[type]!) < _coolDown) {
       return;
     }
 
-    _reporting = true;
-    _lastReportAt = now;
+    _reportingTypes.add(type);
+    _lastReportAt[type] = now;
     try {
       final route = FastTrackMcpNetwork.currentRoute();
       final props = <String, dynamic>{
@@ -257,7 +258,7 @@ class FastTrackMcpMemoryMonitor {
     } catch (e) {
       debugPrint('[ftm] memory report failed: $e');
     } finally {
-      _reporting = false;
+      _reportingTypes.remove(type);
     }
   }
 

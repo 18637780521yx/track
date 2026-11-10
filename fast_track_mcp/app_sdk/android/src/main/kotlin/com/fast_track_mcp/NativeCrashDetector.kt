@@ -79,6 +79,20 @@ internal class NativeCrashDetector(
 
     private fun recordsDir(): File = File(context.filesDir, "ftm_crash_records").apply { mkdirs() }
 
+    /** Atomic JSON write. Android [File.renameTo] fails when the destination already exists. */
+    private fun writeJsonAtomic(file: File, json: JSONObject) {
+        val temporary = File(file.parentFile, "${file.name}.tmp")
+        FileOutputStream(temporary).use { output ->
+            output.write(json.toString().toByteArray(Charsets.UTF_8))
+            output.fd.sync()
+        }
+        if (file.exists() && !file.delete()) {
+            temporary.delete()
+            error("Cannot replace crash record ${file.name}")
+        }
+        check(temporary.renameTo(file)) { "Cannot commit crash record ${file.name}" }
+    }
+
     private fun enqueue(payload: Map<String, Any?>): Boolean {
         val id = payload["crash_id"] as? String ?: UUID.randomUUID().toString()
         val record = payload + ("crash_id" to id)
@@ -87,12 +101,7 @@ internal class NativeCrashDetector(
             if (!file.exists()) {
                 val json = JSONObject()
                 record.forEach { (k, v) -> json.put(k, v ?: JSONObject.NULL) }
-                val temporary = File(recordsDir(), "$id.tmp")
-                FileOutputStream(temporary).use { output ->
-                    output.write(json.toString().toByteArray(Charsets.UTF_8))
-                    output.fd.sync()
-                }
-                check(temporary.renameTo(file)) { "Cannot commit crash record" }
+                writeJsonAtomic(file, json)
             }
             mainHandler.post { onCrash(record) }
             return true
@@ -210,12 +219,13 @@ internal class NativeCrashDetector(
                             kotlin.math.abs(record.optLong("occurred_at_ms") - latest.timestamp) < 10_000
                         if (matches) {
                             record.put("exit_timestamp_ms", latest.timestamp)
-                            val temp = File(file.parentFile, file.name + ".tmp")
-                            temp.writeText(record.toString())
-                            check(temp.renameTo(file))
+                            writeJsonAtomic(file, record)
                         }
                         matches
-                    } catch (_: Exception) { false }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "jvm pending merge failed", e)
+                        false
+                    }
                 } == true
                 if (hasPendingJvm && latest.reason == ApplicationExitInfo.REASON_CRASH) continue
                 enqueue(
@@ -275,7 +285,12 @@ internal class NativeCrashDetector(
                 ),
             )
         if (!persisted) return
-        prefs.edit().putLong(KEY_TOMBSTONE_AT, maxOf(stamp, System.currentTimeMillis())).apply()
+        // commit：避免 apply 异步落盘前进程被杀导致 watermark 丢失、下次重复回捞
+        check(
+            prefs.edit()
+                .putLong(KEY_TOMBSTONE_AT, maxOf(stamp, System.currentTimeMillis()))
+                .commit(),
+        )
         if (tomb.source != "persisted_tombstone") {
             TombstoneReader.persistCopy(context, tomb.text)
         } else {

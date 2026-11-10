@@ -19,6 +19,7 @@ internal class AnrDetector(
     private val context: Context,
     private val onAnr: (Map<String, Any?>) -> Unit,
 ) {
+    private val pendingStore = PendingAnrStore(context)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val running = AtomicBoolean(false)
     private val pingId = AtomicLong(0)
@@ -28,9 +29,10 @@ internal class AnrDetector(
     private var lastReportAtMs: Long = 0
 
     fun start(timeoutMs: Long) {
-        if (!running.compareAndSet(false, true)) return
+        if (!running.compareAndSet(false, true)) { replayPending(); return }
         this.timeoutMs = timeoutMs.coerceAtLeast(1_000)
         reportHistoricalAnrs()
+        replayPending()
         val thread = Thread({
             Log.i(TAG, "watchdog started timeout=${this.timeoutMs}ms")
             while (running.get()) {
@@ -85,11 +87,12 @@ internal class AnrDetector(
             val am = context.getSystemService(ActivityManager::class.java) ?: return
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val watermark = prefs.getLong(KEY_WATERMARK, 0L)
-            val latest = am.getHistoricalProcessExitReasons(null, 0, 8)
-                .asSequence()
+            val history = am.getHistoricalProcessExitReasons(null, 0, 32)
                 .filter { it.reason == ApplicationExitInfo.REASON_ANR && it.timestamp > watermark }
-                .maxByOrNull { it.timestamp }
-                ?: return
+                .sortedBy { it.timestamp }
+            for (latest in history) {
+            val id = "anr-${latest.timestamp}-${latest.pid}"
+            if (pendingStore.isAcknowledged(id)) continue
             val tomb = TombstoneReader.resolve(
                 context = context,
                 exitInfo = latest,
@@ -97,9 +100,10 @@ internal class AnrDetector(
             )
             val trace = tomb?.text ?: ""
             // Bypass watchdog cooldown — post-mortem is once per exit.
-            mainHandler.post {
-                onAnr(
+            pendingStore.put(id,
                     buildMap {
+                        put("anr_id", id)
+                        put("event_type", "anr")
                         put("blocked_ms", timeoutMs)
                         put("anr_source", "app_exit_info")
                         put("stack", trace.take(16_384))
@@ -116,11 +120,20 @@ internal class AnrDetector(
                     },
                 )
             }
-            prefs.edit().putLong(KEY_WATERMARK, latest.timestamp).apply()
         } catch (e: Exception) {
             Log.w(TAG, "historical ANR read failed: $e")
         }
     }
+
+    fun replayPending() {
+        if (!running.get()) return
+        pendingStore.readPending().forEach { record ->
+            val id = record["anr_id"] as? String ?: return@forEach
+            if (!pendingStore.isAcknowledged(id)) mainHandler.post { onAnr(record) }
+        }
+    }
+
+    fun acknowledge(id: String) = pendingStore.acknowledge(id)
 
     companion object {
         private const val TAG = "ftm.anr"

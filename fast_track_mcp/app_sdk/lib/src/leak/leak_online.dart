@@ -108,6 +108,8 @@ class LeakOnline {
   }) {
     emit({
       'type': 'transition_leak',
+      'severity': 'leak_suspect',
+      'gc_verified': false,
       'route': route,
       'aliveCount': aliveCount,
       'aliveNames': aliveNames,

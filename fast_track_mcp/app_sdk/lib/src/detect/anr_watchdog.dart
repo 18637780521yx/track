@@ -4,6 +4,7 @@ import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_fast_track/flutter_fast_track.dart';
 
 import 'detect_sink.dart';
 import 'event_names.dart';
@@ -22,6 +23,12 @@ class FastTrackMcpAnrWatchdog {
   static const _method = MethodChannel('fast_track_mcp/anr');
   static const _events = EventChannel('fast_track_mcp/anr_events');
 
+  static Future<void>? _starting;
+  static Future<void> _historicalTail = Future.value();
+  static final Set<String> _persistedHistory = {};
+  @visibleForTesting
+  static Future<bool> Function(String id, Map<String, dynamic> properties)?
+      debugPersistHistory;
   static bool _started = false;
   static String _mode = 'off';
   static Duration _timeout = _defaultTimeout;
@@ -56,8 +63,17 @@ class FastTrackMcpAnrWatchdog {
   static Future<void> start({
     Duration timeout = _defaultTimeout,
     Future<void> Function(Map<String, dynamic> properties)? onAnr,
-  }) async {
-    if (_started) return;
+  }) {
+    if (_started) return Future.value();
+    return _starting ??=
+        _start(timeout: timeout, onAnr: onAnr).whenComplete(() {
+      _starting = null;
+    });
+  }
+
+  static Future<void> _start(
+      {required Duration timeout,
+      Future<void> Function(Map<String, dynamic>)? onAnr}) async {
     if (timeout <= Duration.zero) {
       debugPrint('[ftm] ANR watchdog skipped: timeout must be > 0');
       return;
@@ -182,7 +198,11 @@ class FastTrackMcpAnrWatchdog {
 
   @visibleForTesting
   static Future<void> debugReset() async {
+    await _starting;
     await stop();
+    await _historicalTail;
+    _persistedHistory.clear();
+    debugPersistHistory = null;
     _lastReportAt = null;
     debugOnReport = null;
     _timeout = _defaultTimeout;
@@ -193,6 +213,14 @@ class FastTrackMcpAnrWatchdog {
   static Future<void> debugEmit(Map<Object?, Object?> raw) => _emitAnr(raw);
 
   static Future<void> _emitAnr(Map<Object?, Object?> raw) async {
+    final historicalId = raw['anr_id']?.toString();
+    if (historicalId != null) {
+      final task =
+          _historicalTail.then((_) => _reportHistory(historicalId, raw));
+      _historicalTail = task;
+      await task;
+      return;
+    }
     if (_reporting) return;
     final now = DateTime.now();
     final cooldown = Duration(milliseconds: _timeout.inMilliseconds * 3);
@@ -251,6 +279,44 @@ class FastTrackMcpAnrWatchdog {
       debugPrint('[ftm] ANR report failed: $e');
     } finally {
       _reporting = false;
+    }
+  }
+
+  static Future<void> _reportHistory(
+      String id, Map<Object?, Object?> raw) async {
+    try {
+      if (!_persistedHistory.contains(id)) {
+        final props = <String, dynamic>{
+          for (final entry in raw.entries)
+            if (entry.key is String) entry.key as String: entry.value,
+          'type': 'anr_watchdog',
+          'exception_type': 'ApplicationNotResponding',
+          'message': raw['description']?.toString() ?? 'Historical ANR',
+          'thread': 'main',
+          'is_fatal': true,
+        };
+        final timestamp = raw['exit_timestamp_ms'];
+        final hook = debugPersistHistory;
+        final persisted = hook != null
+            ? await hook(id, props)
+            : await FastTracker.persistCrash(
+                FastTrackMcpEventName.appAnr,
+                eventId: id,
+                properties: props,
+                timestamp: timestamp is num
+                    ? DateTime.fromMillisecondsSinceEpoch(timestamp.toInt())
+                    : null,
+              );
+        if (!persisted) return;
+        _persistedHistory.add(id);
+        if (_persistedHistory.length > 128) {
+          _persistedHistory.remove(_persistedHistory.first);
+        }
+      }
+      await _method.invokeMethod<void>('ackAnr', {'anr_id': id});
+      if (debugPersistHistory == null) unawaited(FastTracker.tracker.flush());
+    } catch (error, stack) {
+      debugPrint('[ftm] historical ANR retained for retry: $error\n$stack');
     }
   }
 }

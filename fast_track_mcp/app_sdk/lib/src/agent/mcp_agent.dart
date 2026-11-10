@@ -59,13 +59,13 @@ class FastTrackMcp {
     int leakConfirmRounds = 2,
     double leakRssRetainMb = 5,
     bool alertOnWeakRef = true,
-    bool requireMultiRound = false,
+    bool requireMultiRound = true,
     bool alertOnRssRetain = true,
     bool leakVmDeepProbe = false,
     bool enableAnrWatchdog = true,
     Duration anrTimeout = const Duration(seconds: 5),
     bool enableJankMonitor = true,
-    int jankFpsTarget = 60,
+    int? jankFpsTarget,
     bool enableMemoryMonitor = true,
     bool leakOnlineEnabled = false,
     double leakSampleRate = 0.0,
@@ -97,25 +97,6 @@ class FastTrackMcp {
       FastTrackMcpMemoryMonitor.start();
     }
 
-    if (kReleaseMode) {
-      if (LeakOnline.instance.active) {
-        TransitionLeakTracker.instance.configure(
-          enabled: true,
-          settleMs: transitionSettleMs,
-          leakConfirmRounds: leakConfirmRounds,
-          rssRetainMb: leakRssRetainMb,
-        );
-        TransitionLedger.instance.settleMs = transitionSettleMs;
-        debugPrint(
-          '[FastTrackMcp] release online lite active '
-          '(sampleRate=$leakSampleRate)',
-        );
-      } else {
-        debugPrint('[FastTrackMcp] release: monitors on, bridge idle');
-      }
-      return;
-    }
-
     TransitionLeakTracker.instance.configure(
       enabled: leakTrackEnabled,
       settleMs: transitionSettleMs,
@@ -127,6 +108,18 @@ class FastTrackMcp {
       leakVmDeepProbe: leakVmDeepProbe,
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
+
+    if (kReleaseMode) {
+      if (LeakOnline.instance.active) {
+        debugPrint(
+          '[FastTrackMcp] release online lite active '
+          '(sampleRate=$leakSampleRate)',
+        );
+      } else {
+        debugPrint('[FastTrackMcp] release: monitors on, bridge idle');
+      }
+      return;
+    }
 
     // 生命周期优先于 flutter_skill，避免 skill 初始化失败时冷启动永远不埋点。
     AppLifecycleTracker.instance.ensureStarted();
