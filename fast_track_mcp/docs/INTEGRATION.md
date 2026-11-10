@@ -196,3 +196,13 @@ FastTrackMcp.installHttpCaptureDeferred(
 - 新采集的原生异常保留发生时间和启动时同步的会话 ID。系统历史诊断、旧版记录没有原会话时使用 `native-recovered`，不归入本次启动会话；MetricKit 的时间是诊断窗口结束时间。
 
 本仓库开发需使用配套的 `fast_track` 源码（`pubspec_overrides.yaml`），其中新增了可靠入队接口 `FastTracker.persistCrash()`；发布 App SDK 前须先发布并更新该依赖版本。
+
+## 性能监控的判定与回捞
+
+- iOS Hang 仅检查前台、正在处理任务的 RunLoop；正常等待事件与后台状态不计为卡死。耗时使用单调时钟，停止或切换前后台后不会投递旧告警。
+- Android 历史 ANR 逐条落盘并携带稳定 ID。Dart 成功持久化后才调用 `ackAnr`；失败保留待重试，历史事件不受实时告警冷却限制。系统记录没有原会话时使用 `native-recovered`，发生时间使用系统退出时间。
+- 卡顿预算默认跟随屏幕刷新率，也可通过 `jankFpsTarget` 手动指定。`slow_frames` / `jank_rate` 按 build 或 raster 超预算统计；`high_latency_frames` 单独记录总延迟。`severity: latency` 不代表处理阶段掉帧。
+- 卡顿报告发送繁忙时合并待发送窗口，保留帧数、峰值和加权平均值。即时 frozen 事件和聚合窗口是同一帧的两种视图，统计时不要相加。
+- 内存增长与内存压力分别冷却，压力升级不会被普通增长告警阻挡；RSS 增长仍是启发式信号，不证明对象泄漏。
+- Debug/Profile/Release 统一应用 `leakTrackEnabled`、`alertOnWeakRef` 和 `requireMultiRound`。默认 `requireMultiRound: true`；线上转场上报也遵循该策略。
+- 泄漏探测按完整路由匹配，不混用不同 `#` 后缀。WeakReference 存活仅表示疑似滞留，输出 `severity: leak_suspect`、`gc_verified: false`；多轮确认仍不等于 GC 根因验证。需要精确区分同一路径的多个页面时，宿主应使用不同路由标识。

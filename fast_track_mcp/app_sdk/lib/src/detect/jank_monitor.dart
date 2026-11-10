@@ -9,7 +9,8 @@ import 'event_names.dart';
 
 /// 卡顿 / 掉帧监测：监听 [SchedulerBinding.addTimingsCallback]。
 ///
-/// - **slow**：单帧总耗时超过预算（默认按 60fps → ~16.7ms）
+/// - **slow**：build 或 raster 超过预算（默认读取屏幕刷新率，未知时按 60fps）
+/// - **latency**：总延迟单独统计，不等同于处理阶段掉帧
 /// - **frozen**：单帧总耗时超过 [frozenFrameThreshold]（默认 700ms，对齐常见 APM）
 ///
 /// 默认按窗口聚合上报一条 `app_jank`，避免每帧打点打爆队列；
@@ -68,6 +69,7 @@ class FastTrackMcpJankMonitor {
       debugPrint('[ftm] jank monitor skipped: fpsTarget must be > 0');
       return;
     }
+    if (frozenFrameThreshold <= Duration.zero) return;
 
     _autoFps = fpsTarget == null;
     _fpsTarget = fpsTarget ?? _displayFps();
@@ -161,22 +163,20 @@ class FastTrackMcpJankMonitor {
       if (buildMs > _maxBuildMs) _maxBuildMs = buildMs;
       if (rasterMs > _maxRasterMs) _maxRasterMs = rasterMs;
 
+      if (buildMs > _budgetMs || rasterMs > _budgetMs) {
+        _windowSlow++;
+        _sumSlowMs += totalMs;
+      }
+
       final frozenMs = _frozenThreshold.inMilliseconds.toDouble();
       if (totalMs >= frozenMs) {
         _windowFrozen++;
-        _windowSlow++;
-        _sumSlowMs += totalMs;
         unawaited(_reportFrozen(
           totalMs: totalMs,
           buildMs: buildMs,
           rasterMs: rasterMs,
         ));
         continue;
-      }
-
-      if (buildMs > _budgetMs || rasterMs > _budgetMs) {
-        _windowSlow++;
-        _sumSlowMs += totalMs;
       }
     }
   }
@@ -210,16 +210,20 @@ class FastTrackMcpJankMonitor {
 
   static Future<void> _flushWindow({required String reason}) async {
     if (_windowFrames == 0) return;
-    if (_windowSlow < _minSlowFramesToReport && _windowFrozen == 0) {
+    if (_windowSlow < _minSlowFramesToReport &&
+        _windowFrozen == 0 &&
+        _windowHighLatency < _minSlowFramesToReport) {
       _resetWindow();
       return;
     }
 
     final props = <String, dynamic>{
       'type': 'frame_window',
-      'severity': _windowFrozen > 0 ? 'frozen' : 'slow',
+      'severity':
+          _windowFrozen > 0 ? 'frozen' : (_windowSlow > 0 ? 'slow' : 'latency'),
       'reason': reason,
       'fps_target': _fpsTarget,
+      'fps_targets': [_fpsTarget],
       'budget_ms': double.parse(_budgetMs.toStringAsFixed(2)),
       'frozen_threshold_ms': _frozenThreshold.inMilliseconds,
       'window_ms': _reportInterval.inMilliseconds,
@@ -244,7 +248,7 @@ class FastTrackMcpJankMonitor {
   }
 
   static int _displayFps() {
-    final views = PlatformDispatcher.instance.views;
+    final views = WidgetsBinding.instance.platformDispatcher.views;
     final rate = views.isEmpty ? 0.0 : views.first.display.refreshRate;
     return rate.isFinite && rate > 0 ? rate.round() : _defaultFpsTarget;
   }
@@ -308,8 +312,13 @@ class FastTrackMcpJankMonitor {
                 (b['avg_slow_ms'] as num) * (b['slow_frames'] as num)) /
             slow;
     merged['jank_rate'] = slow / (merged['total_frames'] as num);
-    merged['severity'] =
-        (merged['frozen_frames'] as num) > 0 ? 'frozen' : 'slow';
+    merged['fps_targets'] = <int>{
+      ...a['fps_targets'] as List<int>,
+      ...b['fps_targets'] as List<int>
+    }.toList();
+    merged['severity'] = (merged['frozen_frames'] as num) > 0
+        ? 'frozen'
+        : (slow > 0 ? 'slow' : 'latency');
     return merged;
   }
 

@@ -69,7 +69,7 @@ class TransitionLeakProbe {
   /// weak_ref_multi | weak_ref | none
   String get evidence {
     if (!hasWeakRefLeak) return 'none';
-    return multiRoundConfirmed ? 'weak_ref_multi_suspect' : 'weak_ref_suspect';
+    return multiRoundConfirmed ? 'weak_ref_multi' : 'weak_ref';
   }
 
   Map<String, dynamic> toJson() => {
@@ -292,8 +292,7 @@ class TransitionLeakTracker {
       final parts = <String>[];
       if (probe.hasWeakRefLeak) {
         final names = probe.alive.map((e) => e['name']).join(', ');
-        parts.add(
-            'Suspected retained objects: $names (WeakRef; GC not verified)');
+        parts.add('疑似滞留: $names（WeakRef 存活，未验证 GC）');
       }
       final multiNote =
           probe.multiRoundConfirmed ? '；多轮确认：${probe.multiRoundSummary}' : '';
@@ -328,7 +327,7 @@ class TransitionLeakTracker {
     return out;
   }
 
-  static String _historyKey(String route) => route.split('#').first;
+  static String _historyKey(String route) => route;
 
   static bool _routeMatch(String a, String b) => a == b;
 }

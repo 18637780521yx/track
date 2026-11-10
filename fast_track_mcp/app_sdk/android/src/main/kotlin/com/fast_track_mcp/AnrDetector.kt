@@ -91,34 +91,33 @@ internal class AnrDetector(
                 .filter { it.reason == ApplicationExitInfo.REASON_ANR && it.timestamp > watermark }
                 .sortedBy { it.timestamp }
             for (latest in history) {
-            val id = "anr-${latest.timestamp}-${latest.pid}"
-            if (pendingStore.isAcknowledged(id)) continue
-            val tomb = TombstoneReader.resolve(
-                context = context,
-                exitInfo = latest,
-                processNameHint = context.packageName,
-            )
-            val trace = tomb?.text ?: ""
-            // Bypass watchdog cooldown — post-mortem is once per exit.
-            pendingStore.put(id,
-                    buildMap {
-                        put("anr_id", id)
-                        put("event_type", "anr")
-                        put("blocked_ms", timeoutMs)
-                        put("anr_source", "app_exit_info")
-                        put("stack", trace.take(16_384))
-                        put("is_fatal", true)
-                        put("platform", "android")
-                        put("exit_timestamp_ms", latest.timestamp)
-                        put("importance", latest.importance)
-                        put("description", latest.description ?: "")
-                        if (tomb != null) {
-                            put("tombstone", tomb.text)
-                            put("tombstone_source", tomb.source)
-                            if (tomb.path != null) put("tombstone_path", tomb.path)
-                        }
-                    },
+                val id = "anr-${latest.timestamp}-${latest.pid}"
+                if (pendingStore.isAcknowledged(id)) continue
+                val tomb = TombstoneReader.resolve(
+                    context = context,
+                    exitInfo = latest,
+                    processNameHint = context.packageName,
                 )
+                val trace = tomb?.text ?: ""
+                // Bypass watchdog cooldown — post-mortem is once per exit.
+                pendingStore.put(id,
+                        buildMap {
+                            put("anr_id", id)
+                            put("event_type", "anr")
+                            put("anr_source", "app_exit_info")
+                            put("stack", trace.take(16_384))
+                            put("is_fatal", true)
+                            put("platform", "android")
+                            put("exit_timestamp_ms", latest.timestamp)
+                            put("importance", latest.importance)
+                            put("description", latest.description ?: "")
+                            if (tomb != null) {
+                                put("tombstone", tomb.text)
+                                put("tombstone_source", tomb.source)
+                                if (tomb.path != null) put("tombstone_path", tomb.path)
+                            }
+                        },
+                    )
             }
         } catch (e: Exception) {
             Log.w(TAG, "historical ANR read failed: $e")
