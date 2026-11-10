@@ -20,15 +20,13 @@
 
 ```yaml
 dependencies:
-  flutter_fast_track:
-    path: ../fast_track   # 或 pub 版本
+  flutter_fast_track: ^0.2.0
 ```
 
 与性能检测一起用时，再加：
 
 ```yaml
-  fast_track_mcp:
-    path: ../fast_track_mcp/app_sdk
+  fast_track_mcp: ^0.10.0
 ```
 
 ## 快速使用（仅上报）

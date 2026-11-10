@@ -1,0 +1,6 @@
+# Local monorepo development. Ignored by pub publish via .pubignore.
+dependency_overrides:
+  flutter_fast_track:
+    path: ../../fast_track
+  fast_track_mcp_protocol:
+    path: ../protocol

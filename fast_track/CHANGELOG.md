@@ -1,6 +1,7 @@
-## Unreleased
+## 0.2.0
 
 - **Track-only**：移除 App 内 Crash/ANR/Jank/Memory 检测与 `NavigatorObserver`；钩子归 `fast_track_mcp` App SDK，本包只负责 `FastTracker` 上报管道。
+- `init` 零钩子：无 CrashHandler、无生命周期/路由自动埋点；检测请接 `fast_track_mcp`。
 
 ## 0.1.0
 
