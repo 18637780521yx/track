@@ -58,7 +58,9 @@ class FastStorage {
           // 第二次尝试：删除后重新初始化
           _store = await openStore(directory: storePath);
           _box = _store!.box<TrackEvent>();
-          fastLog('ObjectBox re-initialized successfully: ${_box!.count()} events', debug: true);
+          fastLog(
+              'ObjectBox re-initialized successfully: ${_box!.count()} events',
+              debug: true);
         } catch (e2) {
           // 仍然失败，记录错误并抛出
           fastLog('ObjectBox re-init failed after delete', error: e2);
@@ -77,6 +79,17 @@ class FastStorage {
     } catch (e) {
       fastLog('ObjectBox appendEvent failed', error: e);
       rethrow;
+    }
+  }
+
+  /// Persist a recovered crash once, retaining its stable native event ID.
+  static Future<void> appendEventIfAbsent(TrackEvent event) async {
+    final box = _box!;
+    final query = box.query(TrackEvent_.id.equals(event.id)).build();
+    try {
+      if (query.findFirst() == null) box.put(event);
+    } finally {
+      query.close();
     }
   }
 
@@ -143,7 +156,8 @@ class FastStorage {
       final objectBoxIds = oldestEvents.map((e) => e.objectBoxId).toList();
       _box!.removeMany(objectBoxIds);
 
-      fastLog('ObjectBox deleted ${objectBoxIds.length} oldest events', debug: true);
+      fastLog('ObjectBox deleted ${objectBoxIds.length} oldest events',
+          debug: true);
     } catch (e) {
       fastLog('ObjectBox deleteOldestEvents failed', error: e);
       rethrow;

@@ -1,11 +1,11 @@
 import 'dart:async';
-import 'dart:io' show Platform;
 import 'dart:isolate';
 import 'dart:ui';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_fast_track/flutter_fast_track.dart';
 
 import 'detect_sink.dart';
 import 'event_names.dart';
@@ -23,7 +23,7 @@ typedef FastTrackAppRunner = FutureOr<void> Function();
 ///   Android：`ApplicationExitInfo` + tombstone（ExitInfo trace / 可读时
 ///   `/data/tombstones`）；iOS 14+：MetricKit crash/hang 诊断
 ///
-/// 未捕获打 `app_crash`（`is_fatal: true`）并 flush。
+/// Zone / Platform / Isolate 未捕获打 `app_crash` 并 flush；框架错误记 `app_error`。
 /// 已 catch 的用 [captureException] / [captureMessage] → `app_error`。
 class FastTrackMcpCrashHandler {
   FastTrackMcpCrashHandler._();
@@ -33,35 +33,46 @@ class FastTrackMcpCrashHandler {
   static const Duration _dedupWindow = Duration(milliseconds: 500);
 
   static bool _installed = false;
-  static bool _zoned = false;
-  static int _emitDepth = 0;
+  static final Object _reportZoneKey = Object();
+  static Future<void>? _nativeStartFuture;
 
   static void Function(FlutterErrorDetails details)? _previousFlutterOnError;
   static ErrorCallback? _previousPlatformOnError;
   static RawReceivePort? _isolatePort;
   static StreamSubscription<dynamic>? _nativeCrashSub;
   static bool _nativeCrashStarted = false;
+  static final Map<String, Future<void>> _nativeReports = {};
+  static final Set<String> _persistedNativeIds = {};
 
   static const _nativeMethod = MethodChannel('fast_track_mcp/anr');
   static const _nativeCrashEvents = EventChannel('fast_track_mcp/crash_events');
 
-  static String? _lastDedupKey;
-  static DateTime? _lastDedupAt;
+  static final Map<String, DateTime> _recentErrors = {};
 
   /// 测试注入。设置后只回调、不写队列也不 flush。
   @visibleForTesting
   static Future<void> Function(String name, Map<String, dynamic> properties)?
       debugOnReport;
 
+  @visibleForTesting
+  static Future<bool> Function(
+    String name, {
+    required String eventId,
+    required Map<String, dynamic> properties,
+    DateTime? timestamp,
+    String? sessionId,
+  })? debugPersistCrash;
+
   /// 挂上 Flutter / PlatformDispatcher / 当前 Isolate 的捕获。可重复调用。
   /// Android/iOS 同时启动原生 crash（Uncaught + 下次启动回捞）。
   static void install() {
-    if (_installed) return;
-    _installed = true;
-    _hookFlutterError();
-    _hookPlatformDispatcher();
-    _listenCurrentIsolate();
-    unawaited(_startNativeCrash());
+    if (!_installed) {
+      _installed = true;
+      _hookFlutterError();
+      _hookPlatformDispatcher();
+      _listenCurrentIsolate();
+    }
+    if (_isBindingInitialized()) unawaited(ensureNativeInitialized());
   }
 
   /// 先 [install]，再在 guarded zone 里执行 [appRunner]。
@@ -69,40 +80,41 @@ class FastTrackMcpCrashHandler {
   /// [WidgetsFlutterBinding.ensureInitialized] 和 [runApp] 都要放在 [appRunner] 里。
   /// 绑定位于另一个 Zone 时，部分异步异常进不了这里的 zone 回调，
   /// 仍会由 [PlatformDispatcher.onError] 兜底。
-  static Future<void> run(FastTrackAppRunner appRunner) async {
+  static Future<void> run(FastTrackAppRunner appRunner) {
     install();
-    if (_zoned) {
-      await appRunner();
-      return;
-    }
-    _zoned = true;
-
-    if (_isBindingInitialized()) {
-      debugPrint(
-        '[ftm] WidgetsFlutterBinding 已在 FastTrackMcpCrashHandler.run() 之外初始化。'
-        '请把 ensureInitialized() 和 runApp() 放到 run() 回调内，避免 Zone mismatch。',
-      );
-    }
-
-    await runZonedGuarded(() async {
-      await appRunner();
+    final completed = Completer<void>();
+    runZonedGuarded(() async {
+      try {
+        WidgetsFlutterBinding.ensureInitialized();
+        await ensureNativeInitialized();
+        await appRunner();
+        await ensureNativeInitialized();
+      } catch (error, stack) {
+        await _report(
+            source: 'zone_error', error: error, stack: stack, fatal: true);
+        FlutterError.presentError(
+            FlutterErrorDetails(exception: error, stack: stack));
+      } finally {
+        completed.complete();
+      }
     }, (Object error, StackTrace stack) {
+      unawaited(_report(
+          source: 'zone_error', error: error, stack: stack, fatal: true));
       FlutterError.presentError(
           FlutterErrorDetails(exception: error, stack: stack));
-      unawaited(_report(
-        source: 'zone_error',
-        error: error,
-        stack: stack,
-        fatal: true,
-      ));
+    });
+    return completed.future;
+  }
+
+  /// Retryable native startup, after Binding and FastTracker initialization.
+  static Future<void> ensureNativeInitialized() {
+    if (!_preferNativeCrash || !_isBindingInitialized()) return Future.value();
+    return _nativeStartFuture ??= _startNativeCrash().whenComplete(() {
+      _nativeStartFuture = null;
     });
   }
 
-  /// 子 Isolate 未捕获异常的接收端口。传给 [Isolate.spawn] 的 `onError`。
-  ///
-  /// ```dart
-  /// await Isolate.spawn(entry, message, onError: FastTrackMcpCrashHandler.isolateErrorPort);
-  /// ```
+  /// Pass this port to Isolate.spawn(onError: ...) for child isolate errors.
   static SendPort get isolateErrorPort {
     install();
     return _isolatePort!.sendPort;
@@ -142,7 +154,7 @@ class FastTrackMcpCrashHandler {
   }
 
   @visibleForTesting
-  static void debugReset() {
+  static Future<void> debugReset() {
     if (_installed) {
       FlutterError.onError = _previousFlutterOnError;
       PlatformDispatcher.instance.onError = _previousPlatformOnError;
@@ -153,40 +165,47 @@ class FastTrackMcpCrashHandler {
       port.close();
       _isolatePort = null;
     }
-    unawaited(_stopNativeCrash());
     _installed = false;
-    _zoned = false;
-    _emitDepth = 0;
+
     _previousFlutterOnError = null;
     _previousPlatformOnError = null;
-    _lastDedupKey = null;
-    _lastDedupAt = null;
+    _recentErrors.clear();
     debugOnReport = null;
+    debugPersistCrash = null;
+    _nativeReports.clear();
+    _persistedNativeIds.clear();
+    return _stopNativeCrash();
   }
 
   static bool get _preferNativeCrash {
     if (kIsWeb) return false;
-    try {
-      return Platform.isAndroid || Platform.isIOS;
-    } catch (_) {
-      return false;
-    }
+    return defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
   }
 
   static Future<void> _startNativeCrash() async {
-    if (!_preferNativeCrash || _nativeCrashStarted) return;
+    if (!_preferNativeCrash) return;
     try {
-      await _nativeCrashSub?.cancel();
-      _nativeCrashSub = _nativeCrashEvents.receiveBroadcastStream().listen(
+      _nativeCrashSub ??= _nativeCrashEvents.receiveBroadcastStream().listen(
         (event) {
           if (event is! Map) return;
-          unawaited(_onNativeCrash(Map<Object?, Object?>.from(event)));
+          final raw = Map<Object?, Object?>.from(event);
+          final id = raw['crash_id']?.toString();
+          if (id == null) {
+            unawaited(_onNativeCrash(raw));
+          } else if (!_nativeReports.containsKey(id)) {
+            _nativeReports[id] = _onNativeCrash(raw).whenComplete(() {
+              _nativeReports.remove(id);
+            });
+          }
         },
         onError: (Object e) {
           debugPrint('[ftm] native crash stream error: $e');
         },
       );
-      await _nativeMethod.invokeMethod<void>('startCrash');
+      await _nativeMethod.invokeMethod<void>('startCrash', {
+        'session_id': FastTracker.tracker.currentSessionId,
+      });
       _nativeCrashStarted = true;
       debugPrint('[ftm] native crash handler started');
     } on MissingPluginException {
@@ -200,6 +219,7 @@ class FastTrackMcpCrashHandler {
   }
 
   static Future<void> _stopNativeCrash() async {
+    await _nativeStartFuture;
     try {
       if (_nativeCrashStarted) {
         await _nativeMethod.invokeMethod<void>('stopCrash');
@@ -215,11 +235,11 @@ class FastTrackMcpCrashHandler {
     final message = raw['message']?.toString() ?? 'native crash';
     final stackText = raw['stack']?.toString() ?? '';
     final tombstone = raw['tombstone']?.toString();
-    final exceptionType =
-        raw['exception_type']?.toString() ?? 'NativeCrash';
+    final exceptionType = raw['exception_type']?.toString() ?? 'NativeCrash';
     final thread = raw['thread']?.toString();
     final fatal = raw['is_fatal'] != false;
     await _report(
+      nativeId: raw['crash_id']?.toString(),
       source: 'native_$source',
       error: message,
       stack: stackText.isEmpty ? null : StackTrace.fromString(stackText),
@@ -229,6 +249,10 @@ class FastTrackMcpCrashHandler {
       thread: thread,
       extra: {
         'platform': raw['platform'],
+        if (raw['crash_id'] != null) 'crash_id': raw['crash_id'],
+        if (raw['session_id'] != null) 'original_session_id': raw['session_id'],
+        if (raw['occurred_at_ms'] != null)
+          'occurred_at_ms': raw['occurred_at_ms'],
         'crash_source': source,
         if (raw['exit_timestamp_ms'] != null)
           'exit_timestamp_ms': raw['exit_timestamp_ms'],
@@ -251,7 +275,7 @@ class FastTrackMcpCrashHandler {
         source: 'flutter_error',
         error: details.exception,
         stack: details.stack,
-        fatal: true,
+        fatal: false,
         message: details.exceptionAsString(),
         library: details.library,
         context: details.context?.toDescription(),
@@ -321,42 +345,68 @@ class FastTrackMcpCrashHandler {
     String? thread,
     Map<String, dynamic>? extra,
     bool dedup = true,
+    String? nativeId,
   }) async {
-    if (_emitDepth > 2) return;
-    if (dedup && _isDuplicate(error, stack)) return;
+    if (Zone.current[_reportZoneKey] == true) return;
+    await runZoned(() async {
+      try {
+        if (dedup && _isDuplicate(error, stack)) return;
 
-    final properties = _properties(
-      source: source,
-      error: error,
-      stack: stack,
-      fatal: fatal,
-      message: message,
-      library: library,
-      context: context,
-      exceptionType: exceptionType,
-      thread: thread,
-      extra: extra,
-    );
-    final name =
-        fatal ? FastTrackMcpEventName.appCrash : FastTrackMcpEventName.appError;
+        final properties = _properties(
+          source: source,
+          error: error,
+          stack: stack,
+          fatal: fatal,
+          message: message,
+          library: library,
+          context: context,
+          exceptionType: exceptionType,
+          thread: thread,
+          extra: extra,
+        );
+        final name = fatal
+            ? FastTrackMcpEventName.appCrash
+            : FastTrackMcpEventName.appError;
 
-    _emitDepth++;
-    try {
-      final hook = debugOnReport;
-      if (hook != null) {
-        await hook(name, properties);
-        return;
+        final hook = debugOnReport;
+        if (hook != null) {
+          await hook(name, properties);
+          return;
+        }
+        if (nativeId != null) {
+          if (_persistedNativeIds.contains(nativeId)) {
+            await _nativeMethod
+                .invokeMethod<void>('ackCrash', {'crash_id': nativeId});
+            return;
+          }
+          final milliseconds =
+              extra?['occurred_at_ms'] ?? extra?['exit_timestamp_ms'];
+          final persisted =
+              await (debugPersistCrash ?? FastTracker.persistCrash)(
+            name,
+            eventId: nativeId,
+            properties: properties,
+            timestamp: milliseconds is num
+                ? DateTime.fromMillisecondsSinceEpoch(milliseconds.toInt())
+                : null,
+            sessionId: extra?['original_session_id'] as String?,
+          );
+          if (!persisted) return;
+          _persistedNativeIds.add(nativeId);
+          if (_persistedNativeIds.length > 256) {
+            _persistedNativeIds.remove(_persistedNativeIds.first);
+          }
+          await _nativeMethod
+              .invokeMethod<void>('ackCrash', {'crash_id': nativeId});
+          if (fatal) unawaited(FastTracker.tracker.flush());
+        } else {
+          await FastTrackMcpDetectSink.track(name,
+              properties: properties, flush: fatal);
+        }
+      } catch (e) {
+        debugPrint('[ftm] crash report failed: $e');
       }
-      await FastTrackMcpDetectSink.track(
-        name,
-        properties: properties,
-        flush: fatal,
-      );
-    } catch (e) {
-      debugPrint('[ftm] crash report failed: $e');
-    } finally {
-      _emitDepth--;
-    }
+    }, zoneValues: {_reportZoneKey: true});
   }
 
   static Map<String, dynamic> _properties({
@@ -374,6 +424,7 @@ class FastTrackMcpCrashHandler {
     final resolvedMessage =
         _clip(message ?? _messageOf(error), _maxMessageLength);
     final props = <String, dynamic>{
+      if (extra != null) ...extra,
       'type': source,
       'exception': resolvedMessage,
       'exception_type':
@@ -385,11 +436,7 @@ class FastTrackMcpCrashHandler {
     };
     if (library != null && library.isNotEmpty) props['library'] = library;
     if (context != null && context.isNotEmpty) props['context'] = context;
-    if (extra != null) {
-      for (final entry in extra.entries) {
-        if (entry.value != null) props[entry.key] = entry.value;
-      }
-    }
+    props.removeWhere((_, value) => value == null);
     return props;
   }
 
@@ -410,12 +457,13 @@ class FastTrackMcpCrashHandler {
         stackText.length <= 240 ? stackText : stackText.substring(0, 240);
     final key = '${error.runtimeType}|$error|$head';
     final now = DateTime.now();
-    final duplicate = _lastDedupKey == key &&
-        _lastDedupAt != null &&
-        now.difference(_lastDedupAt!) < _dedupWindow;
-    _lastDedupKey = key;
-    _lastDedupAt = now;
-    return duplicate;
+    _recentErrors.removeWhere((_, at) => now.difference(at) >= _dedupWindow);
+    if (_recentErrors.containsKey(key)) return true;
+    if (_recentErrors.length >= 128) {
+      _recentErrors.remove(_recentErrors.keys.first);
+    }
+    _recentErrors[key] = now;
+    return false;
   }
 
   static bool _isBindingInitialized() {

@@ -4,12 +4,12 @@ import MetricKit
 /// iOS 14+：系统投递的 crash / hang 诊断（常在下次启动或稍后），作 tombstone 级回捞。
 @available(iOS 14.0, *)
 final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
-  private let onCrash: ([String: Any]) -> Void
+  private let onCrash: ([String: Any]) -> Bool
   private var started = false
   private let defaults = UserDefaults.standard
   private let watermarkKey = "ftm_metrickit_diag_watermark"
 
-  init(onCrash: @escaping ([String: Any]) -> Void) {
+  init(onCrash: @escaping ([String: Any]) -> Bool) {
     self.onCrash = onCrash
   }
 
@@ -32,6 +32,7 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
   func didReceive(_ payloads: [MXDiagnosticPayload]) {
     let watermark = defaults.double(forKey: watermarkKey)
     var maxTs = watermark
+    var allPersisted = true
 
     for payload in payloads {
       let ts = payload.timeStampEnd.timeIntervalSince1970
@@ -39,23 +40,23 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
       if ts > maxTs { maxTs = ts }
 
       if let crashes = payload.crashDiagnostics {
-        for diag in crashes {
-          emitCrash(diag: diag, timeStamp: ts)
+        for (index, diag) in crashes.enumerated() {
+          if !emitCrash(diag: diag, timeStamp: ts, index: index) { allPersisted = false }
         }
       }
       if let hangs = payload.hangDiagnostics {
-        for diag in hangs {
-          emitHang(diag: diag, timeStamp: ts)
+        for (index, diag) in hangs.enumerated() {
+          if !emitHang(diag: diag, timeStamp: ts, index: index) { allPersisted = false }
         }
       }
     }
 
-    if maxTs > watermark {
+    if allPersisted && maxTs > watermark {
       defaults.set(maxTs, forKey: watermarkKey)
     }
   }
 
-  private func emitCrash(diag: MXCrashDiagnostic, timeStamp: TimeInterval) {
+  private func emitCrash(diag: MXCrashDiagnostic, timeStamp: TimeInterval, index: Int) -> Bool {
     let stack = stringifyCallStack(diag.callStackTree)
     let exceptionType =
       diag.exceptionType?.stringValue
@@ -65,6 +66,7 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
       ?? diag.exceptionReason
       ?? exceptionType
     var payload: [String: Any] = [
+      "crash_id": "metric-crash-\(Int64(timeStamp * 1000))-\(index)",
       "event_type": "native_crash",
       "exception_type": exceptionType,
       "message": message,
@@ -80,15 +82,14 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
     if let vm = diag.virtualMemoryRegionInfo {
       payload["virtual_memory_region_info"] = vm
     }
-    DispatchQueue.main.async { [weak self] in
-      self?.onCrash(payload)
-    }
+    return onCrash(payload)
   }
 
-  private func emitHang(diag: MXHangDiagnostic, timeStamp: TimeInterval) {
+  private func emitHang(diag: MXHangDiagnostic, timeStamp: TimeInterval, index: Int) -> Bool {
     let stack = stringifyCallStack(diag.callStackTree)
     let hangMs = Int(diag.hangDuration.converted(to: .milliseconds).value)
     let payload: [String: Any] = [
+      "crash_id": "metric-hang-\(Int64(timeStamp * 1000))-\(index)",
       "event_type": "native_crash",
       "exception_type": "MXHangDiagnostic",
       "message": "App hang \(hangMs)ms (MetricKit)",
@@ -102,9 +103,7 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
       "blocked_ms": hangMs,
       "exit_timestamp_ms": Int64(timeStamp * 1000),
     ]
-    DispatchQueue.main.async { [weak self] in
-      self?.onCrash(payload)
-    }
+    return onCrash(payload)
   }
 
   private func stringifyCallStack(_ tree: MXCallStackTree) -> String {

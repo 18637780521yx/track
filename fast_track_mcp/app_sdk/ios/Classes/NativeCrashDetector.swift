@@ -11,13 +11,15 @@ final class NativeCrashDetector {
   private let onCrash: ([String: Any]) -> Void
   private static var shared: NativeCrashDetector?
   private var metricKit: AnyObject?
+  private var sessionId: String?
 
   init(onCrash: @escaping ([String: Any]) -> Void) {
     self.onCrash = onCrash
   }
 
-  func start() {
-    if running { return }
+  func start(session: String? = nil) {
+    sessionId = session
+    if running { flushPending(); return }
     running = true
     Self.shared = self
     flushPending()
@@ -27,7 +29,7 @@ final class NativeCrashDetector {
     }
     if #available(iOS 14.0, *) {
       let sub = MetricKitCrashSubscriber { [weak self] payload in
-        self?.onCrash(payload)
+        self?.enqueue(payload) ?? false
       }
       sub.start()
       metricKit = sub
@@ -51,6 +53,9 @@ final class NativeCrashDetector {
   private func handle(exception: NSException) {
     let stack = exception.callStackSymbols.joined(separator: "\n")
     let payload: [String: Any] = [
+      "crash_id": UUID().uuidString,
+      "occurred_at_ms": Int64(Date().timeIntervalSince1970 * 1000),
+      "session_id": sessionId ?? "native-recovered",
       "event_type": "native_crash",
       "exception_type": exception.name.rawValue,
       "message": exception.reason ?? exception.name.rawValue,
@@ -62,45 +67,80 @@ final class NativeCrashDetector {
       "tombstone": String(stack.prefix(24_576)),
       "tombstone_source": "uncaught_exception",
     ]
-    persist(payload)
-    DispatchQueue.main.async { [weak self] in
-      self?.onCrash(payload)
-    }
+    enqueue(payload)
     previous?(exception)
   }
 
-  private func persist(_ payload: [String: Any]) {
-    guard let url = Self.pendingURL() else { return }
+  private static func recordsURL() -> URL? {
+    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
+      .appendingPathComponent("ftm_crash_records", isDirectory: true)
+  }
+
+  @discardableResult
+  private func enqueue(_ payload: [String: Any]) -> Bool {
+    guard let directory = Self.recordsURL() else { return false }
+    var record = payload
+    let id = record["crash_id"] as? String ?? UUID().uuidString
+    record["crash_id"] = id
     do {
-      let data = try JSONSerialization.data(withJSONObject: payload, options: [])
-      try data.write(to: url, options: .atomic)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let url = directory.appendingPathComponent(id + ".json")
+      if !FileManager.default.fileExists(atPath: url.path) {
+        let data = try JSONSerialization.data(withJSONObject: record)
+        try data.write(to: url, options: .atomic)
+      }
+      DispatchQueue.main.async { [weak self] in self?.onCrash(record) }
+      return true
     } catch {
-      // ignore
+      NSLog("[ftm] crash persistence failed: %@", String(describing: error))
+      return false
     }
+  }
+
+  func acknowledge(_ id: String) throws {
+    guard !id.isEmpty,
+      id.range(of: "^[A-Za-z0-9_-]+$", options: .regularExpression) != nil,
+      let directory = Self.recordsURL()
+    else { return }
+    let url = directory.appendingPathComponent(id + ".json")
+    if FileManager.default.fileExists(atPath: url.path) {
+      try FileManager.default.removeItem(at: url)
+    }
+  }
+
+  func replayPending() {
+    if running { flushPending() }
   }
 
   private func flushPending() {
-    guard let url = Self.pendingURL(),
-      FileManager.default.fileExists(atPath: url.path)
-    else { return }
+    guard let directory = Self.recordsURL() else { return }
     do {
-      let data = try Data(contentsOf: url)
-      try FileManager.default.removeItem(at: url)
-      if let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
-        var map = obj
-        map["event_type"] = "native_crash"
-        map["crash_source"] = map["crash_source"] ?? "pending_file"
-        DispatchQueue.main.async { [weak self] in
-          self?.onCrash(map)
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      let legacy = directory.deletingLastPathComponent()
+        .appendingPathComponent("ftm_pending_native_crash.json")
+      if FileManager.default.fileExists(atPath: legacy.path) {
+        let data = try Data(contentsOf: legacy)
+        if var record = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+          record["crash_id"] = "legacy-native-crash"
+          let destination = directory.appendingPathComponent("legacy-native-crash.json")
+          let migrated = try JSONSerialization.data(withJSONObject: record)
+          try migrated.write(to: destination, options: .atomic)
+          try FileManager.default.removeItem(at: legacy)
+        }
+      }
+      for url in try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+        where url.pathExtension == "json" {
+        do {
+          let data = try Data(contentsOf: url)
+          if let record = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            DispatchQueue.main.async { [weak self] in self?.onCrash(record) }
+          }
+        } catch {
+          NSLog("[ftm] pending crash read failed: %@", String(describing: error))
         }
       }
     } catch {
-      try? FileManager.default.removeItem(at: url)
+      NSLog("[ftm] pending crash replay failed: %@", String(describing: error))
     }
-  }
-
-  private static func pendingURL() -> URL? {
-    FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?
-      .appendingPathComponent("ftm_pending_native_crash.json")
   }
 }

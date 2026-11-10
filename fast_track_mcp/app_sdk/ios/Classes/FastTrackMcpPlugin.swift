@@ -49,8 +49,17 @@ public class FastTrackMcpPlugin: NSObject, FlutterPlugin {
       hangDetector?.stop()
       result(["ok": true])
     case "startCrash":
-      crashDetector?.start()
+      let args = call.arguments as? [String: Any]
+      crashDetector?.start(session: args?["session_id"] as? String)
       result(["ok": true, "mode": "native"])
+    case "ackCrash":
+      let args = call.arguments as? [String: Any]
+      do {
+        if let id = args?["crash_id"] as? String { try crashDetector?.acknowledge(id) }
+        result(nil)
+      } catch {
+        result(FlutterError(code: "crash_ack_failed", message: String(describing: error), details: nil))
+      }
     case "stopCrash":
       crashDetector?.stop()
       result(["ok": true])
@@ -65,6 +74,7 @@ public class FastTrackMcpPlugin: NSObject, FlutterPlugin {
 
   fileprivate func setCrashSink(_ sink: FlutterEventSink?) {
     crashSink = sink
+    if sink != nil { crashDetector?.replayPending() }
   }
 }
 

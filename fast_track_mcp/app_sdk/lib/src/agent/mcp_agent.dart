@@ -7,6 +7,7 @@ import 'package:get/get.dart';
 
 import '../bridge/bridge_server.dart';
 import '../detect/anr_watchdog.dart';
+import '../detect/crash_handler.dart';
 import '../detect/jank_monitor.dart';
 import '../detect/memory_monitor.dart';
 import '../gesture/manual_gesture_recorder.dart';
@@ -39,9 +40,7 @@ class FastTrackMcp {
 
   static List<NavigatorObserver> get navigatorObservers =>
       getx_hook.perfNavigatorObservers(
-        enabled: !kReleaseMode ||
-            LeakOnline.instance.active ||
-            releaseUiHooks,
+        enabled: !kReleaseMode || LeakOnline.instance.active || releaseUiHooks,
       );
 
   static List<GetPage<dynamic>> instrumentGetPages(
@@ -73,6 +72,7 @@ class FastTrackMcp {
     void Function(Map<String, dynamic> event)? onLeakOnlineEvent,
     bool wireLeakOnlineToFastTrack = true,
   }) async {
+    await FastTrackMcpCrashHandler.ensureNativeInitialized();
     if (_initialized) return;
     _initialized = true;
 

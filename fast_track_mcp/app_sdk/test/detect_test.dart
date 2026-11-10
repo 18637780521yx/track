@@ -8,7 +8,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   tearDown(() async {
-    FastTrackMcpCrashHandler.debugReset();
+    await FastTrackMcpCrashHandler.debugReset();
     await FastTrackMcpAnrWatchdog.debugReset();
     await FastTrackMcpJankMonitor.debugReset();
     await FastTrackMcpMemoryMonitor.debugReset();
@@ -68,7 +68,7 @@ void main() {
       expect(props?['is_fatal'], isFalse);
     });
 
-    test('FlutterError.onError hook reports app_crash', () async {
+    test('FlutterError.onError hook reports nonfatal app_error', () async {
       final reports = <String>[];
       FastTrackMcpCrashHandler.debugOnReport = (n, _) async => reports.add(n);
       FastTrackMcpCrashHandler.install();
@@ -82,7 +82,7 @@ void main() {
       );
       await Future<void>.delayed(Duration.zero);
 
-      expect(reports, contains(FastTrackMcpEventName.appCrash));
+      expect(reports, contains(FastTrackMcpEventName.appError));
     });
 
     test('dedupes identical errors within window', () async {

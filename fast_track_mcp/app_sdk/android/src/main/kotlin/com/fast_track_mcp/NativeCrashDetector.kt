@@ -9,6 +9,8 @@ import android.os.Looper
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import java.io.FileOutputStream
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -24,14 +26,28 @@ internal class NativeCrashDetector(
     private val installed = AtomicBoolean(false)
     private var previousHandler: Thread.UncaughtExceptionHandler? = null
 
-    fun start() {
-        if (!installed.compareAndSet(false, true)) return
+    @Volatile private var sessionId: String? = null
+
+    fun start(session: String? = null) {
+        sessionId = session
+        if (!installed.compareAndSet(false, true)) {
+            flushPending()
+            return
+        }
         flushPending()
         reportHistoricalCrashes()
         previousHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            persistAndEmit(thread, throwable)
-            previousHandler?.uncaughtException(thread, throwable)
+            try {
+                persistAndEmit(thread, throwable)
+            } finally {
+                val previous = previousHandler
+                if (previous != null) previous.uncaughtException(thread, throwable)
+                else {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                    kotlin.system.exitProcess(10)
+                }
+            }
         }
         Log.i(TAG, "native crash handler installed")
     }
@@ -45,6 +61,10 @@ internal class NativeCrashDetector(
     private fun persistAndEmit(thread: Thread, throwable: Throwable) {
         val stack = throwable.stackTraceToString().take(16_384)
         val payload = mapOf(
+            "crash_id" to UUID.randomUUID().toString(),
+            "occurred_at_ms" to System.currentTimeMillis(),
+            "process_id" to android.os.Process.myPid(),
+            "session_id" to sessionId,
             "event_type" to "native_crash",
             "exception_type" to (throwable.javaClass.name),
             "message" to (throwable.message ?: throwable.toString()),
@@ -54,36 +74,83 @@ internal class NativeCrashDetector(
             "platform" to "android",
             "crash_source" to "uncaught_exception",
         )
+        enqueue(payload)
+    }
+
+    private fun recordsDir(): File = File(context.filesDir, "ftm_crash_records").apply { mkdirs() }
+
+    private fun enqueue(payload: Map<String, Any?>): Boolean {
+        val id = payload["crash_id"] as? String ?: UUID.randomUUID().toString()
+        val record = payload + ("crash_id" to id)
         try {
-            val json = JSONObject()
-            for ((k, v) in payload) {
-                json.put(k, v ?: JSONObject.NULL)
+            val file = File(recordsDir(), "$id.json")
+            if (!file.exists()) {
+                val json = JSONObject()
+                record.forEach { (k, v) -> json.put(k, v ?: JSONObject.NULL) }
+                val temporary = File(recordsDir(), "$id.tmp")
+                FileOutputStream(temporary).use { output ->
+                    output.write(json.toString().toByteArray(Charsets.UTF_8))
+                    output.fd.sync()
+                }
+                check(temporary.renameTo(file)) { "Cannot commit crash record" }
             }
-            pendingFile().writeText(json.toString())
+            mainHandler.post { onCrash(record) }
+            return true
         } catch (e: Exception) {
-            Log.w(TAG, "persist crash failed: $e")
+            Log.w(TAG, "persist crash failed", e)
+            return false
         }
-        mainHandler.post { onCrash(payload) }
+    }
+
+    fun acknowledge(id: String) {
+        // IDs are generated locally; never allow paths from the channel.
+        if (!id.matches(Regex("[A-Za-z0-9_-]+"))) return
+        val file = File(recordsDir(), "$id.json")
+        if (!file.exists()) return
+        val record = JSONObject(file.readText())
+        val timestamp = record.optLong("exit_timestamp_ms", 0L)
+        val jvmTimestamp = if (record.optString("crash_source") == "uncaught_exception")
+            record.optLong("occurred_at_ms", 0L) else 0L
+        if (timestamp > 0 || jvmTimestamp > 0) {
+            val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            val acknowledged = prefs.getStringSet(KEY_ACKNOWLEDGED, emptySet())!!.toMutableSet()
+            val pid = record.optInt("process_id")
+            if (timestamp > 0) acknowledged.add("exit-$timestamp-$pid")
+            if (jvmTimestamp > 0) acknowledged.add("jvm-$jvmTimestamp-$pid")
+            while (acknowledged.size > 128) {
+                acknowledged.remove(acknowledged.minByOrNull {
+                    it.split('-').getOrNull(1)?.toLongOrNull() ?: 0L
+                })
+            }
+            check(prefs.edit().putStringSet(KEY_ACKNOWLEDGED, acknowledged).commit())
+        }
+        file.delete()
+    }
+
+    fun replayPending() {
+        if (installed.get()) flushPending()
     }
 
     private fun flushPending() {
-        val file = pendingFile()
-        if (!file.exists()) return
-        try {
-            val text = file.readText()
-            file.delete()
-            val json = JSONObject(text)
-            val map = mutableMapOf<String, Any?>()
-            json.keys().forEach { key -> map[key] = json.opt(key) }
-            map["crash_source"] = map["crash_source"] ?: "pending_file"
-            map["event_type"] = "native_crash"
-            mainHandler.post { onCrash(map) }
-        } catch (e: Exception) {
-            Log.w(TAG, "flush pending failed: $e")
+        // Migrate the previous single-record format without deleting before commit.
+        val legacy = pendingFile()
+        if (legacy.exists()) {
             try {
-                file.delete()
-            } catch (_: Exception) {
-            }
+                val json = JSONObject(legacy.readText())
+                val id = "legacy-${legacy.lastModified()}"
+                json.put("crash_id", id)
+                val target = File(recordsDir(), "$id.json")
+                if (!target.exists()) target.writeText(json.toString())
+                legacy.delete()
+            } catch (e: Exception) { Log.w(TAG, "legacy crash read failed", e) }
+        }
+        recordsDir().listFiles()?.filter { it.extension == "json" }?.forEach { file ->
+            try {
+                val json = JSONObject(file.readText())
+                val map = mutableMapOf<String, Any?>()
+                json.keys().forEach { key -> map[key] = json.opt(key).takeUnless { it == JSONObject.NULL } }
+                mainHandler.post { onCrash(map) }
+            } catch (e: Exception) { Log.w(TAG, "pending crash read failed", e) }
         }
     }
 
@@ -97,57 +164,84 @@ internal class NativeCrashDetector(
             val am = context.getSystemService(ActivityManager::class.java) ?: return
             val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             val watermark = prefs.getLong(KEY_WATERMARK, 0L)
+            val acknowledged = prefs.getStringSet(KEY_ACKNOWLEDGED, emptySet())!!
             val processHint = context.packageName
-            val latest = am.getHistoricalProcessExitReasons(null, 0, 12)
+            val history = am.getHistoricalProcessExitReasons(null, 0, 12)
                 .asSequence()
                 .filter {
                     (it.reason == ApplicationExitInfo.REASON_CRASH ||
                         it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE) &&
-                        it.timestamp > watermark
+                        it.timestamp > watermark &&
+                        "exit-${it.timestamp}-${it.pid}" !in acknowledged &&
+                        !(it.reason == ApplicationExitInfo.REASON_CRASH && acknowledged.any { id ->
+                            val parts = id.split('-')
+                            parts.size == 3 && parts[0] == "jvm" &&
+                                parts[2] == it.pid.toString() &&
+                                kotlin.math.abs((parts[1].toLongOrNull() ?: 0L) - it.timestamp) < 10_000
+                        })
                 }
-                .maxByOrNull { it.timestamp }
+                .sortedBy { it.timestamp }
+                .toList()
 
-            if (latest == null) {
+            if (history.isEmpty()) {
                 emitTombstoneOnly()
                 return
             }
 
-            val tomb = TombstoneReader.resolve(
-                context = context,
-                exitInfo = latest,
-                processNameHint = processHint,
-                allowPersistedFallback = false,
-            )
-            val reason = when (latest.reason) {
-                ApplicationExitInfo.REASON_CRASH_NATIVE -> "app_exit_info_native"
-                else -> "app_exit_info_crash"
-            }
-            val stack = tomb?.text?.take(16_384)
-                ?: (latest.description ?: "")
-            mainHandler.post {
-                onCrash(
-                    buildMap {
-                        put("event_type", "native_crash")
-                        put("exception_type", "ApplicationExitInfo")
-                        put("message", latest.description ?: reason)
-                        put("stack", stack)
-                        put("thread", "unknown")
-                        put("is_fatal", true)
-                        put("platform", "android")
-                        put("crash_source", reason)
-                        put("exit_timestamp_ms", latest.timestamp)
-                        put("importance", latest.importance)
-                        put("exit_reason", latest.reason)
-                        if (tomb != null) {
-                            put("tombstone", tomb.text)
-                            put("tombstone_source", tomb.source)
-                            if (tomb.path != null) put("tombstone_path", tomb.path)
-                        }
-                    },
+            for (latest in history) {
+                val tomb = TombstoneReader.resolve(
+                    context = context,
+                    exitInfo = latest,
+                    processNameHint = processHint,
+                    allowPersistedFallback = false,
                 )
+                val reason = when (latest.reason) {
+                    ApplicationExitInfo.REASON_CRASH_NATIVE -> "app_exit_info_native"
+                    else -> "app_exit_info_crash"
+                }
+                val stack = tomb?.text?.take(16_384)
+                    ?: (latest.description ?: "")
+                // A persisted JVM exception and ExitInfo can describe the same crash.
+                val hasPendingJvm = recordsDir().listFiles()?.any { file ->
+                    try {
+                        val record = JSONObject(file.readText())
+                        val matches = record.optString("crash_source") == "uncaught_exception" &&
+                            record.optLong("process_id") == latest.pid.toLong() &&
+                            kotlin.math.abs(record.optLong("occurred_at_ms") - latest.timestamp) < 10_000
+                        if (matches) {
+                            record.put("exit_timestamp_ms", latest.timestamp)
+                            val temp = File(file.parentFile, file.name + ".tmp")
+                            temp.writeText(record.toString())
+                            check(temp.renameTo(file))
+                        }
+                        matches
+                    } catch (_: Exception) { false }
+                } == true
+                if (hasPendingJvm && latest.reason == ApplicationExitInfo.REASON_CRASH) continue
+                enqueue(
+                        buildMap {
+                            put("crash_id", "exit-${latest.timestamp}-${latest.pid}")
+                            put("occurred_at_ms", latest.timestamp)
+                            put("process_id", latest.pid)
+                            put("event_type", "native_crash")
+                            put("exception_type", "ApplicationExitInfo")
+                            put("message", latest.description ?: reason)
+                            put("stack", stack)
+                            put("thread", "unknown")
+                            put("is_fatal", true)
+                            put("platform", "android")
+                            put("crash_source", reason)
+                            put("exit_timestamp_ms", latest.timestamp)
+                            put("importance", latest.importance)
+                            put("exit_reason", latest.reason)
+                            if (tomb != null) {
+                                put("tombstone", tomb.text)
+                                put("tombstone_source", tomb.source)
+                                if (tomb.path != null) put("tombstone_path", tomb.path)
+                            }
+                        },
+                    )
             }
-            prefs.edit().putLong(KEY_WATERMARK, latest.timestamp).apply()
-            TombstoneReader.clearPersistedCopy(context)
         } catch (e: Exception) {
             Log.w(TAG, "historical crash read failed: $e")
             emitTombstoneOnly()
@@ -163,9 +257,10 @@ internal class NativeCrashDetector(
             ?: return
         val stamp = File(tomb.path ?: "").let { if (it.exists()) it.lastModified() else System.currentTimeMillis() }
         if (stamp > 0 && stamp <= lastTombstoneAt) return
-        mainHandler.post {
-            onCrash(
+        val persisted = enqueue(
                 mapOf(
+                    "crash_id" to "tomb-$stamp",
+                    "occurred_at_ms" to stamp,
                     "event_type" to "native_crash",
                     "exception_type" to "Tombstone",
                     "message" to "tombstone recovered (${tomb.source})",
@@ -179,7 +274,7 @@ internal class NativeCrashDetector(
                     "tombstone_path" to tomb.path,
                 ),
             )
-        }
+        if (!persisted) return
         prefs.edit().putLong(KEY_TOMBSTONE_AT, maxOf(stamp, System.currentTimeMillis())).apply()
         if (tomb.source != "persisted_tombstone") {
             TombstoneReader.persistCopy(context, tomb.text)
@@ -194,6 +289,7 @@ internal class NativeCrashDetector(
     companion object {
         private const val TAG = "ftm.crash"
         private const val PREFS = "ftm_crash"
+        private const val KEY_ACKNOWLEDGED = "acknowledged_exit_ids"
         private const val KEY_WATERMARK = "exit_info_crash_watermark_ms"
         private const val KEY_TOMBSTONE_AT = "tombstone_reported_at_ms"
     }

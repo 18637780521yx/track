@@ -32,7 +32,8 @@ class FastTracker {
   String? _distinctId;
   late String _anonymousId;
 
-  final List<({String name, Map<String, dynamic> properties})> _preInitBuffer = [];
+  final List<({String name, Map<String, dynamic> properties})> _preInitBuffer =
+      [];
 
   DateTime? _lastRetryExhaustedAt;
 
@@ -145,7 +146,8 @@ class FastTracker {
       // 本包 init 零钩子，只做 track / 会话 / 上报。
 
       if (_preInitBuffer.isNotEmpty) {
-        fastLog('replaying ${_preInitBuffer.length} pre-init events', debug: true);
+        fastLog('replaying ${_preInitBuffer.length} pre-init events',
+            debug: true);
         final buffered = List.of(_preInitBuffer);
         _preInitBuffer.clear();
         for (final item in buffered) {
@@ -217,7 +219,8 @@ class FastTracker {
     _saveCommonProperties();
   }
 
-  Map<String, dynamic> get commonProperties => Map.unmodifiable(_commonProperties);
+  Map<String, dynamic> get commonProperties =>
+      Map.unmodifiable(_commonProperties);
 
   TrackerConfig get config => _config;
 
@@ -225,8 +228,43 @@ class FastTracker {
     _ensureSession(forceNew: true);
   }
 
-  static Future<void> track(String name, {Map<String, dynamic> properties = const {}}) async =>
+  static Future<void> track(String name,
+          {Map<String, dynamic> properties = const {}}) async =>
       tracker._track(name, properties: properties);
+
+  /// Durable crash handoff. False means the native pending record must be kept.
+  /// Unlike track(), this never acknowledges an in-memory pre-init buffer.
+  static Future<bool> persistCrash(
+    String name, {
+    required String eventId,
+    required Map<String, dynamic> properties,
+    DateTime? timestamp,
+    String? sessionId,
+  }) async {
+    final instance = tracker;
+    if (!instance._initialized || instance._optedOut) return false;
+    try {
+      await FastStorage.appendEventIfAbsent(TrackEvent.fromMaps(
+        id: eventId,
+        name: name,
+        properties: properties,
+        commonProperties: {
+          ...instance._commonProperties,
+          ...AutoProperties.dynamicProperties,
+        },
+        distinctId: instance._distinctId,
+        anonymousId: instance._anonymousId,
+        sessionId: sessionId ?? 'native-recovered',
+        timestamp: timestamp ?? DateTime.now(),
+      ));
+      return true;
+    } catch (e, stack) {
+      fastLog('persistCrash failed: $e\n$stack', error: e);
+      return false;
+    }
+  }
+
+  String? get currentSessionId => _session?.id;
 
   Future<void> _track(
     String name, {
@@ -241,7 +279,8 @@ class FastTracker {
 
     if (!_initialized) {
       fastLog('EventTracker not initialized, buffering event: $name');
-      _preInitBuffer.add((name: name, properties: Map<String, dynamic>.from(properties)));
+      _preInitBuffer
+          .add((name: name, properties: Map<String, dynamic>.from(properties)));
       return;
     }
 
@@ -271,10 +310,13 @@ class FastTracker {
       if (!_flushing && eventCount > _config.maxCachedEvents) {
         final deleteCount = eventCount - _config.maxCachedEvents;
         await FastStorage.deleteOldestEvents(deleteCount);
-        fastLog('maxCachedEvents exceeded, deleted $deleteCount oldest events', debug: true);
+        fastLog('maxCachedEvents exceeded, deleted $deleteCount oldest events',
+            debug: true);
       }
 
-      fastLog('track: $name, properties=${jsonEncode(properties)}, total=$eventCount', debug: true);
+      fastLog(
+          'track: $name, properties=${jsonEncode(properties)}, total=$eventCount',
+          debug: true);
 
       if (eventCount >= _config.maxBatchSize) {
         unawaited(_flush());
@@ -401,7 +443,8 @@ class FastTracker {
         if (_config.dryRun) {
           fastLog('DRY RUN: would send ${events.length} events:');
           for (var i = 0; i < events.length; i++) {
-            fastLog('  [$i] ${events[i].name} ${jsonEncode(events[i].properties)}');
+            fastLog(
+                '  [$i] ${events[i].name} ${jsonEncode(events[i].properties)}');
           }
           final eventIds = events.map((e) => e.id).toList();
           await FastStorage.deleteEvents(eventIds);
@@ -411,7 +454,8 @@ class FastTracker {
 
         if (_config.enableDebugLog) {
           for (var i = 0; i < events.length; i++) {
-            fastLog('payload[$i] ${jsonEncode(events[i].toJson())}', debug: true);
+            fastLog('payload[$i] ${jsonEncode(events[i].toJson())}',
+                debug: true);
           }
         }
 
@@ -453,13 +497,16 @@ class FastTracker {
         if (remaining > _config.maxCachedEvents) {
           final deleteCount = remaining - _config.maxCachedEvents;
           await FastStorage.deleteOldestEvents(deleteCount);
-          fastLog('post-flush overflow cleanup, deleted $deleteCount oldest events', debug: true);
+          fastLog(
+              'post-flush overflow cleanup, deleted $deleteCount oldest events',
+              debug: true);
         }
       } catch (e) {
         fastLog('post-flush overflow cleanup failed', error: e);
       }
 
-      if (_config.onFlushResult != null && (sentCount > 0 || failedCount > 0 || droppedCount > 0)) {
+      if (_config.onFlushResult != null &&
+          (sentCount > 0 || failedCount > 0 || droppedCount > 0)) {
         _config.onFlushResult!(FlushResult(
           sentCount: sentCount,
           failedCount: failedCount,

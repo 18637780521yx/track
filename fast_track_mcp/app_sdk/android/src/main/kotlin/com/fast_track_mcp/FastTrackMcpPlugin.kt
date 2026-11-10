@@ -36,6 +36,7 @@ class FastTrackMcpPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
         crashEvents.setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
                 crashSink = events
+                crashDetector?.replayPending()
             }
 
             override fun onCancel(arguments: Any?) {
@@ -77,8 +78,16 @@ class FastTrackMcpPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(mapOf("ok" to true))
             }
             "startCrash" -> {
-                crashDetector?.start()
+                crashDetector?.start(call.argument<String>("session_id"))
                 result.success(mapOf("ok" to true, "mode" to "native"))
+            }
+            "ackCrash" -> {
+                try {
+                    call.argument<String>("crash_id")?.let { crashDetector?.acknowledge(it) }
+                    result.success(null)
+                } catch (e: Exception) {
+                    result.error("crash_ack_failed", e.message, null)
+                }
             }
             "stopCrash" -> {
                 crashDetector?.stop()

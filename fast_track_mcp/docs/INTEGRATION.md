@@ -186,3 +186,13 @@ FastTrackMcp.installHttpCaptureDeferred(
 ## 参考实现
 
 业务侧可参考 `lianqiaoapp/lib/app/perf/perf_bootstrap.dart`（Tracker → MCP → Tab 路由 → identify）。
+
+## 异常采集行为
+
+- `run()` 在同一 Zone 中初始化 Binding 并执行启动回调；启动异常上报后，返回的 Future 正常结束。后续异步回调仍受 Zone 保护。
+- Flutter 框架错误记为非致命 `app_error`；Zone、Platform、Isolate 未捕获错误记为 `app_crash`。手动上报可通过 `fatal` 指定。
+- 原生崩溃先落盘，成功写入 FastTracker 本地队列后才确认删除；初始化或入队失败时保留，下次启动重试。重复回捞使用相同事件 ID。
+- `FastTrackMcp.ensureInitialized()` 会在 FastTracker 初始化后重试原生启动；仅使用捕获器时，可在 `FastTracker.init()` 后调用 `FastTrackMcpCrashHandler.ensureNativeInitialized()`。
+- 新采集的原生异常保留发生时间和启动时同步的会话 ID。系统历史诊断、旧版记录没有原会话时使用 `native-recovered`，不归入本次启动会话；MetricKit 的时间是诊断窗口结束时间。
+
+本仓库开发需使用配套的 `fast_track` 源码（`pubspec_overrides.yaml`），其中新增了可靠入队接口 `FastTracker.persistCrash()`；发布 App SDK 前须先发布并更新该依赖版本。
