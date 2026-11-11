@@ -54,6 +54,8 @@ class FastTrackMcp {
     int port = 19288,
     int waitStableMs = 500,
     bool enableFlutterSkill = true,
+    // Initial opt-in for Debug/Profile only. Release never installs a proxy.
+    bool enableHttpCapture = false,
     bool leakTrackEnabled = true,
     int transitionSettleMs = 1500,
     int leakConfirmRounds = 2,
@@ -109,6 +111,11 @@ class FastTrackMcp {
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 
+    // Opt-in capture is restricted to Debug/Profile, including direct installs.
+    if (enableHttpCapture && !kReleaseMode) {
+      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: true);
+    }
+
     // Background queue flushing is required in release as well.
     AppLifecycleTracker.instance.ensureStarted();
     if (kReleaseMode) {
@@ -156,7 +163,7 @@ class FastTrackMcp {
     bool captureBodyOnFailureOnly = false,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode && !allowInRelease) return;
+    if (kReleaseMode) return;
     FastTrackMcpNetwork.install(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -179,7 +186,7 @@ class FastTrackMcp {
     bool captureBodyOnFailureOnly = false,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode && !allowInRelease) return;
+    if (kReleaseMode) return;
     FastTrackMcpNetwork.installDeferred(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,

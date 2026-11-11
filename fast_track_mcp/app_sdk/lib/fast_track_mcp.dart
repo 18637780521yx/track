@@ -7,7 +7,6 @@
 ///     await FastTracker.init(url: '...');
 ///     await FastTrackMcp.ensureInitialized();
 ///     runApp(const MyApp());
-///     FastTrackMcp.installHttpCaptureDeferred();
 ///   });
 /// }
 /// ```

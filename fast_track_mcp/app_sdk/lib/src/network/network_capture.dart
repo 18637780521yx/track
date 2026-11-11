@@ -9,7 +9,7 @@ import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
 
 import '../detect/detect_sink.dart';
 
-/// Ring buffer of full HTTP captures (headers + bodies).
+/// Ring buffer for explicit network metrics and legacy request records.
 class PerfNetworkStore {
   PerfNetworkStore._();
   static final PerfNetworkStore instance = PerfNetworkStore._();
@@ -61,14 +61,8 @@ class PerfNetworkStore {
   }
 }
 
-/// App route stamp + HttpOverrides installer.
-///
-/// Capture proxy follows Sleuth's `SleuthHttpOverrides` shape (chaining +
-/// subscription that owns terminal events) and additionally records
-/// request/response headers and bodies.
+/// Network reporting with optional non-release global HTTP capture.
 class FastTrackMcpNetwork {
-  static PerfHttpOverrides? _overrides;
-
   static List<String> _excludeUrlSubstrings = const [
     '127.0.0.1:19288',
     '/sleuth/',
@@ -81,7 +75,6 @@ class FastTrackMcpNetwork {
   static List<String> _allowedHosts = const [];
   static bool _httpsOnly = false;
   static bool _allowHttpLoopback = true;
-  static bool _redactSensitiveHeaders = true;
 
   /// Slow request threshold.
   static int slowRequestMs = 10000;
@@ -95,8 +88,13 @@ class FastTrackMcpNetwork {
   /// 为 true 时：成功请求不带 request/response body；仅失败（HTTP≥400 / 客户端错误 / 取消）带 body。
   static bool captureBodyOnFailureOnly = false;
 
+  static PerfHttpOverrides? _overrides;
+  static bool _redactSensitiveHeaders = true;
+
   static bool get isInstalled =>
-      _overrides != null && identical(HttpOverrides.current, _overrides);
+      !kReleaseMode &&
+      _overrides != null &&
+      identical(HttpOverrides.current, _overrides);
 
   /// Host whitelist in effect (`host` or `host:port`). Empty = all hosts.
   static List<String> get allowedHosts => _allowedHosts;
@@ -117,8 +115,27 @@ class FastTrackMcpNetwork {
     return null;
   }
 
+  /// Submit an explicitly collected request to the ring buffer and analytics.
+  /// The caller supplies businessSuccess/code/message and serialized payloads.
+  /// No HTTP client is installed and no response body is read by this method.
+  /// Records follow the normal analytics batch policy, including failures.
+  /// Collection failures must never change the business request result.
+  static void record(NetworkRequest request) {
+    try {
+      _commitRecord(request);
+    } catch (error) {
+      debugPrint('[ftm] network record failed: $error');
+    }
+  }
+
   /// Whether [url] passes exclude / scheme / host whitelist filters.
   static bool shouldCapture(Uri url) {
+    if (kReleaseMode) return false;
+    final path = url.path.replaceFirst(RegExp(r'/+$'), '');
+    if (const {'/track', '/api/v1/track', '/api/track', '/v1/events'}
+        .contains(path)) {
+      return false;
+    }
     final s = url.toString();
     for (final p in _excludeUrlSubstrings) {
       if (p.isNotEmpty && s.contains(p)) return false;
@@ -198,7 +215,7 @@ class FastTrackMcpNetwork {
     bool? captureBodyOnFailureOnly,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode && !allowInRelease) return;
+    if (kReleaseMode) return;
     PerfNetworkStore.instance.maxBodyBytes = maxBodyBytes;
     PerfNetworkStore.instance.capacity = capacity;
     if (excludeUrlSubstrings != null) {
@@ -232,8 +249,7 @@ class FastTrackMcpNetwork {
     );
   }
 
-  /// Install now + a few delayed retries (hot restart / late overrides).
-  /// Options are stored and reused by each retry.
+  /// Compatibility alias for a single explicit installation; no delayed retries.
   static void installDeferred({
     Duration delay = const Duration(milliseconds: 400),
     int maxBodyBytes = PerfNetworkStore.defaultMaxBodyBytes,
@@ -246,7 +262,7 @@ class FastTrackMcpNetwork {
     bool? captureBodyOnFailureOnly,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode && !allowInRelease) return;
+    if (kReleaseMode) return;
     void go() => install(
           maxBodyBytes: maxBodyBytes,
           capacity: capacity,
@@ -259,9 +275,6 @@ class FastTrackMcpNetwork {
           allowInRelease: allowInRelease,
         );
     go();
-    Future<void>.delayed(delay, go);
-    Future<void>.delayed(const Duration(milliseconds: 1200), go);
-    Future<void>.delayed(const Duration(milliseconds: 2500), go);
   }
 }
 
@@ -280,6 +293,7 @@ class PerfHttpOverrides extends HttpOverrides {
   HttpClient createHttpClient(SecurityContext? context) {
     final inner =
         _previous?.createHttpClient(context) ?? super.createHttpClient(context);
+    if (kReleaseMode) return inner;
     return _CaptureHttpClient(
       inner,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -754,8 +768,7 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
         (error != null && error.isNotEmpty) ||
         statusCode >= 400 ||
         statusCode < 0;
-    final keepBody =
-        !FastTrackMcpNetwork.captureBodyOnFailureOnly || failed;
+    final keepBody = !FastTrackMcpNetwork.captureBodyOnFailureOnly || failed;
     try {
       final record = NetworkRequest(
         url: url,
@@ -811,7 +824,8 @@ class _CaptureResponse extends Stream<List<int>> implements HttpClientResponse {
   }) {
     // Sleuth pattern: proxy owns terminal handlers permanently so
     // drain()/asFuture()/onDone rebinding cannot drop the record.
-    final sub = _CaptureSubscription<List<int>>._((bytes, {cancelled = false, error}) {
+    final sub =
+        _CaptureSubscription<List<int>>._((bytes, {cancelled = false, error}) {
       _emitRecord(bytes, cancelled: cancelled, error: error);
     });
     sub._terminated.future.ignore();
@@ -1032,7 +1046,7 @@ void _commitRecord(NetworkRequest record) {
   // 全部请求进埋点（控制台页面时间线）；慢/错/大 另发 perf_* 告警。
   unawaited(_trackNetworkEvent(record));
   if (!FastTrackMcpNetwork.emitQualityAlerts) return;
-  if (record.flags.isEmpty) return;
+  if (record.flags.isEmpty && !record.isBusinessError) return;
   try {
     _maybeAlertQuality(record);
   } catch (_) {}
@@ -1052,6 +1066,15 @@ Future<void> _trackNetworkEvent(NetworkRequest record) async {
 
 void _maybeAlertQuality(NetworkRequest record) {
   final label = record.path ?? record.url;
+  if (record.isBusinessError) {
+    FastTrackMcpDetectSink.alert(
+      type: 'business_error',
+      action: 'network:${record.method}',
+      message: record.businessMessage ?? 'Business request failed: $label',
+      value: record.toJson(),
+      routeHint: record.route,
+    );
+  }
   if (record.flags.contains('slow')) {
     FastTrackMcpDetectSink.alert(
       type: 'slow_request',
@@ -1127,7 +1150,9 @@ String _prettifyBodyText(String text, String mime) {
 
   // application/x-www-form-urlencoded → one field per line
   if (mime.contains('x-www-form-urlencoded') ||
-      (!trimmed.startsWith('<') && trimmed.contains('=') && trimmed.contains('&'))) {
+      (!trimmed.startsWith('<') &&
+          trimmed.contains('=') &&
+          trimmed.contains('&'))) {
     try {
       final parts = trimmed.split('&');
       if (parts.length >= 2) {

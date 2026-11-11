@@ -1,6 +1,6 @@
 /// One HTTP request observed during a perf step.
 ///
-/// Prefer full capture from FastTrackMcp HttpOverrides (headers + bodies).
+/// Submitted by the application independently of its HTTP client library.
 class NetworkRequest {
   const NetworkRequest({
     required this.url,
@@ -20,6 +20,9 @@ class NetworkRequest {
     this.responseBody,
     this.responseBodyTruncated = false,
     this.error,
+    this.businessSuccess,
+    this.businessCode,
+    this.businessMessage,
     this.source = 'full',
     this.finalUrl,
     this.path,
@@ -50,7 +53,15 @@ class NetworkRequest {
 
   final String? error;
 
-  /// `full` = FastTrackMcp HttpCapture; `sleuth` = legacy timing-only.
+  /// Application-defined outcome, independent of the HTTP status code.
+  /// Null means the application did not evaluate the business outcome.
+  final bool? businessSuccess;
+  final String? businessCode;
+  final String? businessMessage;
+
+  bool get isBusinessError => businessSuccess == false;
+
+  /// `manual` = application reporting; `full` / `sleuth` = legacy collectors.
   final String source;
 
   /// URL after redirects (if different from [url]).
@@ -91,6 +102,9 @@ class NetworkRequest {
         if (responseBody != null) 'responseBody': responseBody,
         if (responseBodyTruncated) 'responseBodyTruncated': true,
         if (error != null) 'error': error,
+        if (businessSuccess != null) 'businessSuccess': businessSuccess,
+        if (businessCode != null) 'businessCode': businessCode,
+        if (businessMessage != null) 'businessMessage': businessMessage,
         if (finalUrl != null && finalUrl != url) 'finalUrl': finalUrl,
         if (path != null && path!.isNotEmpty) 'path': path,
         if (flags.isNotEmpty) 'flags': flags,
@@ -123,6 +137,11 @@ class NetworkRequest {
       responseBody: json['responseBody']?.toString(),
       responseBodyTruncated: json['responseBodyTruncated'] == true,
       error: json['error']?.toString(),
+      businessSuccess: json['businessSuccess'] is bool
+          ? json['businessSuccess'] as bool
+          : null,
+      businessCode: json['businessCode']?.toString(),
+      businessMessage: json['businessMessage']?.toString(),
       source: json['source']?.toString() ?? 'full',
       finalUrl: json['finalUrl']?.toString(),
       path: json['path']?.toString(),

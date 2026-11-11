@@ -75,12 +75,7 @@ Future<void> main() async {
 
     runApp(const MyApp());
 
-    // ③ runApp 之后装 HTTP 抓包（仅 Debug/Profile）
-    if (!kReleaseMode) {
-      FastTrackMcp.installHttpCaptureDeferred(
-        excludeUrlSubstrings: const ['/track'],
-      );
-    }
+
   });
 }
 ```
@@ -168,18 +163,29 @@ adb reverse tcp:19288 tcp:19288
 | ANR / jank / memory | 全量 WeakRef（可用 `leakOnlineEnabled` 采样） |
 | 手势 `ui_tap` / `ui_scroll` | |
 | Tab / 路由转场账本（`releaseUiHooks=true`） | |
-| HTTP 抓包：`allowInRelease` + **`captureBodyOnFailureOnly`**（成功无 body，失败才带） | |
+| 业务调用 `FastTrackMcpNetwork.record` 上报网络请求 | 自动安装全局 HTTP 抓包代理 |
 
 ```dart
 FastTrackMcp.releaseUiHooks = true;
 ManualGestureRecorder.instance.ensureStarted();
-FastTrackMcp.installHttpCaptureDeferred(
-  allowInRelease: true,
-  captureBodyOnFailureOnly: true, // 仅失败带 body
-  maxBodyBytes: 32 * 1024,
-  excludeUrlSubstrings: const ['/track'],
-);
 ```
+
+SDK 默认提供通用上报接口，不新增 Dio 依赖。业务自行采集、过滤 SDK 自身上传请求，并判断 HTTP 或业务错误；所有构建模式都可以上报。Debug/Profile 调试可在首次调用时设置 `FastTrackMcp.ensureInitialized(enableHttpCapture: true)`，恢复原来的全局 HTTP 抓包；默认关闭，Release 下设置为 true 也不会安装代理。自动抓包识别不了 HTTP 200 的业务失败，这类错误仍需手动上报。同一个请求避免重复上报；更改初始化开关需重启，已有 HTTP 客户端需重建。
+
+```dart
+FastTrackMcpNetwork.record(NetworkRequest(
+  url: 'https://api.example.com/order?id=123',
+  method: 'POST', statusCode: 200, durationMs: 120, responseBytes: 0,
+  startedAt: startedAt.toUtc().toIso8601String(), source: 'manual',
+  requestHeaders: {'content-type': 'application/json'},
+  requestBody: '{"id":123}',
+  businessSuccess: false, businessCode: 'OUT_OF_STOCK',
+  businessMessage: '库存不足',
+  responseBody: '{"code":"OUT_OF_STOCK","message":"库存不足"}',
+));
+```
+
+查询参数放在 URL，请求参数序列化为 `requestBody`，请求头放在 `requestHeaders`；仅失败时传响应 body。SDK 按原值记录，不自行脱敏、截断或读取文件/流，内容长度和截断标记由接入方处理。`businessSuccess: false` 表示业务失败（即使 HTTP 200），附带业务码和信息，并生成 `perf_business_error` 指标；不传表示未判断业务结果。HTTP/连接错误通过 `error` 和 `flags` 标记。每次请求上报一次，复用普通埋点的缓存与批量上传。
 
 未配 `FAST_TRACK_URL` 时 Release 仍可能 `dryRun`——监控事件会记但发不出去。
 

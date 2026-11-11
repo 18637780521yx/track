@@ -45,10 +45,6 @@ Future<void> main() async {
     }
 
     runApp(const FastTrackMcpDemoApp());
-
-    if (!kReleaseMode) {
-      FastTrackMcp.installHttpCaptureDeferred();
-    }
   });
 }
 
