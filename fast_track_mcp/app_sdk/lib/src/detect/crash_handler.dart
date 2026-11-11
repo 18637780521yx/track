@@ -75,6 +75,51 @@ class FastTrackMcpCrashHandler {
     if (_isBindingInitialized()) unawaited(ensureNativeInitialized());
   }
 
+  /// Keep the current Flutter error handler when an integration installs its own.
+  /// The temporary proxy also handles integrations that already chain handlers:
+  /// each error reaches the original handler once, whether or not they forward it.
+  static void preserveFlutterErrorHandler(void Function() initialize) {
+    final previous = FlutterError.onError;
+    if (previous == null) {
+      initialize();
+      return;
+    }
+    final forwarded = Set<FlutterErrorDetails>.identity();
+    final dispatching = Set<FlutterErrorDetails>.identity();
+    void forward(FlutterErrorDetails details) {
+      if (!dispatching.contains(details) || forwarded.add(details)) {
+        previous(details);
+      }
+    }
+
+    FlutterError.onError = forward;
+    try {
+      initialize();
+    } finally {
+      final installed = FlutterError.onError;
+      if (installed == null || identical(installed, forward)) {
+        FlutterError.onError = previous;
+      } else {
+        FlutterError.onError = (details) {
+          if (!dispatching.add(details)) return;
+          try {
+            try {
+              installed(details);
+            } catch (error, stack) {
+              debugPrint(
+                  '[ftm] integration error handler failed: $error\n$stack');
+            } finally {
+              forward(details);
+            }
+          } finally {
+            dispatching.remove(details);
+            forwarded.remove(details);
+          }
+        };
+      }
+    }
+  }
+
   /// 先 [install]，再在 guarded zone 里执行 [appRunner]。
   ///
   /// [WidgetsFlutterBinding.ensureInitialized] 和 [runApp] 都要放在 [appRunner] 里。

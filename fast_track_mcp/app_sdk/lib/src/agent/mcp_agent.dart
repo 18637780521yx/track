@@ -128,7 +128,9 @@ class FastTrackMcp {
 
     if (enableFlutterSkill) {
       try {
-        FlutterSkillBinding.ensureInitialized();
+        FastTrackMcpCrashHandler.preserveFlutterErrorHandler(
+          () => FlutterSkillBinding.ensureInitialized(),
+        );
       } catch (e, st) {
         debugPrint('[FastTrackMcp] flutter_skill init failed: $e\n$st');
       }
