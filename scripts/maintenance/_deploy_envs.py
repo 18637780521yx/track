@@ -12,7 +12,7 @@ HOST = "10.10.10.132"
 USER = "mobile"
 PASSWORD = os.environ["TRACK_SSH_PASSWORD"]
 REMOTE = "/home/mobile/track-deploy"
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 DEPLOY = ROOT / "deploy"
 
 

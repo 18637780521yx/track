@@ -9,6 +9,8 @@ from typing import Any
 import asyncpg
 
 from app.models import (
+    EventFilter,
+    EventRecord,
     StabilityEventRecord,
     StabilityIssueDetail,
     StabilityIssueSummary,
@@ -16,7 +18,7 @@ from app.models import (
     StabilityTrendPoint,
     TrackEvent,
 )
-from app.services.parse import inclusive_date_range
+from app.services.parse import append_event_filters, inclusive_date_range
 from app.services.sync import prop_string, resolve_user_id, upsert_user
 
 STABILITY_EVENT_KINDS = {
@@ -43,6 +45,13 @@ def is_stability_event(name: str) -> bool:
 
 def kind_for_event(name: str) -> str:
     return STABILITY_EVENT_KINDS[name]
+
+
+def event_name_for_kind(kind: str) -> str:
+    for name, k in STABILITY_EVENT_KINDS.items():
+        if k == kind:
+            return name
+    return kind
 
 
 def _normalize_stack_line(line: str) -> str:
@@ -413,3 +422,142 @@ async def get_issue(
         events=[_row_to_event(r) for r in rows],
         total=int(total or 0),
     )
+
+
+def _stability_row_to_event_record(row: asyncpg.Record) -> EventRecord:
+    """把 stability_events 行还原成会话报告 / 事件列表用的 EventRecord。"""
+    extras = row["extras"]
+    if isinstance(extras, str):
+        try:
+            extras = json.loads(extras)
+        except json.JSONDecodeError:
+            extras = {}
+    if not isinstance(extras, dict):
+        extras = {}
+
+    props: dict[str, Any] = {**extras}
+    props["exception_type"] = row["exception_type"] or props.get("exception_type") or "Unknown"
+    if row["message"]:
+        props.setdefault("message", row["message"])
+        props.setdefault("exception", row["message"])
+    if row["stack"]:
+        props.setdefault("stack", row["stack"])
+    if row["thread"]:
+        props.setdefault("thread", row["thread"])
+    props["is_fatal"] = bool(row["is_fatal"])
+    if row["fingerprint"]:
+        props.setdefault("fingerprint", row["fingerprint"])
+    if row["blocked_ms"] is not None:
+        props.setdefault("blocked_ms", row["blocked_ms"])
+    if row["anr_source"]:
+        props.setdefault("anr_source", row["anr_source"])
+
+    common: dict[str, Any] = {}
+    if row["app_version"]:
+        common["app_version"] = row["app_version"]
+    if row["app_build"]:
+        common["app_build"] = row["app_build"]
+    if row["device_model"]:
+        common["device_model"] = row["device_model"]
+    if row["device_os_version"]:
+        common["device_os_version"] = row["device_os_version"]
+
+    return EventRecord(
+        event_id=row["event_id"],
+        name=event_name_for_kind(row["kind"]),
+        properties=props,
+        common_properties=common,
+        distinct_id=row["distinct_id"],
+        anonymous_id=row["anonymous_id"] or "",
+        session_id=row["session_id"] or "",
+        event_time=row["event_time"],
+        received_at=row["received_at"],
+    )
+
+
+async def list_stability_as_events(
+    pool: asyncpg.Pool,
+    event_name: str,
+    frm: datetime,
+    to: datetime,
+    limit: int,
+    offset: int,
+    filters: list[EventFilter] | None,
+) -> tuple[list[EventRecord], int]:
+    """按埋点名从 stability_events 读出，供会话报告 /events 列表使用。
+
+    ingest 时 crash/error/anr 只进 stability 表、不进 events；这里做回读映射。
+    """
+    if limit <= 0:
+        limit = 50
+    if limit > 200:
+        limit = 200
+    kind = kind_for_event(event_name)
+
+    # 用子查询拼出 properties / common_properties，复用通用 filter 语法
+    base = """
+        SELECT * FROM (
+            SELECT
+                event_id,
+                kind,
+                fingerprint,
+                exception_type,
+                message,
+                stack,
+                thread,
+                is_fatal,
+                blocked_ms,
+                anr_source,
+                app_version,
+                app_build,
+                device_model,
+                device_os_version,
+                distinct_id,
+                anonymous_id,
+                session_id,
+                extras,
+                event_time,
+                received_at,
+                (
+                    COALESCE(extras, '{}'::jsonb)
+                    || jsonb_strip_nulls(jsonb_build_object(
+                        'exception_type', NULLIF(exception_type, ''),
+                        'message', NULLIF(message, ''),
+                        'exception', NULLIF(message, ''),
+                        'stack', NULLIF(stack, ''),
+                        'thread', NULLIF(thread, ''),
+                        'is_fatal', is_fatal,
+                        'fingerprint', NULLIF(fingerprint, ''),
+                        'blocked_ms', blocked_ms,
+                        'anr_source', NULLIF(anr_source, '')
+                    ))
+                ) AS properties,
+                jsonb_strip_nulls(jsonb_build_object(
+                    'app_version', NULLIF(app_version, ''),
+                    'app_build', NULLIF(app_build, ''),
+                    'device_model', NULLIF(device_model, ''),
+                    'device_os_version', NULLIF(device_os_version, '')
+                )) AS common_properties
+            FROM stability_events
+            WHERE event_time >= $1 AND event_time < $2 AND kind = $3
+        ) AS events
+        WHERE TRUE
+    """
+    args: list[Any] = [frm, to, kind]
+    filter_sql, filter_args, next_idx = append_event_filters(filters, 4)
+    where = base + filter_sql
+    args.extend(filter_args)
+
+    async with pool.acquire() as conn:
+        total = int(await conn.fetchval(f"SELECT COUNT(*) FROM ({where}) q", *args) or 0)
+        rows = await conn.fetch(
+            f"""
+            {where}
+            ORDER BY event_time DESC
+            LIMIT ${next_idx} OFFSET ${next_idx + 1}
+            """,
+            *args,
+            limit,
+            offset,
+        )
+    return [_stability_row_to_event_record(r) for r in rows], total

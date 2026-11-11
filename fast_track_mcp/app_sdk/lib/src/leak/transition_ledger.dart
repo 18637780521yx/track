@@ -343,7 +343,6 @@ class TransitionLedger {
         if (r.to != null && r.to!.isNotEmpty) 'to': r.to,
         'at': at,
       },
-      flush: true,
     );
     final page = r.to;
     if (page != null && page.isNotEmpty) {
@@ -356,7 +355,6 @@ class TransitionLedger {
           if (r.from != null && r.from!.isNotEmpty) 'from': r.from,
           'at': at,
         },
-        flush: true,
       );
     }
   }

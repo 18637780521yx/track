@@ -270,6 +270,14 @@ async def list_events(
     offset: int,
     filters: list[EventFilter] | None,
 ) -> tuple[list[EventRecord], int]:
+    # crash / error / anr 入库时只进 stability_events，会话报告按事件名拉列表时从那边回读
+    from app.services.stability import is_stability_event, list_stability_as_events
+
+    if event_name and is_stability_event(event_name):
+        return await list_stability_as_events(
+            pool, event_name, frm, to, limit, offset, filters
+        )
+
     if limit <= 0:
         limit = 50
     if limit > 200:

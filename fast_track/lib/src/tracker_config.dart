@@ -37,7 +37,7 @@ class TrackerConfig {
   /// 失败后最大重试次数
   final int maxRetryCount;
 
-  /// 批量发送最小间隔（默认 15 秒）
+  /// 定时上传周期（默认 15 秒）；达到批量阈值或显式 flush 可提前上传。
   final Duration flushInterval;
 
   /// **队列最多存多少条**

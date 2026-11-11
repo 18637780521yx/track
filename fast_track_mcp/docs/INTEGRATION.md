@@ -200,6 +200,9 @@ FastTrackMcp.installHttpCaptureDeferred(
 
 ## 性能监控的判定与回捞
 
+- 普通点击、滚动、页面、网络、生命周期及性能事件统一入队，默认累计 100 条或每 15 秒上传；业务可通过 `TrackerConfig` 修改。崩溃、Flutter 框架异常和 ANR 保留立即上传，进入后台时尝试发送剩余队列。
+- 每轮上传处理开始时已入队的事件，新产生的普通事件留待下次批量触发；上传期间出现紧急上传请求时，会在当前请求完成后继续处理。进入后台的 `hidden` / `paused` 通知合并为一次触发，Release 同样生效。
+
 - iOS Hang 仅检查前台、正在处理任务的 RunLoop；正常等待事件与后台状态不计为卡死。耗时使用单调时钟，停止或切换前后台后不会投递旧告警。
 - Android 历史 ANR 逐条落盘并携带稳定 ID。Dart 成功持久化后才调用 `ackAnr`；失败保留待重试，历史事件不受实时告警冷却限制。系统记录没有原会话时使用 `native-recovered`，发生时间使用系统退出时间。
 - 卡顿预算默认跟随屏幕刷新率，也可通过 `jankFpsTarget` 手动指定。`slow_frames` / `jank_rate` 按 build 或 raster 超预算统计；`high_latency_frames` 单独记录总延迟。`severity: latency` 不代表处理阶段掉帧。

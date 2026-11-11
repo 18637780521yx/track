@@ -9,7 +9,7 @@ from pathlib import Path
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 
 # Paths that should differ from parent in this feature commit
 INCLUDE_NEW_OR_MODIFIED = [

@@ -284,10 +284,29 @@ function alertLabel(e: EventRecord): string {
         propNum(e, 'duration_ms');
       const frozen = propNum(e, 'frozen_frames');
       const slow = propNum(e, 'slow_frames');
+      const buildSlow = propNum(e, 'build_slow_frames');
+      const rasterSlow = propNum(e, 'raster_slow_frames');
+      const buildMs = propNum(e, 'build_ms') ?? propNum(e, 'max_build_ms');
+      const rasterMs = propNum(e, 'raster_ms') ?? propNum(e, 'max_raster_ms');
       const bits = [kind];
       if (ms != null) bits.push(`${Math.round(ms)}ms`);
-      if (frozen) bits.push(`frozen×${frozen}`);
-      else if (slow) bits.push(`slow×${slow}`);
+      if (frozen) {
+        bits.push(`frozen×${frozen}`);
+        // 单帧 frozen 带当帧 build/raster；窗口聚合用峰值
+        if (buildMs != null || rasterMs != null) {
+          const phases: string[] = [];
+          if (buildMs != null) phases.push(`build ${Math.round(buildMs)}ms`);
+          if (rasterMs != null) phases.push(`raster ${Math.round(rasterMs)}ms`);
+          bits.push(phases.join(' / '));
+        }
+      } else if ((buildSlow && buildSlow > 0) || (rasterSlow && rasterSlow > 0)) {
+        const phases: string[] = [];
+        if (buildSlow && buildSlow > 0) phases.push(`build×${buildSlow}`);
+        if (rasterSlow && rasterSlow > 0) phases.push(`raster×${rasterSlow}`);
+        bits.push(phases.join(' '));
+      } else if (slow) {
+        bits.push(`slow×${slow}`);
+      }
       return bits.join(' · ');
     }
     case 'app_memory_leak': {

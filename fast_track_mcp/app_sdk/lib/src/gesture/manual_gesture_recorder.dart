@@ -23,6 +23,7 @@ class ManualGestureRecorder {
   Offset? _downPos;
   DateTime? _downAt;
   int? _downPointer;
+
   /// 按下瞬间的逻辑路由；Tab onTap 会先改 index，抬起后再读会变成目标页。
   String? _routeAtDown;
   int _mcpGuardDepth = 0;
@@ -110,8 +111,7 @@ class ManualGestureRecorder {
     _lastAt = now;
     try {
       // 优先按下时路由；Tab 切换会在 onTap 里先改 index，抬起后再读已是目标页。
-      final routeAtStart =
-          routeAtDown ?? FastTrackMcpNetwork.currentRoute();
+      final routeAtStart = routeAtDown ?? FastTrackMcpNetwork.currentRoute();
       // 立刻命中：若先 delay，弹窗/转场会抢在 hit-test 前打开，落到图标 Listener。
       final target = HitTargetResolver.resolve(position, viewId: viewId);
 
@@ -133,7 +133,6 @@ class ManualGestureRecorder {
           'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
           ...target.toJson(),
         },
-        flush: true,
       );
     } catch (e, st) {
       debugPrint('[ManualGestureRecorder] tap failed: $e\n$st');
@@ -151,8 +150,7 @@ class ManualGestureRecorder {
     if (_busy || suppressManual) return;
     _busy = true;
     try {
-      final routeAtStart =
-          routeAtDown ?? FastTrackMcpNetwork.currentRoute();
+      final routeAtStart = routeAtDown ?? FastTrackMcpNetwork.currentRoute();
       await Future<void>.delayed(const Duration(milliseconds: 80));
       final dx = to.dx - from.dx;
       final dy = to.dy - from.dy;
@@ -177,7 +175,6 @@ class ManualGestureRecorder {
             'route_after': routeAfter,
           'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
         },
-        flush: true,
       );
     } catch (e, st) {
       debugPrint('[ManualGestureRecorder] scroll failed: $e\n$st');

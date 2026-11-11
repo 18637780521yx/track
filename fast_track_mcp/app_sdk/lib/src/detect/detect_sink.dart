@@ -11,6 +11,25 @@ import '../network/network_capture.dart';
 class FastTrackMcpDetectSink {
   FastTrackMcpDetectSink._();
 
+  @visibleForTesting
+  static Future<void> Function(String name, Map<String, dynamic> properties)?
+      debugOnTrack;
+  @visibleForTesting
+  static Future<void> Function()? debugOnFlush;
+
+  static Future<void> flush() async {
+    try {
+      final hook = debugOnFlush;
+      if (hook != null) {
+        await hook();
+      } else {
+        await FastTracker.tracker.flush();
+      }
+    } catch (error) {
+      debugPrint('[ftm] flush failed: $error');
+    }
+  }
+
   /// 质量/实时信号 → `perf_<type>` 埋点。
   static void alert({
     required String type,
@@ -40,9 +59,14 @@ class FastTrackMcpDetectSink {
     bool flush = false,
   }) async {
     try {
-      await FastTracker.track(name, properties: properties);
+      final hook = debugOnTrack;
+      if (hook != null) {
+        await hook(name, properties);
+      } else {
+        await FastTracker.track(name, properties: properties);
+      }
       if (flush) {
-        await FastTracker.tracker.flush();
+        await FastTrackMcpDetectSink.flush();
       }
     } catch (e) {
       debugPrint('[ftm] track failed: $e');

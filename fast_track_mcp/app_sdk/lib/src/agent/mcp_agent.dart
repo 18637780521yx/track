@@ -109,6 +109,8 @@ class FastTrackMcp {
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 
+    // Background queue flushing is required in release as well.
+    AppLifecycleTracker.instance.ensureStarted();
     if (kReleaseMode) {
       if (LeakOnline.instance.active) {
         debugPrint(

@@ -27,6 +27,7 @@ class FastTracker {
   bool _initialized = false;
   bool _initializing = false;
   bool _flushing = false;
+  bool _flushRequested = false;
   bool _optedOut = false;
 
   String? _distinctId;
@@ -327,6 +328,10 @@ class FastTracker {
   }
 
   Future<void> flush() async {
+    if (_flushing) {
+      _flushRequested = true;
+      return;
+    }
     await _flush();
   }
 
@@ -423,20 +428,30 @@ class FastTracker {
     }
 
     _flushing = true;
+    _flushRequested = false;
     int sentCount = 0;
     int failedCount = 0;
     int droppedCount = 0;
     String? lastError;
 
     try {
-      while (true) {
+      // Drain this snapshot. New ordinary events wait for the next threshold/timer
+      // instead of keeping a stream of one-event HTTP requests alive.
+      var eventsToSend = FastStorage.getEventCount();
+      while (eventsToSend > 0 || _flushRequested) {
+        if (eventsToSend == 0) {
+          eventsToSend = FastStorage.getEventCount();
+          _flushRequested = false;
+        }
         final remaining = FastStorage.getEventCount();
         if (remaining == 0) break;
 
-        final batchSize = min(_config.maxBatchSize, remaining);
+        final batchSize =
+            min(_config.maxBatchSize, min(remaining, eventsToSend));
         final events = await FastStorage.loadEvents(limit: batchSize);
 
         if (events.isEmpty) break;
+        eventsToSend -= events.length;
 
         fastLog('flush batch=$batchSize, remaining=$remaining', debug: true);
 
@@ -513,6 +528,11 @@ class FastTracker {
           droppedCount: droppedCount,
           lastError: lastError,
         ));
+      }
+      if (lastError == null &&
+          sentCount > 0 &&
+          FastStorage.getEventCount() >= _config.maxBatchSize) {
+        unawaited(_flush());
       }
     }
   }

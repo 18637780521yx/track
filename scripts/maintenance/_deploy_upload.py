@@ -16,7 +16,7 @@ PASSWORD = os.environ["TRACK_SSH_PASSWORD"]
 REMOTE_DIR = "/home/mobile/track-deploy"
 PORT = 18765
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 SERVER_SRC = ROOT / "track-server-py"
 CONSOLE_DIST = ROOT / "track-console" / "dist"
 DEPLOY = ROOT / "deploy"
@@ -76,7 +76,8 @@ def main() -> None:
     assert (SERVER_SRC / "Dockerfile").is_file()
     assert (DEPLOY / "docker-compose.yml").is_file()
 
-    local_tar = ROOT / "_track_bundle.tgz"
+    local_tar = Path(__file__).resolve().parent / "artifacts" / "_track_bundle.tgz"
+    local_tar.parent.mkdir(parents=True, exist_ok=True)
     print("packing…")
     if local_tar.exists():
         local_tar.unlink()

@@ -111,15 +111,111 @@ function NetworkDetail({ detail }: { detail?: Record<string, unknown> }) {
   );
 }
 
+const ALERT_META_KEYS = [
+  'exception_type',
+  'type',
+  'message',
+  'exception',
+  'library',
+  'context',
+  'thread',
+  'is_fatal',
+  'fingerprint',
+  'anr_source',
+  'blocked_ms',
+  'route',
+  'rss_mb',
+  'max_rss_mb',
+  'slow_count',
+  'build_slow',
+  'raster_slow',
+  'window_ms',
+] as const;
+
+function alertStr(detail: Record<string, unknown>, key: string): string {
+  const v = detail[key];
+  if (v == null || v === '') return '';
+  return String(v);
+}
+
+function AlertDetail({
+  label,
+  detail,
+  ms,
+}: {
+  label: string;
+  detail?: Record<string, unknown>;
+  ms?: number;
+}) {
+  const d = detail ?? {};
+  const message =
+    alertStr(d, 'message') || alertStr(d, 'exception') || alertStr(d, 'sample_message');
+  const stack = alertStr(d, 'stack') || alertStr(d, 'sample_stack');
+  const meta = ALERT_META_KEYS.map((k) => {
+    if (k === 'message' || k === 'exception') return null;
+    const v = d[k];
+    if (v == null || v === '') return null;
+    return [k, typeof v === 'boolean' ? (v ? 'true' : 'false') : String(v)] as const;
+  }).filter(Boolean) as Array<readonly [string, string]>;
+
+  const known = new Set<string>([...ALERT_META_KEYS, 'stack', 'sample_stack', 'sample_message']);
+  const extras: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(d)) {
+    if (known.has(k) || v == null || v === '') continue;
+    extras[k] = v;
+  }
+  const extrasText = Object.keys(extras).length
+    ? prettyBody(extras)
+    : '';
+
+  return (
+    <details className="rpt-alert-card">
+      <summary>
+        <span className="rpt-ar-alert-icon">⚠</span>
+        <span className="rpt-alert-summary-label">{label}</span>
+        {ms != null && <span className="rpt-ar-ms">{Math.round(ms)} ms</span>}
+        <span className="rpt-alert-hint">查看详情</span>
+      </summary>
+      <div className="rpt-alert-body">
+        {meta.length > 0 && (
+          <dl className="rpt-alert-meta">
+            {meta.map(([k, v]) => (
+              <div key={k}>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        {message ? (
+          <>
+            <h4>Message</h4>
+            <pre>{message}</pre>
+          </>
+        ) : null}
+        {stack ? (
+          <>
+            <h4>Stack</h4>
+            <pre className="rpt-alert-stack">{stack}</pre>
+          </>
+        ) : null}
+        {extrasText ? (
+          <>
+            <h4>Other</h4>
+            <pre>{extrasText}</pre>
+          </>
+        ) : null}
+        {!message && !stack && !meta.length && !extrasText ? (
+          <pre>（无详情字段）</pre>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
 function EventRow({ ev }: { ev: TimelineEvent }) {
   if (ev.type === 'alert') {
-    return (
-      <div className="rpt-ar-alert">
-        <span className="rpt-ar-alert-icon">⚠</span>
-        <span>{ev.label}</span>
-        {ev.ms != null && <span className="rpt-ar-ms">{Math.round(ev.ms)} ms</span>}
-      </div>
-    );
+    return <AlertDetail label={ev.label} detail={ev.detail} ms={ev.ms} />;
   }
 
   const note =

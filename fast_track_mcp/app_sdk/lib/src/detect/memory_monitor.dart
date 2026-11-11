@@ -249,7 +249,6 @@ class FastTrackMcpMemoryMonitor {
       await FastTrackMcpDetectSink.track(
         FastTrackMcpEventName.appMemoryLeak,
         properties: props,
-        flush: true,
       );
       final onMemory = _onMemory;
       if (onMemory != null) {

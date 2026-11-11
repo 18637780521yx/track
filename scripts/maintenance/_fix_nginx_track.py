@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 import os
 import time
+from pathlib import Path
 import paramiko
 
 HOST = "10.10.10.132"
 REMOTE = "/home/mobile/track-deploy"
-LOCAL = r"c:\Users\admin\Desktop\program\track\deploy\nginx.conf"
+LOCAL = str(Path(__file__).resolve().parents[2] / "deploy" / "nginx.conf")
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())

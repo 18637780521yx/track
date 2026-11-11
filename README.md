@@ -4,6 +4,7 @@ Flutter / Android SDK + Python 服务端 + 分析后台。
 
 ```
 track/
+├── scripts/maintenance/   # 部署、诊断与历史 Git 辅助脚本
 ├── fast_track/            # Flutter 上报 SDK（纯管道）
 ├── fast_track_mcp/        # 检测 + Bridge +（可选）Cursor MCP
 ├── fast_track_android/    # Android Kotlin 上报 SDK
@@ -13,6 +14,8 @@ track/
 ```
 
 ## 测试 / 线上部署
+
+辅助脚本的用途与运行方式见 [scripts/maintenance/README.md](scripts/maintenance/README.md)。
 
 同一台机两套独立栈（库与端口隔离），见 [deploy/README.md](deploy/README.md)：
 

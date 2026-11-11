@@ -329,11 +329,9 @@ class FastTrackMcpJankMonitor {
         await hook(FastTrackMcpEventName.appJank, properties);
         return;
       }
-      final frozen = properties['type'] == 'frozen_frame';
       await FastTrackMcpDetectSink.track(
         FastTrackMcpEventName.appJank,
         properties: properties,
-        flush: frozen,
       );
       final onJank = _onJank;
       if (onJank != null) {

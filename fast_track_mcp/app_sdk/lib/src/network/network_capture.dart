@@ -83,8 +83,8 @@ class FastTrackMcpNetwork {
   static bool _allowHttpLoopback = true;
   static bool _redactSensitiveHeaders = true;
 
-  /// Slow request threshold (aligned with Sleuth-style detectors).
-  static int slowRequestMs = 1000;
+  /// Slow request threshold.
+  static int slowRequestMs = 10000;
 
   /// Large response threshold (bytes).
   static int largeResponseBytes = 1024 * 1024;

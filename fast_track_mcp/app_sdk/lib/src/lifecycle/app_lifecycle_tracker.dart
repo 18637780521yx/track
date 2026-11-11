@@ -31,9 +31,10 @@ class AppLifecycleTracker with WidgetsBindingObserver {
   }
 
   void ensureStarted() {
-    if (kReleaseMode || _started) return;
+    if (_started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
+    if (kReleaseMode) return;
     SchedulerBinding.instance.addPostFrameCallback((_) {
       ColdStartClock.instance.markFirstFrame();
       unawaited(_emitColdStartWhenReady());
@@ -104,7 +105,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
             'threshold_ms': ttffWarnMs,
             if (route != null && route.isNotEmpty) 'route': route,
           },
-          flush: true,
         ),
       );
     }
@@ -117,7 +117,13 @@ class AppLifecycleTracker with WidgetsBindingObserver {
 
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
+      // Mobile transitions commonly deliver hidden then paused for one exit.
+      if (_backgroundedAt != null) return;
       _backgroundedAt = now;
+      if (kReleaseMode) {
+        unawaited(FastTrackMcpDetectSink.flush());
+        return;
+      }
       _record(
         kind: 'background',
         label: 'App 进入后台',
@@ -132,6 +138,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       final backgroundMs =
           bgAt == null ? null : now.difference(bgAt).inMilliseconds;
       _backgroundedAt = null;
+      if (kReleaseMode) return;
       _record(
         kind: 'foreground',
         label: 'App 进入前台',
@@ -174,7 +181,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
           if (backgroundMs != null) 'background_ms': backgroundMs,
           if (extra != null) ...extra,
         },
-        flush: true,
+        flush: kind == 'background',
       ),
     );
   }

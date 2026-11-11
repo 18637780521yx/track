@@ -10,7 +10,7 @@ from pathlib import Path
 from dulwich import porcelain
 from dulwich.repo import Repo
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parents[2]
 
 # Deploy / temp helpers — do not commit
 EXCLUDE_PREFIXES = (

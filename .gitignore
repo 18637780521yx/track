@@ -1,6 +1,10 @@
 .DS_Store
 *.log
 
+# Local maintenance script artifacts
+scripts/maintenance/artifacts/
+scripts/maintenance/__pycache__/
+
 # track-console
 track-console/node_modules/
 track-console/dist/
