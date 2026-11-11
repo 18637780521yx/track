@@ -23,7 +23,8 @@ typedef FastTrackAppRunner = FutureOr<void> Function();
 ///   Android：`ApplicationExitInfo` + tombstone（ExitInfo trace / 可读时
 ///   `/data/tombstones`）；iOS 14+：MetricKit crash/hang 诊断
 ///
-/// Zone / Platform / Isolate 未捕获打 `app_crash` 并 flush；框架错误记 `app_error`。
+/// Zone / Platform / Isolate 未捕获打 `app_crash` 并 flush；
+/// 框架 [FlutterError] 记 `app_error` 也会立刻 flush（红屏不丢点）。
 /// 已 catch 的用 [captureException] / [captureMessage] → `app_error`。
 class FastTrackMcpCrashHandler {
   FastTrackMcpCrashHandler._();
@@ -316,6 +317,7 @@ class FastTrackMcpCrashHandler {
   static void _hookFlutterError() {
     _previousFlutterOnError = FlutterError.onError;
     FlutterError.onError = (FlutterErrorDetails details) {
+      // 框架异常仍记 app_error（非 crash），但立刻 flush，避免红屏后进程被杀丢点。
       unawaited(_report(
         source: 'flutter_error',
         error: details.exception,
@@ -324,6 +326,7 @@ class FastTrackMcpCrashHandler {
         message: details.exceptionAsString(),
         library: details.library,
         context: details.context?.toDescription(),
+        flush: true,
       ));
       final previous = _previousFlutterOnError;
       if (previous != null) {
@@ -391,6 +394,7 @@ class FastTrackMcpCrashHandler {
     Map<String, dynamic>? extra,
     bool dedup = true,
     String? nativeId,
+    bool? flush,
   }) async {
     if (Zone.current[_reportZoneKey] == true) return;
     await runZoned(() async {
@@ -412,6 +416,7 @@ class FastTrackMcpCrashHandler {
         final name = fatal
             ? FastTrackMcpEventName.appCrash
             : FastTrackMcpEventName.appError;
+        final shouldFlush = flush ?? fatal;
 
         final hook = debugOnReport;
         if (hook != null) {
@@ -443,10 +448,10 @@ class FastTrackMcpCrashHandler {
           }
           await _nativeMethod
               .invokeMethod<void>('ackCrash', {'crash_id': nativeId});
-          if (fatal) unawaited(FastTracker.tracker.flush());
+          if (shouldFlush) unawaited(FastTracker.tracker.flush());
         } else {
           await FastTrackMcpDetectSink.track(name,
-              properties: properties, flush: fatal);
+              properties: properties, flush: shouldFlush);
         }
       } catch (e) {
         debugPrint('[ftm] crash report failed: $e');
