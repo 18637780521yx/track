@@ -1,3 +1,9 @@
+## 0.10.2
+
+- Fix request.done closing HTTP requests before the request body is sent.
+- Preserve one shared captured response for close() and done, including HTTP error bodies.
+- Require protocol 0.10.1 for network business outcome fields.
+
 ## 0.10.1
 
 - Add layered memory evidence, rolling frame-budget jank detection, accurate startup timings, and opt-in successful HTTP body capture.

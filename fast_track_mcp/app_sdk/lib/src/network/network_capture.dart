@@ -536,6 +536,8 @@ class _CaptureRequest implements HttpClientRequest {
   final BytesBuilder _reqBody = BytesBuilder(copy: false);
   bool _emitted = false;
   Future<HttpClientResponse>? _closing;
+  Future<HttpClientResponse>? _done;
+  HttpClientResponse? _wrappedResponse;
 
   void _take(List<int> data) {
     final max = PerfNetworkStore.instance.maxBodyBytes;
@@ -591,30 +593,39 @@ class _CaptureRequest implements HttpClientRequest {
     return _closing ??= _closeOnce();
   }
 
-  /// Idempotent with [close] — Dio/http may await either.
+  /// Observing completion must not close the outgoing request body.
   @override
-  Future<HttpClientResponse> get done => close();
+  Future<HttpClientResponse> get done => _done ??= _observeDone();
 
-  Future<HttpClientResponse> _closeOnce() async {
+  Future<HttpClientResponse> _observeDone() async {
     try {
-      final reqBytes = _reqBody.toBytes();
-      final reqDecoded = _decodeBody(reqBytes, headers.contentType?.mimeType);
-      final reqHeaders = _headersMap(headers, redactSensitiveHeaders);
-      final response = await _inner.close();
-      return _CaptureResponse(
-        response,
+      return _wrapResponse(await _inner.done);
+    } catch (error) {
+      _emitOpenFailure(error);
+      rethrow;
+    }
+  }
+
+  HttpClientResponse _wrapResponse(HttpClientResponse response) {
+    final reqBytes = _reqBody.toBytes();
+    final decoded = _decodeBody(reqBytes, headers.contentType?.mimeType);
+    return _wrappedResponse ??= _CaptureResponse(response,
         url: url,
         method: method,
         startedAt: startedAt,
         route: route,
-        requestHeaders: reqHeaders,
-        requestBody: reqDecoded.$1,
-        requestBodyTruncated: reqDecoded.$2 ||
+        requestHeaders: _headersMap(headers, redactSensitiveHeaders),
+        requestBody: decoded.$1,
+        requestBodyTruncated: decoded.$2 ||
             reqBytes.length >= PerfNetworkStore.instance.maxBodyBytes,
         requestBytes: reqBytes.length,
         redactSensitiveHeaders: redactSensitiveHeaders,
-        onEmitted: () => _emitted = true,
-      );
+        onEmitted: () => _emitted = true);
+  }
+
+  Future<HttpClientResponse> _closeOnce() async {
+    try {
+      return _wrapResponse(await _inner.close());
     } catch (e) {
       _emitOpenFailure(e);
       rethrow;

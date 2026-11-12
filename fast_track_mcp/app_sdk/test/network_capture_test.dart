@@ -6,6 +6,42 @@ import 'package:fast_track_mcp/src/detect/detect_sink.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  test('request.done does not close POST before body is sent', () async {
+    final previous = HttpOverrides.current;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    HttpClient? client;
+    FastTrackMcpDetectSink.debugOnTrack = (_, __) async {};
+    try {
+      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: false);
+      server.listen((request) async {
+        final body = await utf8.decoder.bind(request).join();
+        request.response.statusCode = 422;
+        request.response.headers.contentType = ContentType.json;
+        request.response
+            .write(jsonEncode({'received': body, 'error': 'invalid'}));
+        await request.response.close();
+      });
+      client = HttpClient();
+      final request = await client
+          .postUrl(Uri.parse('http://127.0.0.1:${server.port}/draft'));
+      final done = request.done;
+      await Future<void>.delayed(Duration.zero);
+      request.write('draft-content');
+      final response = await request.close();
+      expect(await done, same(response));
+      expect(response.statusCode, 422);
+      final body = jsonDecode(await utf8.decoder.bind(response).join()) as Map;
+      expect(body['received'], 'draft-content');
+      expect(PerfNetworkStore.instance.records, hasLength(1));
+      expect(PerfNetworkStore.instance.records.single.responseBody,
+          contains('invalid'));
+    } finally {
+      client?.close(force: true);
+      HttpOverrides.global = previous;
+      await server.close(force: true);
+    }
+  });
+
   test('explicit global capture records HTTP failures and installs only once',
       () async {
     final previous = HttpOverrides.current;
