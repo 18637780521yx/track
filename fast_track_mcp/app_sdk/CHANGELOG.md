@@ -1,3 +1,7 @@
+## 0.10.1
+
+- Add layered memory evidence, rolling frame-budget jank detection, accurate startup timings, and opt-in successful HTTP body capture.
+
 ## 0.10.0
 
 - First pub.dev release of the Fast Track MCP App SDK.

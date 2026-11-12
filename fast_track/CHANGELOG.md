@@ -1,3 +1,7 @@
+## 0.2.1
+
+- Improve batched telemetry, durable crash persistence, and manual network reporting.
+
 ## 0.2.0
 
 - **Track-only**：移除 App 内 Crash/ANR/Jank/Memory 检测与 `NavigatorObserver`；钩子归 `fast_track_mcp` App SDK，本包只负责 `FastTracker` 上报管道。
