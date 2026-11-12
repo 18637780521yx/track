@@ -1,3 +1,4 @@
+import '../lifecycle/cold_start_clock.dart';
 import 'dart:async';
 import 'dart:isolate';
 import 'dart:ui';
@@ -127,11 +128,12 @@ class FastTrackMcpCrashHandler {
   /// 绑定位于另一个 Zone 时，部分异步异常进不了这里的 zone 回调，
   /// 仍会由 [PlatformDispatcher.onError] 兜底。
   static Future<void> run(FastTrackAppRunner appRunner) {
+    ColdStartClock.instance.markDartEntry();
     install();
     final completed = Completer<void>();
     runZonedGuarded(() async {
       try {
-        WidgetsFlutterBinding.ensureInitialized();
+        ColdStartClock.instance.start();
         await ensureNativeInitialized();
         await appRunner();
         await ensureNativeInitialized();

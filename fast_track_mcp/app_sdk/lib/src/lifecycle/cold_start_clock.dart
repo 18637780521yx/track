@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:developer' show Timeline;
+import 'dart:ui';
+import 'package:flutter/widgets.dart';
 
 /// Dart/Flutter 侧冷启动计时（方案 A）：Dart 入口 → 首帧(TTFF) → 可交互(TTI)。
 ///
@@ -13,13 +16,55 @@ class ColdStartClock {
   DateTime? _firstFrameAt;
   DateTime? _interactiveAt;
 
-  final Completer<void> _interactiveWait = Completer<void>();
+  Completer<void> _interactiveWait = Completer<void>();
+  Completer<void> _frameWait = Completer<void>();
+  int? _entryUs, _rasterFinishUs, _interactiveUs;
+  int? _frameworkDurationUs;
+  bool _attachedLate = false;
+  void Function(List<FrameTiming>)? _timingsCallback;
+  final Map<String, double> _framePhases = {};
+  Future<void> get firstFrameReady => _frameWait.future;
+
+  void debugHandleTimings(List<FrameTiming> timings) =>
+      _timingsCallback?.call(timings);
+
+  void start() {
+    markDartEntry();
+    if (_timingsCallback != null || hasFirstFrame) return;
+    final frameworkStart = Timeline.now;
+    WidgetsFlutterBinding.ensureInitialized();
+    _frameworkDurationUs = Timeline.now - frameworkStart;
+    markBindingReady();
+    if (WidgetsBinding.instance.firstFrameRasterized) {
+      _attachedLate = true;
+      if (!_frameWait.isCompleted) _frameWait.complete();
+      return;
+    }
+    void callback(List<FrameTiming> timings) {
+      if (timings.isEmpty) return;
+      final first = timings.first;
+      _rasterFinishUs = first.timestampInMicroseconds(FramePhase.rasterFinish);
+      _framePhases.addAll({
+        'firstFrameVsyncOverheadMs': first.vsyncOverhead.inMicroseconds / 1000,
+        'firstFrameBuildMs': first.buildDuration.inMicroseconds / 1000,
+        'firstFrameRasterMs': first.rasterDuration.inMicroseconds / 1000,
+        'firstFrameTotalMs': first.totalSpan.inMicroseconds / 1000,
+      });
+      WidgetsBinding.instance.removeTimingsCallback(callback);
+      _timingsCallback = null;
+      markFirstFrame();
+    }
+
+    _timingsCallback = callback;
+    WidgetsBinding.instance.addTimingsCallback(callback);
+  }
 
   bool get hasFirstFrame => _firstFrameAt != null;
   bool get hasInteractive => _interactiveAt != null;
 
   /// 越早越好：`main` / CrashHandler 入口第一行。
   void markDartEntry([DateTime? at]) {
+    _entryUs ??= Timeline.now;
     _dartEntryAt ??= at ?? DateTime.now();
   }
 
@@ -39,6 +84,7 @@ class ColdStartClock {
   void markFirstFrame([DateTime? at]) {
     markDartEntry(at);
     _firstFrameAt ??= at ?? DateTime.now();
+    if (!_frameWait.isCompleted) _frameWait.complete();
   }
 
   /// 首屏可交互（Tab 就绪 / 登录页就绪等）。未调用时 TTFF 后超时也会放行。
@@ -46,6 +92,7 @@ class ColdStartClock {
     markDartEntry(at);
     if (_interactiveAt != null) return;
     _interactiveAt = at ?? DateTime.now();
+    _interactiveUs = Timeline.now;
     if (!_interactiveWait.isCompleted) {
       _interactiveWait.complete();
     }
@@ -59,7 +106,7 @@ class ColdStartClock {
       await _interactiveWait.future.timeout(timeout);
     } on TimeoutException {
       // TTI ≈ TTFF（业务未显式 mark）
-      markInteractive(_firstFrameAt ?? DateTime.now());
+      // Leave TTI unknown until the business explicitly marks readiness.
     }
   }
 
@@ -76,16 +123,25 @@ class ColdStartClock {
     final frame = _firstFrameAt;
     final interactive = _interactiveAt;
 
-    final ttff = _msBetween(dart, frame);
-    final tti = _msBetween(dart, interactive);
-    final framework = _msBetween(dart, binding);
+    final ttff = _rasterFinishUs != null && _entryUs != null
+        ? (_rasterFinishUs! - _entryUs!) / 1000
+        : _msBetween(dart, frame);
+    final tti = _interactiveUs != null && _entryUs != null
+        ? (_interactiveUs! - _entryUs!) / 1000
+        : _msBetween(dart, interactive);
+    final framework = _frameworkDurationUs != null
+        ? _frameworkDurationUs! / 1000
+        : _msBetween(dart, binding);
     // 业务启动：binding → runApp；若缺 binding 则 dart → runApp
-    final bootstrap = binding != null
-        ? _msBetween(binding, runApp ?? frame)
-        : _msBetween(dart, runApp ?? frame);
-    final firstFrameTotal = runApp != null
-        ? _msBetween(runApp, frame)
-        : (binding != null ? _msBetween(binding, frame) : null);
+    final firstFrameTotal = _framePhases['firstFrameTotalMs'] ??
+        (runApp != null ? _msBetween(runApp, frame) : null);
+    final bootstrap = runApp != null
+        ? _msBetween(binding ?? dart, runApp)
+        : (ttff != null && firstFrameTotal != null
+            ? (ttff - (framework ?? 0) - firstFrameTotal)
+                .clamp(0, ttff)
+                .toDouble()
+            : null);
 
     String? dominant;
     double? dominantPct;
@@ -98,8 +154,8 @@ class ColdStartClock {
       if (candidates.isNotEmpty) {
         candidates.sort((a, b) => b.$2.compareTo(a.$2));
         dominant = candidates.first.$1;
-        dominantPct =
-            double.parse(((candidates.first.$2 / ttff) * 100).toStringAsFixed(1));
+        dominantPct = double.parse(
+            ((candidates.first.$2 / ttff) * 100).toStringAsFixed(1));
       }
     }
 
@@ -112,9 +168,12 @@ class ColdStartClock {
         'appBootstrapMs': double.parse(bootstrap.toStringAsFixed(1)),
       if (firstFrameTotal != null)
         'firstFrameTotalMs': double.parse(firstFrameTotal.toStringAsFixed(1)),
-      // 无 Timeline 采样时，把首帧整段记在 build，便于阶段表展示
-      if (firstFrameTotal != null)
-        'firstFrameBuildMs': double.parse(firstFrameTotal.toStringAsFixed(1)),
+      ..._framePhases,
+      'attachedLate': _attachedLate,
+      'measurementScope': 'dart_sdk_entry_to_first_raster',
+      'ttiSource': hasInteractive ? 'explicit' : 'unknown',
+      'ttffSource':
+          _rasterFinishUs != null ? 'frame_timing_monotonic' : 'manual',
       if (dominant != null) 'dominantPhase': dominant,
       if (dominantPct != null) 'dominantPhasePercent': dominantPct,
       'scheme': 'A',
@@ -124,6 +183,17 @@ class ColdStartClock {
 
   /// 测试 / 热重启。
   void debugReset() {
+    final callback = _timingsCallback;
+    if (callback != null) {
+      WidgetsBinding.instance.removeTimingsCallback(callback);
+    }
+    _timingsCallback = null;
+    _entryUs = _rasterFinishUs = _interactiveUs = null;
+    _frameworkDurationUs = null;
+    _attachedLate = false;
+    _framePhases.clear();
+    _interactiveWait = Completer<void>();
+    _frameWait = Completer<void>();
     _dartEntryAt = null;
     _bindingReadyAt = null;
     _runAppAt = null;

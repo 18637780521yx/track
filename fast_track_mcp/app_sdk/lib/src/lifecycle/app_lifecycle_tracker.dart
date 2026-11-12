@@ -2,7 +2,6 @@ import 'dart:async';
 
 import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/scheduler.dart';
 import 'package:flutter/widgets.dart';
 
 import '../detect/detect_sink.dart';
@@ -34,11 +33,9 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     if (_started) return;
     _started = true;
     WidgetsBinding.instance.addObserver(this);
-    if (kReleaseMode) return;
-    SchedulerBinding.instance.addPostFrameCallback((_) {
-      ColdStartClock.instance.markFirstFrame();
-      unawaited(_emitColdStartWhenReady());
-    });
+    final clock = ColdStartClock.instance;
+    clock.start();
+    unawaited(clock.firstFrameReady.then((_) => _emitColdStartWhenReady()));
   }
 
   void stop() {
@@ -57,9 +54,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
   Future<void> _emitColdStartWhenReady({String? routeHint}) async {
     if (_coldStartNoted) return;
     final clock = ColdStartClock.instance;
-    if (!clock.hasFirstFrame) {
-      clock.markFirstFrame();
-    }
+    await clock.firstFrameReady;
     await clock.waitInteractive(timeout: const Duration(seconds: 2));
     if (_coldStartNoted) return;
     _coldStartNoted = true;
@@ -92,7 +87,7 @@ class AppLifecycleTracker with WidgetsBindingObserver {
     );
 
     // 慢启动告警挂在同一生命周期段（控制台按 route/时间归并）
-    const ttffWarnMs = 2000.0;
+    const ttffWarnMs = 1500.0;
     if (ttff != null && ttff >= ttffWarnMs) {
       unawaited(
         FastTrackMcpDetectSink.track(
@@ -101,6 +96,8 @@ class AppLifecycleTracker with WidgetsBindingObserver {
             'action': 'cold_start',
             'message':
                 'TTFF ${ttff.toStringAsFixed(0)} ms ≥ 阈值 ${ttffWarnMs.toStringAsFixed(0)} ms',
+            'severity': ttff >= 3000 ? 'critical' : 'warning',
+            'startup': metrics,
             'ttff_ms': ttff,
             'threshold_ms': ttffWarnMs,
             if (route != null && route.isNotEmpty) 'route': route,
