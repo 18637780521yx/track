@@ -62,6 +62,7 @@ export interface TimelineEvent {
   route?: string;
   ms?: number;
   detail?: Record<string, unknown>;
+  memoryLevel?: 'trend' | 'pressure' | 'retained' | 'gc' | 'resource';
 }
 
 export interface TimelineSegment {
@@ -311,9 +312,30 @@ function alertLabel(e: EventRecord): string {
     }
     case 'app_memory_leak': {
       const type = propStr(e, 'type') || 'memory';
-      const rss = propNum(e, 'rss_mb') ?? propNum(e, 'max_rss_mb');
+      const rss = propNum(e, 'rss_mb');
       if (type === 'memory_pressure') {
-        return rss != null ? `memory_pressure · RSS ${rss.toFixed(1)} MB` : 'memory_pressure';
+        return rss != null ? `内存占用偏高 · RSS ${rss.toFixed(1)} MB（非泄漏结论）` : '内存占用偏高';
+      }
+      if (['memory_growth', 'heap_growing', 'heap_retained_growth', 'native_memory_growing'].includes(type)) {
+        const growth = propNum(e, 'growth_bytes');
+        const window = propNum(e, 'window_ms');
+        const titles: Record<string, string> = {
+          memory_growth: '进程内存增长趋势', heap_growing: 'Dart 堆增长趋势',
+          heap_retained_growth: '完整 GC 后堆底线增长', native_memory_growing: 'RSS 残差增长（估算）',
+        };
+        const rate = propNum(e, 'growth_rate_bytes_per_sec');
+        return [`${titles[type]}（未确认泄漏）`,
+          growth != null ? `窗口增长 ${(growth / 1048576).toFixed(1)} MB` : '增长量未知',
+          rate != null ? `${(rate / 1024).toFixed(1)} KB/s` : '',
+          rss != null ? `RSS ${rss.toFixed(1)} MB` : '',
+          window != null ? `采样窗口 ${Math.round(window / 1000)} 秒` : '',
+        ].filter(Boolean).join(' · ');
+      }
+      if (type === 'gc_pressure') {
+        return `GC 频繁 · ${propNum(e, 'gc_count') ?? '?'} 次 / 10 秒（非泄漏结论）`;
+      }
+      if (type === 'stream_resource_growth') {
+        return `异步资源数量增长 · ${propStr(e, 'resource_class')} · 新增 ${propNum(e, 'instance_delta') ?? '?'} 个（疑似滞留）`;
       }
       return propStr(e, 'message') || (rss != null ? `${type} · ${rss.toFixed(1)} MB` : type);
     }
@@ -454,7 +476,13 @@ function recount(seg: TimelineSegment) {
 
 /** 从埋点按时间重建页面级时间线（对齐 MCP HTML report v4） */
 export function buildSegments(records: EventRecord[]): TimelineSegment[] {
-  const sorted = [...records].sort(
+  const seen = new Set<string>();
+  const sorted = records.filter((event) => {
+    if (!event.event_id) return true;
+    if (seen.has(event.event_id)) return false;
+    seen.add(event.event_id);
+    return true;
+  }).sort(
     (a, b) => new Date(a.event_time).getTime() - new Date(b.event_time).getTime(),
   );
   const segments: TimelineSegment[] = [];
@@ -862,6 +890,12 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
         at,
         label: alertLabel(e),
         ok: false,
+        memoryLevel: e.name === 'app_memory_leak'
+          ? (propStr(e, 'type') === 'memory_pressure' ? 'pressure'
+            : propStr(e, 'type') === 'gc_pressure' ? 'gc'
+            : propStr(e, 'type') === 'stream_resource_growth' ? 'resource'
+            : ['heap_retained_growth', 'memory_leak', 'transition_memory_leak'].includes(propStr(e, 'type')) ? 'retained' : 'trend')
+          : e.name === 'perf_transition_leak' || e.name === 'perf_memory_leak' ? 'retained' : undefined,
         route: route || undefined,
         ms: propNum(e, 'duration_ms') ?? propNum(e, 'durationMs'),
         detail: e.properties,
@@ -901,7 +935,9 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
 
       // 转场泄漏类优先挂到刚离开的页卡
       if (
-        (e.name === 'perf_transition_leak' || e.name === 'app_memory_leak' || e.name.includes('leak')) &&
+        (e.name === 'perf_transition_leak' || e.name === 'perf_memory_leak' ||
+          (e.name === 'app_memory_leak' && alertEv.memoryLevel === 'retained' &&
+            !propStr(e, 'observation_scope'))) &&
         lastTransition
       ) {
         let exitPage: TimelineSegment | null = null;
@@ -950,7 +986,34 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
 
   flushPage();
   for (const s of segments) recount(s);
-  return coalesceDuplicatePages(finalizeColdStartOrder(segments));
+  const result = coalesceDuplicatePages(finalizeColdStartOrder(segments));
+  for (const segment of result) {
+    const groups = new Map<string, TimelineEvent>();
+    segment.events = segment.events.filter((event) => {
+      if (!event.memoryLevel || (event.memoryLevel === 'retained' && !event.detail?.episode_id)) return true;
+      const episode = String(event.detail?.episode_id || 'legacy');
+      const key = `${event.memoryLevel}:${event.detail?.type || ''}:${event.detail?.resource_class || ''}:${episode}:${event.route || segment.route || ''}`;
+      const previous = groups.get(key);
+      const end = String(previous?.detail?.last_seen_at || previous?.at || '');
+      const gap = Date.parse(event.at) - Date.parse(end);
+      // Only combine nearby signals within the same page visit and route.
+      if (!previous || !Number.isFinite(gap) || gap < 0 || gap > 10 * 60 * 1000) {
+        event.detail = { ...event.detail, occurrence_count: 1, first_seen_at: event.at, last_seen_at: event.at,
+          peak_rss_mb: event.detail?.rss_mb };
+        groups.set(key, event);
+        return true;
+      }
+      const count = Number(previous.detail?.occurrence_count || 1) + 1;
+      const peak = Math.max(Number(previous.detail?.peak_rss_mb || 0), Number(event.detail?.rss_mb || 0));
+      previous.label = `${event.label} · 合并 ${count} 条观测 · 观测跨度 ${Math.round((Date.parse(event.at) - Date.parse(previous.at)) / 1000)} 秒${peak > 0 ? ` · 峰值 RSS ${peak.toFixed(1)} MB` : ''}`;
+      previous.detail = { ...previous.detail, occurrence_count: count, last_seen_at: event.at,
+        duration_ms: Date.parse(event.at) - Date.parse(previous.at), peak_rss_mb: peak,
+        latest_sample: event.detail };
+      return false;
+    });
+    recount(segment);
+  }
+  return result;
 }
 
 export function buildSessionReports(records: EventRecord[]): SessionReport[] {
@@ -992,7 +1055,7 @@ export function buildSessionReports(records: EventRecord[]): SessionReport[] {
       '未知设备';
     const testName = sorted.map((e) => propStr(e, 'test_name')).find((t) => t);
     const rssPeak = sorted
-      .map((e) => propNum(e, 'max_rss_mb') ?? propNum(e, 'rss_mb'))
+      .map((e) => propNum(e, 'rss_mb'))
       .filter((n): n is number => n != null)
       .reduce((a, b) => Math.max(a, b), 0);
 

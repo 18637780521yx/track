@@ -252,14 +252,17 @@ void main() {
         pressureBytes: 100 * 1024 * 1024,
         rssReader: () => 150 * 1024 * 1024,
       );
-      await FastTrackMcpMemoryMonitor.debugSampleRss(150 * 1024 * 1024);
+      for (var i = 0; i < 5; i++) {
+        await FastTrackMcpMemoryMonitor.debugSampleRss(150 * 1024 * 1024,
+            atMs: i * 3600000);
+      }
 
       expect(props?['type'], 'memory_pressure');
       expect(props?['severity'], 'pressure');
       expect(props?['rss_bytes'], 150 * 1024 * 1024);
     });
 
-    test('sustained growth reports leak_suspect', () async {
+    test('sustained RSS regression is a trend, not a leak verdict', () async {
       Map<String, dynamic>? props;
       FastTrackMcpMemoryMonitor.debugOnReport = (_, p) async => props = p;
 
@@ -268,19 +271,23 @@ void main() {
         sampleInterval: const Duration(hours: 1),
         reportCoolDown: Duration.zero,
         growthStreak: 2,
-        minGrowthBytes: step,
+        minGrowthBytes: step ~/ 2,
+        warmup: Duration.zero,
+        growthSustain: Duration.zero,
         pressureBytes: 0, // disable pressure path
       );
 
       var rss = 10 * 1024 * 1024;
-      await FastTrackMcpMemoryMonitor.debugSampleRss(rss);
+      await FastTrackMcpMemoryMonitor.debugSampleRss(rss, atMs: 0);
       rss += step;
-      await FastTrackMcpMemoryMonitor.debugSampleRss(rss);
+      await FastTrackMcpMemoryMonitor.debugSampleRss(rss, atMs: 3600000);
       rss += step;
-      await FastTrackMcpMemoryMonitor.debugSampleRss(rss);
+      await FastTrackMcpMemoryMonitor.debugSampleRss(rss, atMs: 7200000);
 
       expect(props?['type'], 'memory_growth');
-      expect(props?['severity'], 'leak_suspect');
+      expect(props?['severity'], 'trend');
+      expect(props?['leak_confirmed'], false);
+      expect(props?['evidence'], 'rss_regression');
       expect(props?['growth_streak'], 2);
       expect((props?['growth_bytes'] as num), greaterThanOrEqualTo(step * 2));
     });
@@ -313,8 +320,12 @@ void main() {
         reportCoolDown: const Duration(minutes: 5),
         pressureBytes: 50 * 1024 * 1024,
       );
-      await FastTrackMcpMemoryMonitor.debugSampleRss(80 * 1024 * 1024);
-      await FastTrackMcpMemoryMonitor.debugSampleRss(90 * 1024 * 1024);
+      for (var i = 0; i < 5; i++) {
+        await FastTrackMcpMemoryMonitor.debugSampleRss(80 * 1024 * 1024,
+            atMs: i * 3600000);
+      }
+      await FastTrackMcpMemoryMonitor.debugSampleRss(90 * 1024 * 1024,
+          atMs: 5 * 3600000);
 
       expect(count, 1);
     });

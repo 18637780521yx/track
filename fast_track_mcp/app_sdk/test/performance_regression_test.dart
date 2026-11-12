@@ -154,11 +154,15 @@ void main() {
         sampleInterval: const Duration(hours: 1),
         growthStreak: 2,
         minGrowthBytes: 1,
+        warmup: Duration.zero,
+        growthSustain: Duration.zero,
         pressureBytes: 100);
-    await FastTrackMcpMemoryMonitor.debugSampleRss(10);
-    await FastTrackMcpMemoryMonitor.debugSampleRss(20);
-    final growth = FastTrackMcpMemoryMonitor.debugSampleRss(30);
-    await FastTrackMcpMemoryMonitor.debugSampleRss(110);
+    await FastTrackMcpMemoryMonitor.debugSampleRss(10, atMs: 0);
+    await FastTrackMcpMemoryMonitor.debugSampleRss(20, atMs: 3600000);
+    final growth = FastTrackMcpMemoryMonitor.debugSampleRss(30, atMs: 7200000);
+    for (var i = 3; i < 8; i++) {
+      await FastTrackMcpMemoryMonitor.debugSampleRss(110, atMs: i * 3600000);
+    }
     release.complete();
     await growth;
     expect(types, ['memory_growth', 'memory_pressure']);

@@ -77,8 +77,12 @@ void main() {
     ]);
     await FastTrackMcpJankMonitor.debugFlushWindow();
     FastTrackMcpMemoryMonitor.start(
-        sampleInterval: const Duration(hours: 1), pressureBytes: 100);
-    await FastTrackMcpMemoryMonitor.debugSampleRss(200);
+        sampleInterval: const Duration(hours: 1),
+        pressureBytes: 100,
+        enableVmMonitoring: false);
+    for (var i = 0; i < 5; i++) {
+      await FastTrackMcpMemoryMonitor.debugSampleRss(200, atMs: i * 3600000);
+    }
     expect(records, containsAll(['app_jank', 'app_memory_leak']));
     expect(flushes, 0);
   });

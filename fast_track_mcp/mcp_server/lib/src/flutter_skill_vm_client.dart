@@ -776,7 +776,8 @@ class FlutterSkillVmClient implements FlutterSkillClient {
         gc: true,
       );
       final mem = profile.memoryUsage;
-      final classes = profile.members ?? const [];
+      final classes = [...?profile.members]
+        ..sort((a, b) => (b.bytesCurrent ?? 0).compareTo(a.bytesCurrent ?? 0));
       final top = classes.take(8).map((c) {
         return <String, dynamic>{
           'class': c.classRef?.name,

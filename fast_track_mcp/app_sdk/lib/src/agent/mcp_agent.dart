@@ -69,6 +69,8 @@ class FastTrackMcp {
     bool enableJankMonitor = true,
     int? jankFpsTarget,
     bool enableMemoryMonitor = true,
+    int memoryPressureBytes = 512 * 1024 * 1024,
+    bool enableVmMemoryMonitoring = true,
     bool leakOnlineEnabled = false,
     double leakSampleRate = 0.0,
     void Function(Map<String, dynamic> event)? onLeakOnlineEvent,
@@ -96,7 +98,10 @@ class FastTrackMcp {
       FastTrackMcpJankMonitor.start(fpsTarget: jankFpsTarget);
     }
     if (enableMemoryMonitor) {
-      FastTrackMcpMemoryMonitor.start();
+      FastTrackMcpMemoryMonitor.start(
+        pressureBytes: memoryPressureBytes,
+        enableVmMonitoring: enableVmMemoryMonitoring,
+      );
     }
 
     TransitionLeakTracker.instance.configure(

@@ -590,6 +590,11 @@ body {
   list-style: none;
   padding: 8px 10px;
 }
+.rpt-alert-card.is-memory {
+  background: #fffbe6;
+  border-color: #ffe58f;
+  color: #875600;
+}
 .rpt-alert-card > summary::-webkit-details-marker { display: none; }
 .rpt-alert-card > summary::before { content: "▸ "; color: #c27772; }
 .rpt-alert-card[open] > summary::before { content: "▾ "; }

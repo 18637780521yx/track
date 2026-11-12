@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -8,13 +7,16 @@ import 'package:flutter/painting.dart';
 import '../network/network_capture.dart';
 import 'detect_sink.dart';
 import 'event_names.dart';
+import 'memory_evidence.dart';
+import 'vm_memory_monitor.dart';
 
 /// 内存泄漏 / 内存压力启发式监测（生产可用、轻量）。
 ///
 /// **不是**对象级 WeakRef 根因分析（那是 perf-agent / DevTools 的活）。
 /// 这里定期采样进程 RSS（[ProcessInfo.currentRss]），识别：
-/// - **growth**：连续 N 次采样单调上涨且每次超过最小增量 → 疑似泄漏
-/// - **pressure**：RSS 超过绝对水位
+/// - **growth**：预热后滑动窗口回归 + 持续增长（仅趋势证据）
+/// - **pressure**：最近 5 次有 4 次超过可配置预算
+/// Debug/Profile 可通过 VM 采集堆与 GC；Release 只走轻量 RSS。
 ///
 /// 上报事件名 [FastTrackMcpEventName.appMemoryLeak]，带冷却，避免刷屏。
 class FastTrackMcpMemoryMonitor {
@@ -32,10 +34,15 @@ class FastTrackMcpMemoryMonitor {
   static Duration _coolDown = _defaultCoolDown;
   static int _growthStreak = _defaultGrowthStreak;
   static int _minGrowthBytes = _defaultMinGrowthBytes;
-  static int _pressureBytes = _defaultPressureBytes;
 
-  static final ListQueue<int> _rssHistory = ListQueue<int>();
+  static MemoryGrowthWindow? _growth;
+  static MemoryBudgetWindow? _budget;
+  static VmMemoryMonitor? _vm;
+  static final Stopwatch _elapsed = Stopwatch();
+  static int _generation = 0;
+  static String _runId = '';
   static final Map<String, DateTime> _lastReportAt = {};
+  static final Map<String, String> _lastEpisode = {};
   static final Set<String> _reportingTypes = {};
   static int? _baselineRss;
 
@@ -56,6 +63,9 @@ class FastTrackMcpMemoryMonitor {
     int growthStreak = _defaultGrowthStreak,
     int minGrowthBytes = _defaultMinGrowthBytes,
     int pressureBytes = _defaultPressureBytes,
+    Duration warmup = const Duration(seconds: 30),
+    Duration growthSustain = const Duration(seconds: 30),
+    bool enableVmMonitoring = true,
     Future<void> Function(Map<String, dynamic> properties)? onMemory,
     @visibleForTesting int Function()? rssReader,
   }) {
@@ -64,28 +74,62 @@ class FastTrackMcpMemoryMonitor {
       debugPrint('[ftm] memory monitor skipped on web');
       return;
     }
-    if (sampleInterval <= Duration.zero) {
+    if (sampleInterval.inMilliseconds <= 0) {
       debugPrint('[ftm] memory monitor skipped: sampleInterval must be > 0');
       return;
     }
-    if (growthStreak < 2) growthStreak = 2;
+    growthStreak = growthStreak.clamp(2, 60);
     if (minGrowthBytes < 0) minGrowthBytes = 0;
 
     _sampleInterval = sampleInterval;
     _coolDown = reportCoolDown;
     _growthStreak = growthStreak;
     _minGrowthBytes = minGrowthBytes;
-    _pressureBytes = pressureBytes;
     _onMemory = onMemory;
     _rssReader = rssReader;
-    _rssHistory.clear();
+    final spacing = Duration(
+        milliseconds: (sampleInterval.inMilliseconds ~/ 2).clamp(1, 1 << 40));
+    _growth = MemoryGrowthWindow(
+      thresholdBytesPerSecond:
+          minGrowthBytes / (sampleInterval.inMilliseconds / 1000),
+      warmup: warmup,
+      window: sampleInterval * (growthStreak + 3),
+      minSpan: sampleInterval * growthStreak,
+      sustain: growthSustain,
+      minSamples: growthStreak + 1,
+      minSpacing: spacing,
+    );
+    _budget = MemoryBudgetWindow(pressureBytes, minSpacing: spacing);
+    _elapsed
+      ..reset()
+      ..start();
+    final generation = ++_generation;
+    _runId = DateTime.now().microsecondsSinceEpoch.toString();
     _baselineRss = null;
     _lastReportAt.clear();
+    _lastEpisode.clear();
 
     _timer?.cancel();
     _timer = Timer.periodic(sampleInterval, (_) => unawaited(_sample()));
 
     _started = true;
+    if (enableVmMonitoring &&
+        !kReleaseMode &&
+        rssReader == null &&
+        debugOnReport == null) {
+      _vm = VmMemoryMonitor(onSignal: (signal) async {
+        if (!_started || generation != _generation) return;
+        await _emit(
+          type: signal['type'] as String,
+          severity: signal['severity'] as String,
+          rss: _readRss(),
+          maxRss: ProcessInfo.maxRss,
+          imageCacheBytes: _imageCacheBytes(),
+          extra: signal,
+        );
+      });
+      unawaited(_vm!.start());
+    }
     debugPrint(
       '[ftm] memory monitor started '
       '(interval=${sampleInterval.inSeconds}s streak=$growthStreak '
@@ -98,9 +142,15 @@ class FastTrackMcpMemoryMonitor {
     _timer?.cancel();
     _timer = null;
     _started = false;
+    _generation++;
+    _elapsed.stop();
+    final vm = _vm;
+    _vm = null;
     _onMemory = null;
     _rssReader = null;
-    _rssHistory.clear();
+    _growth = null;
+    _budget = null;
+    await vm?.stop();
   }
 
   @visibleForTesting
@@ -114,7 +164,6 @@ class FastTrackMcpMemoryMonitor {
     _coolDown = _defaultCoolDown;
     _growthStreak = _defaultGrowthStreak;
     _minGrowthBytes = _defaultMinGrowthBytes;
-    _pressureBytes = _defaultPressureBytes;
   }
 
   /// 立刻采样一次（演示 / 诊断用）。
@@ -122,7 +171,8 @@ class FastTrackMcpMemoryMonitor {
 
   /// 测试用：手动喂一次 RSS（字节）。
   @visibleForTesting
-  static Future<void> debugSampleRss(int rssBytes) => _onRss(rssBytes);
+  static Future<void> debugSampleRss(int rssBytes, {int? atMs}) =>
+      _onRss(rssBytes, atMs: atMs);
 
   static Future<void> _sample() async {
     if (!_started) return;
@@ -137,18 +187,18 @@ class FastTrackMcpMemoryMonitor {
 
   static int _readRss() => ProcessInfo.currentRss;
 
-  static Future<void> _onRss(int rss) async {
+  static Future<void> _onRss(int rss, {int? atMs}) async {
+    if (!_started || rss <= 0) return;
+    final now = atMs ?? _elapsed.elapsedMilliseconds;
     _baselineRss ??= rss;
-    _rssHistory.addLast(rss);
-    while (_rssHistory.length > _growthStreak + 1) {
-      _rssHistory.removeFirst();
-    }
+    final pressure = _budget?.add(now, rss);
+    final growth = _growth?.add(now, rss);
 
     final imageCacheBytes = _imageCacheBytes();
     final maxRss = ProcessInfo.maxRss;
 
     // 1) 绝对水位
-    if (_pressureBytes > 0 && rss >= _pressureBytes) {
+    if (pressure != null) {
       await _emit(
         type: 'memory_pressure',
         severity: 'pressure',
@@ -156,46 +206,33 @@ class FastTrackMcpMemoryMonitor {
         maxRss: maxRss,
         imageCacheBytes: imageCacheBytes,
         extra: {
-          'pressure_bytes': _pressureBytes,
-          'over_pressure_bytes': rss - _pressureBytes,
+          ...pressure,
+          'confidence': 'likely',
+          'evidence': 'rss_budget',
         },
       );
       return;
     }
 
     // 2) 连续上涨
-    if (_rssHistory.length >= _growthStreak + 1 && _isSustainedGrowth()) {
-      final first = _rssHistory.first;
-      final last = _rssHistory.last;
+    if (growth != null) {
       await _emit(
         type: 'memory_growth',
-        severity: 'leak_suspect',
+        severity: 'trend',
         rss: rss,
         maxRss: maxRss,
         imageCacheBytes: imageCacheBytes,
         extra: {
-          'growth_bytes': last - first,
+          ...growth,
           'growth_streak': _growthStreak,
           'min_growth_bytes': _minGrowthBytes,
           'sample_interval_ms': _sampleInterval.inMilliseconds,
-          'window_ms': _sampleInterval.inMilliseconds * _growthStreak,
           'baseline_rss': _baselineRss,
-          'samples': List<int>.from(_rssHistory),
+          'confidence': 'suspect',
+          'evidence': 'rss_regression',
         },
       );
     }
-  }
-
-  static bool _isSustainedGrowth() {
-    final list = _rssHistory.toList(growable: false);
-    // 需要 growthStreak 段增量 → growthStreak+1 个点
-    if (list.length < _growthStreak + 1) return false;
-    final start = list.length - (_growthStreak + 1);
-    for (var i = start; i < list.length - 1; i++) {
-      final delta = list[i + 1] - list[i];
-      if (delta <= 0 || delta < _minGrowthBytes) return false;
-    }
-    return true;
   }
 
   static int? _imageCacheBytes() {
@@ -214,18 +251,29 @@ class FastTrackMcpMemoryMonitor {
     required int? imageCacheBytes,
     Map<String, dynamic>? extra,
   }) async {
-    if (_reportingTypes.contains(type)) return;
+    final generation = _generation;
+    final detectorKey = '$type:${extra?['resource_class'] ?? ''}';
+    final reportingKey = '$generation:$detectorKey';
+    final episode = '$_runId:$detectorKey:${extra?['episode_started_ms'] ?? 0}';
+    if (_reportingTypes.contains(reportingKey)) return;
     final now = DateTime.now();
-    if (_lastReportAt[type] != null &&
-        now.difference(_lastReportAt[type]!) < _coolDown) {
+    if (_lastEpisode[detectorKey] == episode &&
+        _lastReportAt[detectorKey] != null &&
+        now.difference(_lastReportAt[detectorKey]!) < _coolDown) {
       return;
     }
 
-    _reportingTypes.add(type);
-    _lastReportAt[type] = now;
+    _reportingTypes.add(reportingKey);
+    _lastReportAt[detectorKey] = now;
+    _lastEpisode[detectorKey] = episode;
     try {
       final route = FastTrackMcpNetwork.currentRoute();
       final props = <String, dynamic>{
+        'detector_version': 2,
+        'episode_id': episode,
+        'observation_scope': 'process',
+        'gc_verified': false,
+        'leak_confirmed': false,
         'type': type,
         'severity': severity,
         'rss_bytes': rss,
@@ -251,13 +299,13 @@ class FastTrackMcpMemoryMonitor {
         properties: props,
       );
       final onMemory = _onMemory;
-      if (onMemory != null) {
+      if (onMemory != null && _started && generation == _generation) {
         await onMemory(props);
       }
     } catch (e) {
       debugPrint('[ftm] memory report failed: $e');
     } finally {
-      _reportingTypes.remove(type);
+      _reportingTypes.remove(reportingKey);
     }
   }
 

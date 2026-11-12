@@ -130,6 +130,26 @@ const ALERT_META_KEYS = [
   'build_slow',
   'raster_slow',
   'window_ms',
+  'growth_bytes',
+  'severity',
+  'evidence',
+  'gc_verified',
+  'occurrence_count',
+  'first_seen_at',
+  'last_seen_at',
+  'peak_rss_mb',
+  'confidence',
+  'episode_id',
+  'observation_scope',
+  'leak_confirmed',
+  'heap_bytes',
+  'external_bytes',
+  'growth_rate_bytes_per_sec',
+  'threshold_bytes_per_sec',
+  'sustained_ms',
+  'sample_count',
+  'budget_hits',
+  'budget_samples',
 ] as const;
 
 function alertStr(detail: Record<string, unknown>, key: string): string {
@@ -142,10 +162,12 @@ function AlertDetail({
   label,
   detail,
   ms,
+  memoryLevel,
 }: {
   label: string;
   detail?: Record<string, unknown>;
   ms?: number;
+  memoryLevel?: TimelineEvent['memoryLevel'];
 }) {
   const d = detail ?? {};
   const message =
@@ -169,7 +191,7 @@ function AlertDetail({
     : '';
 
   return (
-    <details className="rpt-alert-card">
+    <details className={`rpt-alert-card${memoryLevel ? ' is-memory' : ''}`}>
       <summary>
         <span className="rpt-ar-alert-icon">⚠</span>
         <span className="rpt-alert-summary-label">{label}</span>
@@ -177,6 +199,15 @@ function AlertDetail({
         <span className="rpt-alert-hint">查看详情</span>
       </summary>
       <div className="rpt-alert-body">
+        {memoryLevel && <p>{memoryLevel === 'trend'
+          ? '这是内存增长线索，可能包含正常加载和缓存；不能据此判定泄漏。RSS 残差还包含其他 isolate、共享页与分配器保留空间。合并次数表示收到的观测记录数。'
+          : memoryLevel === 'pressure'
+            ? '进程占用超过配置预算；需结合设备、业务场景与系统压力判断，不代表已经泄漏。'
+            : memoryLevel === 'gc'
+              ? 'GC 频繁可能源于短期大量分配；不代表对象泄漏，也不能仅凭次数推断 GC 暂停时长。'
+              : memoryLevel === 'resource'
+                ? '资源实例数量在窗口中持续增加；需结合生命周期和引用链判断是否属于正常业务。'
+                : '对象滞留或 GC 后堆底线增长是疑似泄漏证据。GC 已发生不代表具体对象已验证泄漏；仍需引用链分析确认。'}</p>}
         {meta.length > 0 && (
           <dl className="rpt-alert-meta">
             {meta.map(([k, v]) => (
@@ -215,7 +246,7 @@ function AlertDetail({
 
 function EventRow({ ev }: { ev: TimelineEvent }) {
   if (ev.type === 'alert') {
-    return <AlertDetail label={ev.label} detail={ev.detail} ms={ev.ms} />;
+    return <AlertDetail label={ev.label} detail={ev.detail} ms={ev.ms} memoryLevel={ev.memoryLevel} />;
   }
 
   const note =
@@ -379,7 +410,7 @@ function SessionDetail({ session, onBack }: { session: SessionReport; onBack: ()
             <span className="rpt-pill muted">avg FPS {session.avgFps.toFixed(1)}</span>
           )}
           {session.rssPeakMb != null && (
-            <span className="rpt-pill muted">RSS {session.rssPeakMb.toFixed(1)} MB</span>
+            <span className="rpt-pill muted">观测 RSS 峰值 {session.rssPeakMb.toFixed(1)} MB</span>
           )}
           <span className="rpt-pill muted">{session.actionCount} 操作</span>
           <span className="rpt-pill muted">{session.networkCount} 网络</span>
