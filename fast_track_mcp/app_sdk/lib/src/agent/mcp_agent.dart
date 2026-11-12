@@ -118,7 +118,7 @@ class FastTrackMcp {
 
     // Opt-in capture is restricted to Debug/Profile, including direct installs.
     if (enableHttpCapture && !kReleaseMode) {
-      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: true);
+      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: false);
     }
 
     // Background queue flushing is required in release as well.

@@ -84,7 +84,7 @@ Debug/Profile/Release 都可以调用。URL 查询参数放在 `url`，请求参
 await FastTrackMcp.ensureInitialized(enableHttpCapture: true);
 ```
 
-`enableHttpCapture` 默认 `false`，只在 Debug/Profile 生效，Release 始终不安装全局抓包。开关启用后记录请求头、参数和失败响应 body；仅能识别 HTTP/客户端错误，HTTP 200 的业务失败仍需业务通过 `record` 上报。请勿对同一个请求同时自动抓包和手动上报。开关用于首次初始化，修改后需重启应用；已创建的 HTTP 客户端需重新创建才能被代理。
+`enableHttpCapture` 默认 `false`，只在 Debug/Profile 生效，Release 始终不安装全局抓包。开关启用后记录请求头、请求 body 和响应 body（包括 HTTP 200）；仅能识别 HTTP/客户端错误，HTTP 200 的业务失败仍需业务通过 `record` 上报。请勿对同一个请求同时自动抓包和手动上报。开关用于首次初始化，修改后需重启应用；已创建的 HTTP 客户端需重新创建才能被代理。
 
 ## License
 

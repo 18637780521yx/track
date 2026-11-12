@@ -21,7 +21,8 @@ void main() {
       expect(HttpOverrides.current, same(installed));
       server.listen((request) async {
         await request.drain<void>();
-        request.response.statusCode = 500;
+        request.response.statusCode =
+            request.uri.path == '/success' ? 200 : 500;
         request.response.headers.contentType = ContentType.json;
         request.response.write('{"message":"failed"}');
         await request.response.close();
@@ -39,6 +40,20 @@ void main() {
       expect(record.requestHeaders?['x-test'], 'demo');
       expect(record.requestBody, contains('123'));
       expect(record.responseBody, contains('failed'));
+
+      // ensureInitialized's debug capture uses this policy: successful bodies
+      // remain visible too, independently of the business result.
+      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: false);
+      final successRequest = await client
+          .postUrl(Uri.parse('http://127.0.0.1:${server.port}/success'));
+      successRequest.headers.contentType = ContentType.json;
+      successRequest.write('{"id":456}');
+      final successResponse = await successRequest.close();
+      await successResponse.drain<void>();
+      final successRecord = PerfNetworkStore.instance.records.last;
+      expect(successRecord.statusCode, 200);
+      expect(successRecord.requestBody, contains('456'));
+      expect(successRecord.responseBody, contains('failed'));
     } finally {
       client?.close(force: true);
       HttpOverrides.global = previous;
