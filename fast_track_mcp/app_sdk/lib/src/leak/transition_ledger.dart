@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../detect/detect_sink.dart';
+import '../detect/jank_monitor.dart';
 import '../network/network_capture.dart';
 import 'leak_online.dart';
 import 'transition_leak_tracker.dart';
@@ -119,6 +120,7 @@ class TransitionLedger {
   void seedShell(String? route) {
     final to = _meaningfulRoute(route);
     if (to == null) return;
+    FastTrackMcpJankMonitor.markRoute(to);
     if (_stack.isEmpty) {
       _stack.add(to);
     } else {
@@ -163,7 +165,7 @@ class TransitionLedger {
       final logical = _meaningfulRoute(currentLogical);
       if (logical != null && logical != to) from = logical;
     }
-    if (from == null) from = stackTop;
+    from ??= stackTop;
     if (to != null) _stack.add(to);
     last = TransitionRecord(
       kind: kind,
@@ -333,12 +335,15 @@ class TransitionLedger {
   /// Always bury transition + landing page (report reconstruction; not gated
   /// on [LeakOnline]).
   void _trackTransition(TransitionRecord r) {
+    final frameEpoch = FastTrackMcpJankMonitor.markRoute(r.to,
+        force: r.kind == 'push' || r.kind == 'pop' || r.kind == 'replace');
     final at = r.at.toIso8601String();
     // ignore: unawaited_futures
     FastTrackMcpDetectSink.track(
       'app_transition',
       properties: {
         'kind': r.kind,
+        if (frameEpoch != null) 'frame_route_epoch': frameEpoch,
         if (r.from != null && r.from!.isNotEmpty) 'from': r.from,
         if (r.to != null && r.to!.isNotEmpty) 'to': r.to,
         'at': at,
@@ -351,6 +356,7 @@ class TransitionLedger {
         'app_page',
         properties: {
           'route': page,
+          if (frameEpoch != null) 'frame_route_epoch': frameEpoch,
           'via': r.kind,
           if (r.from != null && r.from!.isNotEmpty) 'from': r.from,
           'at': at,

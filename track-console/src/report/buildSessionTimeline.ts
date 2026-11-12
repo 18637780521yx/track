@@ -63,9 +63,11 @@ export interface TimelineEvent {
   ms?: number;
   detail?: Record<string, unknown>;
   memoryLevel?: 'trend' | 'pressure' | 'retained' | 'gc' | 'resource';
+  informational?: boolean;
 }
 
 export interface TimelineSegment {
+  frameRouteEpoch?: number;
   id: string;
   module: ModuleKind;
   title: string;
@@ -289,7 +291,17 @@ function alertLabel(e: EventRecord): string {
       const rasterSlow = propNum(e, 'raster_slow_frames');
       const buildMs = propNum(e, 'build_ms') ?? propNum(e, 'max_build_ms');
       const rasterMs = propNum(e, 'raster_ms') ?? propNum(e, 'max_raster_ms');
-      const bits = [kind];
+      const aggregateOnly = prop(e, 'frozen_reported_separately') === true &&
+        prop(e, 'jank_detected') !== true && prop(e, 'sustained_jank') !== true;
+      const bits = [propStr(e, 'severity') === 'latency' ? '帧延迟观测（非处理卡顿）'
+        : kind === 'frozen_frame' ? '冻结帧'
+        : aggregateOnly ? '帧统计（冻结帧另计）'
+        : prop(e, 'sustained_jank') === true ? '持续严重卡顿'
+        : prop(e, 'jank_detected') === true ? '卡顿窗口' : kind];
+      const late = propNum(e, 'late_start_frames');
+      if (late) bits.push(`开始处理晚×${late}`);
+      const rate = propNum(e, 'jank_rate');
+      if (rate != null) bits.push(`慢帧 ${(rate * 100).toFixed(1)}%`);
       if (ms != null) bits.push(`${Math.round(ms)}ms`);
       if (frozen) {
         bits.push(`frozen×${frozen}`);
@@ -471,7 +483,7 @@ function emptyPage(route: string, at: string, id: string): TimelineSegment {
 function recount(seg: TimelineSegment) {
   seg.actionCount = seg.events.filter((e) => e.type === 'action' || e.type === 'mcp').length;
   seg.networkCount = seg.events.filter((e) => e.type === 'network').length;
-  seg.alertCount = seg.events.filter((e) => e.type === 'alert' || !e.ok).length;
+  seg.alertCount = seg.events.filter((e) => !e.informational && (e.type === 'alert' || !e.ok)).length;
 }
 
 /** 从埋点按时间重建页面级时间线（对齐 MCP HTML report v4） */
@@ -745,6 +757,7 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
       } else if (to) {
         currentPage = emptyPage(to, at, `seg_${seq++}`);
       }
+      if (currentPage) currentPage.frameRouteEpoch = propNum(e, 'frame_route_epoch');
       continue;
     }
 
@@ -755,6 +768,9 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
         if (!(currentPage && currentPage.route === pageRoute)) {
           ensurePage(pageRoute, at);
         }
+      }
+      if (currentPage && propNum(e, 'frame_route_epoch') != null) {
+        currentPage.frameRouteEpoch = propNum(e, 'frame_route_epoch');
       }
       continue;
     }
@@ -890,6 +906,10 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
         at,
         label: alertLabel(e),
         ok: false,
+        informational: e.name === 'app_jank' && (
+          propStr(e, 'severity') === 'latency' ||
+          (prop(e, 'frozen_reported_separately') === true &&
+            prop(e, 'jank_detected') !== true && prop(e, 'sustained_jank') !== true)),
         memoryLevel: e.name === 'app_memory_leak'
           ? (propStr(e, 'type') === 'memory_pressure' ? 'pressure'
             : propStr(e, 'type') === 'gc_pressure' ? 'gc'
@@ -952,6 +972,18 @@ export function buildSegments(records: EventRecord[]): TimelineSegment[] {
           exitPage.events.push(alertEv);
           if (!exitPage.leakHint) exitPage.leakHint = alertEv.label;
           recount(exitPage);
+          continue;
+        }
+      }
+
+      if (e.name === 'app_jank' && route) {
+        const epoch = propNum(e, 'route_epoch');
+        const candidates = [...segments, ...(currentPage ? [currentPage] : [])].reverse();
+        const owner = (epoch != null
+          ? candidates.find(s => s.module === 'page' && s.route === route && s.frameRouteEpoch === epoch)
+          : undefined) ?? candidates.find(s => s.module === 'page' && s.route === route);
+        if (owner) {
+          owner.events.push(alertEv);
           continue;
         }
       }

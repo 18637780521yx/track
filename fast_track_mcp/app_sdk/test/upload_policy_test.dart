@@ -64,7 +64,11 @@ void main() {
   });
 
   test('frozen frames and memory pressure join the regular queue', () async {
-    FastTrackMcpJankMonitor.start(fpsTarget: 60, reportInterval: Duration.zero);
+    FastTrackMcpJankMonitor.start(enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        fpsTarget: 60,
+        reportInterval: Duration.zero);
     FastTrackMcpJankMonitor.debugHandleTimings([
       FrameTiming(
         vsyncStart: 0,

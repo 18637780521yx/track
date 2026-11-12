@@ -12,6 +12,8 @@ Flutter **性能检测 + Bridge** App SDK。事件上报走 [`flutter_fast_track
 内存检测包含 RSS 窗口趋势、多次超预算检查，以及 Debug/Profile 的 VM 堆 / GC / 异步资源证据。
 趋势不等于泄漏，详细规则与配置见 [内存监测说明](../../doc/memory-monitoring.md)。
 
+帧监测包含 UI 迟启动、慢帧占比、持续严重卡顿、启动预热和页面访问隔离，见 [帧监测说明](../../doc/jank-monitoring.md)。
+
 ## Install
 
 ```yaml

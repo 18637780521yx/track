@@ -150,6 +150,20 @@ const ALERT_META_KEYS = [
   'sample_count',
   'budget_hits',
   'budget_samples',
+  'jank_detected',
+  'sustained_jank',
+  'severe_frames',
+  'late_start_frames',
+  'max_start_delay_ms',
+  'start_delay_ms',
+  'jank_rate',
+  'jank_rate_threshold',
+  'lifecycle_phase',
+  'route_epoch',
+  'observed_span_ms',
+  'window_mode',
+  'window_capacity',
+  'frozen_reported_separately',
 ] as const;
 
 function alertStr(detail: Record<string, unknown>, key: string): string {
@@ -163,11 +177,13 @@ function AlertDetail({
   detail,
   ms,
   memoryLevel,
+  informational,
 }: {
   label: string;
   detail?: Record<string, unknown>;
   ms?: number;
   memoryLevel?: TimelineEvent['memoryLevel'];
+  informational?: boolean;
 }) {
   const d = detail ?? {};
   const message =
@@ -191,7 +207,7 @@ function AlertDetail({
     : '';
 
   return (
-    <details className={`rpt-alert-card${memoryLevel ? ' is-memory' : ''}`}>
+    <details className={`rpt-alert-card${memoryLevel || informational ? ' is-memory' : ''}`}>
       <summary>
         <span className="rpt-ar-alert-icon">⚠</span>
         <span className="rpt-alert-summary-label">{label}</span>
@@ -246,7 +262,7 @@ function AlertDetail({
 
 function EventRow({ ev }: { ev: TimelineEvent }) {
   if (ev.type === 'alert') {
-    return <AlertDetail label={ev.label} detail={ev.detail} ms={ev.ms} memoryLevel={ev.memoryLevel} />;
+    return <AlertDetail label={ev.label} detail={ev.detail} ms={ev.ms} memoryLevel={ev.memoryLevel} informational={ev.informational} />;
   }
 
   const note =

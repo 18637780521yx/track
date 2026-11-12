@@ -51,7 +51,12 @@ void main() {
       reports.add(props);
       if (reports.length == 1) await release.future;
     };
-    FastTrackMcpJankMonitor.start(fpsTarget: 60, reportInterval: Duration.zero);
+    FastTrackMcpJankMonitor.start(
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        fpsTarget: 60,
+        reportInterval: Duration.zero);
     FastTrackMcpJankMonitor.debugHandleTimings([frame(700000, 100000)]);
     final flushed = FastTrackMcpJankMonitor.debugFlushWindow();
     expect(reports.map((p) => p['type']), ['frozen_frame']);
@@ -69,7 +74,12 @@ void main() {
       if (reports.length == 1) await release.future;
     };
     FastTrackMcpJankMonitor.start(
-        fpsTarget: 60, reportInterval: Duration.zero, minSlowFramesToReport: 1);
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        fpsTarget: 60,
+        reportInterval: Duration.zero,
+        minSlowFramesToReport: 1);
     final futures = <Future<void>>[];
     for (var i = 0; i < 4; i++) {
       FastTrackMcpJankMonitor.debugHandleTimings([frame(20000, 2000)]);
@@ -78,8 +88,8 @@ void main() {
     release.complete();
     await Future.wait(futures);
     expect(reports, hasLength(2));
-    expect(reports.last['total_frames'], 3);
-    expect(reports.last['slow_frames'], 3);
+    expect(reports.last['total_frames'], 4);
+    expect(reports.last['slow_frames'], 4);
     expect(reports.last['jank_rate'], 1);
   });
 
@@ -88,7 +98,12 @@ void main() {
     final reports = <Map<String, dynamic>>[];
     FastTrackMcpJankMonitor.debugOnReport = (_, p) async => reports.add(p);
     FastTrackMcpJankMonitor.start(
-        fpsTarget: 60, reportInterval: Duration.zero, minSlowFramesToReport: 1);
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        fpsTarget: 60,
+        reportInterval: Duration.zero,
+        minSlowFramesToReport: 1);
     FastTrackMcpJankMonitor.debugHandleTimings([
       frame(10000, 10000, wait: 10000),
       frame(20000, 1000),
@@ -104,6 +119,9 @@ void main() {
     final reports = <Map<String, dynamic>>[];
     FastTrackMcpJankMonitor.debugOnReport = (_, p) async => reports.add(p);
     FastTrackMcpJankMonitor.start(
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
         fpsTarget: 120,
         reportInterval: Duration.zero,
         minSlowFramesToReport: 1);
@@ -119,7 +137,11 @@ void main() {
     final reports = <Map<String, dynamic>>[];
     FastTrackMcpJankMonitor.debugOnReport = (_, p) async => reports.add(p);
     FastTrackMcpJankMonitor.start(
-        reportInterval: Duration.zero, minSlowFramesToReport: 1);
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        reportInterval: Duration.zero,
+        minSlowFramesToReport: 1);
     FastTrackMcpJankMonitor.debugHandleTimings([frame(10000, 1000)]);
     await FastTrackMcpJankMonitor.debugFlushWindow();
     expect(reports, isEmpty);
@@ -134,7 +156,12 @@ void main() {
     final reports = <Map<String, dynamic>>[];
     FastTrackMcpJankMonitor.debugOnReport = (_, p) async => reports.add(p);
     FastTrackMcpJankMonitor.start(
-        fpsTarget: 60, reportInterval: Duration.zero, minSlowFramesToReport: 1);
+        enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
+        fpsTarget: 60,
+        reportInterval: Duration.zero,
+        minSlowFramesToReport: 1);
     FastTrackMcpJankMonitor.debugHandleTimings([frame(10000, 10000)]);
     await FastTrackMcpJankMonitor.debugFlushWindow();
     expect(reports.single['severity'], 'latency');

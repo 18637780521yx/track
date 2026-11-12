@@ -68,6 +68,7 @@ class FastTrackMcp {
     Duration anrTimeout = const Duration(seconds: 5),
     bool enableJankMonitor = true,
     int? jankFpsTarget,
+    Duration jankWarmup = const Duration(seconds: 3),
     bool enableMemoryMonitor = true,
     int memoryPressureBytes = 512 * 1024 * 1024,
     bool enableVmMemoryMonitoring = true,
@@ -95,7 +96,8 @@ class FastTrackMcp {
       unawaited(FastTrackMcpAnrWatchdog.start(timeout: anrTimeout));
     }
     if (enableJankMonitor) {
-      FastTrackMcpJankMonitor.start(fpsTarget: jankFpsTarget);
+      FastTrackMcpJankMonitor.start(
+          fpsTarget: jankFpsTarget, warmup: jankWarmup);
     }
     if (enableMemoryMonitor) {
       FastTrackMcpMemoryMonitor.start(

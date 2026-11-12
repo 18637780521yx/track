@@ -1,7 +1,8 @@
 # Sleuth
 
-The memory monitoring design is informed by Sleuth 0.37.0 and 1.0.0's
-windowed growth, post-GC heap-floor, resource-count, and episode approaches.
+The memory and frame monitoring designs are informed by Sleuth 0.37.0 and 1.0.0's
+windowed growth, post-GC heap-floor, resource-count, episode, frame-budget,
+warmup, jank-pattern, and route-epoch approaches.
 The detectors here use this SDK's own collection and event pipeline.
 The upstream license is retained below.
 

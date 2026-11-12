@@ -181,7 +181,9 @@ void main() {
       Map<String, dynamic>? props;
       FastTrackMcpJankMonitor.debugOnReport = (_, p) async => props = p;
 
-      FastTrackMcpJankMonitor.start(
+      FastTrackMcpJankMonitor.start(enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
         fpsTarget: 60,
         reportInterval: Duration.zero,
         minSlowFramesToReport: 2,
@@ -202,7 +204,9 @@ void main() {
       Map<String, dynamic>? props;
       FastTrackMcpJankMonitor.debugOnReport = (_, p) async => props = p;
 
-      FastTrackMcpJankMonitor.start(
+      FastTrackMcpJankMonitor.start(enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
         fpsTarget: 60,
         frozenFrameThreshold: const Duration(milliseconds: 700),
         reportInterval: Duration.zero,
@@ -223,7 +227,9 @@ void main() {
       var called = false;
       FastTrackMcpJankMonitor.debugOnReport = (_, __) async => called = true;
 
-      FastTrackMcpJankMonitor.start(
+      FastTrackMcpJankMonitor.start(enableFrozenFrameAlerts: true,
+        warmup: Duration.zero,
+        minSampleFrames: 1,
         fpsTarget: 60,
         minSlowFramesToReport: 3,
         reportInterval: Duration.zero,
