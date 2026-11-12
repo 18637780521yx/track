@@ -1,6 +1,6 @@
 name: fast_track_mcp_protocol
 description: Shared wire contract (code/data/msg) for Fast Track MCP Bridge + MCP.
-version: 0.10.0
+version: 0.10.1
 homepage: https://github.com/18637780521yx/track
 repository: https://github.com/18637780521yx/track
 issue_tracker: https://github.com/18637780521yx/track/issues
