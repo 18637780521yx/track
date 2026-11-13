@@ -11,10 +11,10 @@ router = APIRouter(prefix="/api/v1/stability")
 
 
 @router.get("/overview")
-async def overview(request: Request):
+async def overview(request: Request, app_package: str = ""):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
-        return await stability.overview(get_pool(), frm, to)
+        return await stability.overview(get_pool(), frm, to, app_package)
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
 
@@ -25,11 +25,12 @@ async def list_issues(
     kind: str = "",
     limit: int = 50,
     offset: int = 0,
+    app_package: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
         items, total = await stability.list_issues(
-            get_pool(), frm, to, kind=kind, limit=limit, offset=offset
+            get_pool(), frm, to, kind=kind, limit=limit, offset=offset, app_package=app_package
         )
         return {"items": items, "total": total}
     except Exception as exc:
@@ -37,9 +38,9 @@ async def list_issues(
 
 
 @router.get("/issues/{fingerprint}")
-async def get_issue(fingerprint: str, limit: int = 50, offset: int = 0):
+async def get_issue(fingerprint: str, limit: int = 50, offset: int = 0, app_package: str = ""):
     try:
-        detail = await stability.get_issue(get_pool(), fingerprint, limit=limit, offset=offset)
+        detail = await stability.get_issue(get_pool(), fingerprint, limit=limit, offset=offset, app_package=app_package)
         if detail is None:
             return JSONResponse({"error": "issue not found"}, status_code=404)
         return detail

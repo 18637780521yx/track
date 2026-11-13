@@ -199,8 +199,17 @@ async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime) -> OverviewS
     return stats
 
 
-async def event_names(pool: asyncpg.Pool, q: str) -> list[NamedCount]:
+async def event_names(pool: asyncpg.Pool, q: str, app_package: str = "") -> list[NamedCount]:
     q = (q or "").strip()
+    if app_package:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT name, COUNT(*) AS cnt FROM events
+                   WHERE common_properties->>'app_package' = $1 AND name ILIKE $2
+                   GROUP BY name ORDER BY cnt DESC LIMIT 100""",
+                app_package, f"%{q}%",
+            )
+        return [NamedCount(name=r["name"], count=int(r["cnt"])) for r in rows]
     async with pool.acquire() as conn:
         if not q:
             rows = await conn.fetch(
@@ -228,6 +237,7 @@ async def event_trend(
     to: datetime,
     unit: str,
     filters: list[EventFilter] | None,
+    app_package: str = "",
 ) -> list[EventTrendPoint]:
     trunc = "day"
     if unit == "hour":
@@ -244,7 +254,10 @@ async def event_trend(
         WHERE event_time >= $1 AND event_time < $2
     """
     args: list[Any] = [frm, to]
-    next_idx = 3
+    if app_package:
+        query += f" AND common_properties->>'app_package' = ${len(args) + 1}"
+        args.append(app_package)
+    next_idx = len(args) + 1
     if event_name:
         query += f" AND name = ${next_idx}"
         args.append(event_name)
@@ -269,13 +282,14 @@ async def list_events(
     limit: int,
     offset: int,
     filters: list[EventFilter] | None,
+    app_package: str = "",
 ) -> tuple[list[EventRecord], int]:
     # crash / error / anr 入库时只进 stability_events，会话报告按事件名拉列表时从那边回读
     from app.services.stability import is_stability_event, list_stability_as_events
 
     if event_name and is_stability_event(event_name):
         return await list_stability_as_events(
-            pool, event_name, frm, to, limit, offset, filters
+            pool, event_name, frm, to, limit, offset, filters, app_package
         )
 
     if limit <= 0:
@@ -285,7 +299,10 @@ async def list_events(
 
     where = "WHERE event_time >= $1 AND event_time < $2"
     args: list[Any] = [frm, to]
-    next_idx = 3
+    if app_package:
+        where += f" AND common_properties->>'app_package' = ${len(args) + 1}"
+        args.append(app_package)
+    next_idx = len(args) + 1
     if event_name:
         where += f" AND name = ${next_idx}"
         args.append(event_name)
@@ -312,7 +329,7 @@ async def list_events(
 
 
 async def property_values(
-    pool: asyncpg.Pool, source: str, field: str, event_name: str, limit: int
+    pool: asyncpg.Pool, source: str, field: str, event_name: str, limit: int, app_package: str = ""
 ) -> list[str]:
     field = (field or "").strip()
     if not SAFE_JSON_KEY.match(field):
@@ -329,7 +346,10 @@ async def property_values(
         WHERE COALESCE({col}->>'{field}', '') <> ''
     """
     args: list[Any] = []
-    next_idx = 1
+    if app_package:
+        query += f" AND common_properties->>'app_package' = ${len(args) + 1}"
+        args.append(app_package)
+    next_idx = len(args) + 1
     if event_name:
         query += f" AND name = ${next_idx}"
         args.append(event_name)
@@ -343,7 +363,7 @@ async def property_values(
 
 
 async def funnel(
-    pool: asyncpg.Pool, steps: list[str], frm: datetime, to: datetime, window_hours: int
+    pool: asyncpg.Pool, steps: list[str], frm: datetime, to: datetime, window_hours: int, app_package: str = ""
 ) -> FunnelResult:
     if not steps:
         return FunnelResult(steps=[])
@@ -353,7 +373,11 @@ async def funnel(
 
     cte = "WITH "
     args: list[Any] = [frm, to]
-    arg_idx = 3
+    scope = ""
+    if app_package:
+        args.append(app_package)
+        scope = "AND common_properties->>'app_package' = $3"
+    arg_idx = len(args) + 1
     uid = _resolved_user_sql("events")
     euid = _resolved_user_sql("e")
     for i, step in enumerate(steps):
@@ -363,7 +387,7 @@ async def funnel(
                     SELECT DISTINCT {uid} AS user_id,
                            MIN(event_time) AS step_time
                     FROM events
-                    WHERE event_time >= $1 AND event_time < $2 AND name = ${arg_idx}
+                    WHERE event_time >= $1 AND event_time < $2 AND name = ${arg_idx} {scope}
                     GROUP BY 1
                 )"""
             args.append(step)
@@ -374,7 +398,7 @@ async def funnel(
                     SELECT s.user_id, MIN(e.event_time) AS step_time
                     FROM step{i - 1} s
                     JOIN events e ON {euid} = s.user_id
-                    WHERE e.name = ${arg_idx}
+                    WHERE e.name = ${arg_idx} {scope}
                       AND e.event_time > s.step_time
                       AND e.event_time <= s.step_time + INTERVAL '{window}'
                     GROUP BY s.user_id
@@ -414,6 +438,7 @@ async def retention(
     frm: datetime,
     to: datetime,
     days: int,
+    app_package: str = "",
 ) -> RetentionResult:
     if days <= 0:
         days = 7
@@ -422,6 +447,11 @@ async def retention(
     if not return_event:
         return_event = cohort_event
 
+    args = [cohort_event, frm, to, return_event, days]
+    scope = ""
+    if app_package:
+        args.append(app_package)
+        scope = "AND common_properties->>'app_package' = $6"
     day_list = list(range(days + 1))
     async with pool.acquire() as conn:
         rows = await conn.fetch(
@@ -432,7 +462,7 @@ async def retention(
                     DATE(MIN(event_time) AT TIME ZONE 'UTC') AS cohort_date
                 FROM events
                 WHERE name = $1
-                  AND event_time >= $2 AND event_time < $3
+                  AND event_time >= $2 AND event_time < $3 {scope}
                 GROUP BY 1
             ),
             returns AS (
@@ -443,7 +473,7 @@ async def retention(
                 FROM cohort c
                 JOIN events e ON {_resolved_user_sql('e')} = c.user_id
                 WHERE e.name = $4
-                  AND e.event_time >= $2 AND e.event_time < $3
+                  AND e.event_time >= $2 AND e.event_time < $3 {scope}
             )
             SELECT
                 TO_CHAR(cohort_date, 'YYYY-MM-DD') AS cohort_date,
@@ -467,11 +497,7 @@ async def retention(
             GROUP BY cohort_date, day_offset
             ORDER BY cohort_date, day_offset
             """,
-            cohort_event,
-            frm,
-            to,
-            return_event,
-            days,
+            *args,
         )
 
     row_map: dict[str, RetentionRow] = {}
@@ -495,7 +521,7 @@ async def retention(
 
 
 async def list_users(
-    pool: asyncpg.Pool, query: str, limit: int, offset: int
+    pool: asyncpg.Pool, query: str, limit: int, offset: int, app_package: str = ""
 ) -> tuple[list[UserRecord], int]:
     if limit <= 0:
         limit = 50
@@ -509,15 +535,26 @@ async def list_users(
         FROM users
     """
     args: list[Any] = []
+    conditions = []
+    if app_package:
+        args.append(app_package)
+        conditions.append(f"""EXISTS (
+            SELECT 1 FROM events
+            WHERE common_properties->>'app_package' = $1
+              AND {_resolved_user_sql('events')} = users.user_id
+        )""")
     if query:
-        filt = """
-            WHERE user_id ILIKE $1
-               OR COALESCE(distinct_id, '') ILIKE $1
-               OR anonymous_id ILIKE $1
+        filt = f"""
+            (user_id ILIKE ${len(args)+1}
+               OR COALESCE(distinct_id, '') ILIKE ${len(args)+1}
+               OR anonymous_id ILIKE ${len(args)+1})
         """
-        count_q += filt
-        list_q += filt
+        conditions.append(filt)
         args.append(f"%{query}%")
+    if conditions:
+        where = " WHERE " + " AND ".join(conditions)
+        count_q += where
+        list_q += where
     list_q += f" ORDER BY last_seen_at DESC LIMIT ${len(args)+1} OFFSET ${len(args)+2}"
 
     async with pool.acquire() as conn:
@@ -561,6 +598,7 @@ async def list_user_events(
     offset: int,
     order: str = "desc",
     event_name: str = "",
+    app_package: str = "",
 ) -> tuple[list[EventRecord], int] | None:
     user = await get_user(pool, user_id)
     if user is None:
@@ -582,6 +620,9 @@ async def list_user_events(
           AND (distinct_id = ANY($3) OR anonymous_id = ANY($3))
     """
     args: list[Any] = [frm, to, ids]
+    if app_package:
+        where += f" AND common_properties->>'app_package' = ${len(args) + 1}"
+        args.append(app_package)
     if name_filter:
         where += f" AND name = ${len(args) + 1}"
         args.append(name_filter)

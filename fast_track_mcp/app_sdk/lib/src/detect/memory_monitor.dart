@@ -114,7 +114,6 @@ class FastTrackMcpMemoryMonitor {
 
     _started = true;
     if (enableVmMonitoring &&
-        !kReleaseMode &&
         rssReader == null &&
         debugOnReport == null) {
       _vm = VmMemoryMonitor(onSignal: (signal) async {

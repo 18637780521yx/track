@@ -213,7 +213,6 @@ class FastTrackMcpNetwork {
     bool? captureBodyOnFailureOnly,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode && !allowInRelease) return;
     PerfNetworkStore.instance.maxBodyBytes = maxBodyBytes;
     PerfNetworkStore.instance.capacity = capacity;
     if (excludeUrlSubstrings != null) {

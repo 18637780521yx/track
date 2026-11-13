@@ -1,7 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:fast_track_mcp_protocol/fast_track_mcp_protocol.dart';
 
-import 'leak_online.dart';
 import '../network/network_capture.dart';
 import '../session/perf_snapshot.dart';
 
@@ -158,8 +157,7 @@ class TransitionLeakTracker {
     if (requireMultiRound != null) this.requireMultiRound = requireMultiRound;
     if (alertOnRssRetain != null) this.alertOnRssRetain = alertOnRssRetain;
     if (leakVmDeepProbe != null) {
-      // Never enable VM deep probe on the device release path.
-      this.leakVmDeepProbe = kReleaseMode ? false : leakVmDeepProbe;
+      this.leakVmDeepProbe = leakVmDeepProbe;
     }
   }
 
@@ -174,9 +172,7 @@ class TransitionLeakTracker {
     return false;
   }
 
-  /// Release tracks only when [LeakOnline.active]; debug/profile when [enabled].
-  bool get _allowTrack =>
-      enabled && (!kReleaseMode || LeakOnline.instance.active);
+  bool get _allowTrack => enabled;
 
   /// Register [resource] as owned by [route] (defaults to current route).
   void track(Object resource, {String? name, String? route}) {

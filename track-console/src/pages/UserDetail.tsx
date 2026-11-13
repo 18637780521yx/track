@@ -1,3 +1,4 @@
+import { useAppScope } from '../api/scope';
 import {
   Button,
   Card,
@@ -15,7 +16,7 @@ import {
 } from 'antd';
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, DateRange, EventRecord, UserRecord, defaultRange, normalizeRange } from '../api/client';
+import { DateRange, EventRecord, UserRecord, defaultRange, normalizeRange } from '../api/client';
 import { JsonPanel } from '../components/JsonPanel';
 
 const { RangePicker } = DatePicker;
@@ -91,6 +92,7 @@ async function copyText(text: string) {
 }
 
 export function UserDetailPage() {
+  const { api, appPackage } = useAppScope();
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const userId = decodeURIComponent(id);
@@ -204,6 +206,7 @@ export function UserDetailPage() {
                   复制
                 </Button>
                 <Popconfirm
+                  disabled={Boolean(appPackage)}
                   title="清空该用户全部终端日志？"
                   okText="删除"
                   cancelText="取消"

@@ -1,7 +1,8 @@
+import { useAppScope } from '../api/scope';
 import { AutoComplete, App, Button, Card, Col, DatePicker, Row, Segmented, Spin, Table } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { useEffect, useMemo, useState } from 'react';
-import { api, DateRange, defaultRange, normalizeRange } from '../api/client';
+import { DateRange, defaultRange, normalizeRange } from '../api/client';
 import { JsonPanel } from '../components/JsonPanel';
 import {
   PropertyFilterBar,
@@ -15,6 +16,7 @@ const { RangePicker } = DatePicker;
 type EnvValue = '' | 'sandbox' | 'production';
 
 export function EventAnalysisPage() {
+  const { api } = useAppScope();
   const { message } = App.useApp();
   const [range, setRange] = useState<DateRange>(defaultRange());
   const [eventNames, setEventNames] = useState<string[]>([]);

@@ -35,12 +35,17 @@ class FastTrackMcp {
 
   static Future<void>? get ready => _startFuture;
 
-  /// Release 下启转场观察者 / 手势（仍不启 Bridge）。由宿主在 init 后置 true。
-  static bool releaseUiHooks = false;
+  static bool _enableRouteTracking = true;
+
+  @Deprecated('Use enableRouteTracking in ensureInitialized instead.')
+  static bool get releaseUiHooks => _enableRouteTracking;
+
+  @Deprecated('Use enableRouteTracking in ensureInitialized instead.')
+  static set releaseUiHooks(bool enabled) => _enableRouteTracking = enabled;
 
   static List<NavigatorObserver> get navigatorObservers =>
       getx_hook.perfNavigatorObservers(
-        enabled: !kReleaseMode || LeakOnline.instance.active || releaseUiHooks,
+        enabled: _enableRouteTracking,
       );
 
   static List<GetPage<dynamic>> instrumentGetPages(
@@ -50,14 +55,15 @@ class FastTrackMcp {
 
   /// 请在 [FastTrackMcpCrashHandler.run] 内先 [FastTracker.init]，再调本方法。
   /// Set [enableHttpCapture] to true to install HTTP capture in any build mode.
-  /// Release builds capture request and response bodies only for failures.
   static Future<void> ensureInitialized({
     String host = '127.0.0.1',
     int port = 19288,
     int waitStableMs = 500,
     bool enableFlutterSkill = true,
-    // Initial opt-in for Debug/Profile only. Release never installs a proxy.
+    bool enableGestureTracking = true,
+    bool enableRouteTracking = true,
     bool enableHttpCapture = false,
+    bool captureBodyOnFailureOnly = false,
     bool leakTrackEnabled = true,
     int transitionSettleMs = 1500,
     int leakConfirmRounds = 2,
@@ -82,6 +88,7 @@ class FastTrackMcp {
     await FastTrackMcpCrashHandler.ensureNativeInitialized();
     if (_initialized) return;
     _initialized = true;
+    _enableRouteTracking = enableRouteTracking;
 
     final leakHandler = onLeakOnlineEvent ??
         (wireLeakOnlineToFastTrack
@@ -122,13 +129,15 @@ class FastTrackMcp {
 
     if (enableHttpCapture) {
       FastTrackMcpNetwork.install(
-        captureBodyOnFailureOnly: kReleaseMode,
-        allowInRelease: true,
+        captureBodyOnFailureOnly: captureBodyOnFailureOnly,
       );
     }
 
     // Background queue flushing is required in release as well.
     AppLifecycleTracker.instance.ensureStarted();
+    if (enableGestureTracking) {
+      ManualGestureRecorder.instance.ensureStarted();
+    }
     if (kReleaseMode) {
       if (LeakOnline.instance.active) {
         debugPrint(
@@ -140,11 +149,6 @@ class FastTrackMcp {
       }
       return;
     }
-
-    // 生命周期优先于 flutter_skill，避免 skill 初始化失败时冷启动永远不埋点。
-    AppLifecycleTracker.instance.ensureStarted();
-    // 静默手势 → ui_tap / ui_scroll 埋点（无录制条 / 无本地报告）
-    ManualGestureRecorder.instance.ensureStarted();
 
     if (enableFlutterSkill) {
       try {

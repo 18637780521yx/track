@@ -61,11 +61,10 @@ export function MainLayout({ children, appPackage, onAppChange }: {
             数据分析平台
           </Typography.Text>
         </div>
-        {selectedKey === '/' && (
-          <div style={{ padding: '12px 16px 0' }}>
-            <label htmlFor="overview-app">概览应用</label>
+        <div style={{ padding: '12px 16px 0' }}>
+            <label htmlFor="track-app">应用</label>
             <Select
-              id="overview-app"
+              id="track-app"
               value={appPackage ?? ''}
               onChange={(value) => onAppChange(value || undefined)}
               loading={loadingApps}
@@ -81,7 +80,6 @@ export function MainLayout({ children, appPackage, onAppChange }: {
               ]}
             />
           </div>
-        )}
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}

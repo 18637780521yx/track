@@ -118,6 +118,10 @@ async def ingest_stability(conn: asyncpg.Connection, e: TrackEvent) -> bool:
 
     extras = {k: v for k, v in props.items() if k not in RESERVED_PROP_KEYS}
 
+    extras.pop("app_package", None)
+    if package := prop_string(common, "app_package"):
+        extras["app_package"] = package
+
     await conn.execute(
         """
         INSERT INTO stability_issues (
@@ -271,7 +275,33 @@ def _row_to_event(row: asyncpg.Record) -> StabilityEventRecord:
     )
 
 
-async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime) -> StabilityOverview:
+# Older stability events did not store the package. A session is usable for
+# attribution only when its recorded events identify a single app.
+_STABILITY_PACKAGE = """COALESCE(NULLIF(extras->>'app_package', ''), (
+    SELECT MIN(e.common_properties->>'app_package')
+    FROM events e
+    WHERE e.session_id = stability_events.session_id
+      AND stability_events.session_id NOT IN ('', 'unknown')
+    HAVING COUNT(DISTINCT NULLIF(e.common_properties->>'app_package', '')) = 1
+))"""
+
+
+def _scoped_issues(where: str) -> str:
+    return f"""
+        SELECT e.fingerprint, (ARRAY_AGG(e.kind ORDER BY event_time DESC))[1] AS kind,
+               (ARRAY_AGG(e.exception_type ORDER BY event_time DESC))[1] AS exception_type,
+               (ARRAY_AGG(e.message ORDER BY event_time DESC))[1] AS sample_message,
+               (ARRAY_AGG(e.stack ORDER BY event_time DESC))[1] AS sample_stack,
+               COUNT(*) AS occurrence_count, COUNT(DISTINCT NULLIF(e.user_id, '')) AS user_count,
+               MIN(event_time) AS first_seen_at, MAX(event_time) AS last_seen_at,
+               i.status
+        FROM (SELECT * FROM stability_events WHERE {where}) e
+        JOIN stability_issues i USING (fingerprint)
+        GROUP BY e.fingerprint, i.status
+    """
+
+
+async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime, app_package: str = "") -> StabilityOverview:
     from_date, to_date = inclusive_date_range(frm, to)
     to_exclusive = to_date.replace(hour=0, minute=0, second=0, microsecond=0)
     # inclusive end day: use next day exclusive
@@ -279,47 +309,52 @@ async def overview(pool: asyncpg.Pool, frm: datetime, to: datetime) -> Stability
 
     to_exclusive = to_exclusive + timedelta(days=1)
 
+    args: list[Any] = [from_date, to_exclusive]
+    scope = ""
+    if app_package:
+        args.append(app_package)
+        scope = f"AND {_STABILITY_PACKAGE} = $3"
+
     async with pool.acquire() as conn:
         counts = await conn.fetch(
-            """
+            f"""
             SELECT kind, COUNT(*)::bigint AS c
             FROM stability_events
-            WHERE event_time >= $1 AND event_time < $2
+            WHERE event_time >= $1 AND event_time < $2 {scope}
             GROUP BY kind
             """,
-            from_date,
-            to_exclusive,
+            *args,
         )
         by_kind = {r["kind"]: int(r["c"]) for r in counts}
-        issue_count = await conn.fetchval(
-            """
-            SELECT COUNT(*)::bigint FROM stability_issues
-            WHERE last_seen_at >= $1 AND last_seen_at < $2
-            """,
-            from_date,
-            to_exclusive,
-        )
+        if app_package:
+            issue_count = await conn.fetchval(
+                f"""SELECT COUNT(DISTINCT fingerprint) FROM stability_events
+                    WHERE event_time >= $1 AND event_time < $2 {scope}""", *args
+            )
+        else:
+            issue_count = await conn.fetchval(
+                """SELECT COUNT(*) FROM stability_issues
+                   WHERE last_seen_at >= $1 AND last_seen_at < $2""", *args
+            )
         affected = await conn.fetchval(
-            """
+            f"""
             SELECT COUNT(DISTINCT user_id)::bigint FROM stability_events
-            WHERE event_time >= $1 AND event_time < $2
+            WHERE event_time >= $1 AND event_time < $2 {scope}
               AND user_id IS NOT NULL AND user_id != ''
             """,
-            from_date,
-            to_exclusive,
+            *args,
         )
         trend_rows = await conn.fetch(
-            """
+            f"""
             SELECT DATE(event_time AT TIME ZONE 'UTC') AS d,
                    kind,
                    COUNT(*)::bigint AS c
             FROM stability_events
-            WHERE event_time >= $1 AND event_time < $2
+            WHERE event_time >= $1 AND event_time < $2 {scope}
             GROUP BY d, kind
             ORDER BY d
             """,
-            from_date,
-            to_exclusive,
+            *args,
         )
 
     trend_map: dict[str, dict[str, int]] = {}
@@ -355,6 +390,7 @@ async def list_issues(
     kind: str = "",
     limit: int = 50,
     offset: int = 0,
+    app_package: str = "",
 ) -> tuple[list[StabilityIssueSummary], int]:
     from datetime import timedelta
 
@@ -370,13 +406,22 @@ async def list_issues(
         where += f" AND kind = ${len(args) + 1}"
         args.append(kind)
 
+    if app_package:
+        where = where.replace("last_seen_at", "event_time")
+        where += f" AND {_STABILITY_PACKAGE} = ${len(args) + 1}"
+        args.append(app_package)
+        source = f"({_scoped_issues(where.removeprefix('WHERE '))}) issues"
+        where = ""
+    else:
+        source = "stability_issues"
+
     async with pool.acquire() as conn:
         total = await conn.fetchval(
-            f"SELECT COUNT(*)::bigint FROM stability_issues {where}", *args
+            f"SELECT COUNT(*)::bigint FROM {source} {where}", *args
         )
         rows = await conn.fetch(
             f"""
-            SELECT * FROM stability_issues
+            SELECT * FROM {source}
             {where}
             ORDER BY occurrence_count DESC, last_seen_at DESC
             LIMIT ${len(args) + 1} OFFSET ${len(args) + 2}
@@ -393,27 +438,34 @@ async def get_issue(
     fingerprint: str,
     limit: int = 50,
     offset: int = 0,
+    app_package: str = "",
 ) -> StabilityIssueDetail | None:
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
+    args: list[Any] = [fingerprint]
+    where = "fingerprint = $1"
+    if app_package:
+        where += f" AND {_STABILITY_PACKAGE} = $2"
+        args.append(app_package)
+        issue_query = _scoped_issues(where)
+    else:
+        issue_query = "SELECT * FROM stability_issues WHERE fingerprint = $1"
     async with pool.acquire() as conn:
-        issue_row = await conn.fetchrow(
-            "SELECT * FROM stability_issues WHERE fingerprint = $1", fingerprint
-        )
+        issue_row = await conn.fetchrow(issue_query, *args)
         if not issue_row:
             return None
         total = await conn.fetchval(
-            "SELECT COUNT(*)::bigint FROM stability_events WHERE fingerprint = $1",
-            fingerprint,
+            f"SELECT COUNT(*)::bigint FROM stability_events WHERE {where}",
+            *args,
         )
         rows = await conn.fetch(
-            """
+            f"""
             SELECT * FROM stability_events
-            WHERE fingerprint = $1
+            WHERE {where}
             ORDER BY event_time DESC
-            LIMIT $2 OFFSET $3
+            LIMIT ${len(args) + 1} OFFSET ${len(args) + 2}
             """,
-            fingerprint,
+            *args,
             limit,
             offset,
         )
@@ -453,6 +505,9 @@ def _stability_row_to_event_record(row: asyncpg.Record) -> EventRecord:
         props.setdefault("anr_source", row["anr_source"])
 
     common: dict[str, Any] = {}
+    if row["app_package"]:
+        common["app_package"] = row["app_package"]
+    props.pop("app_package", None)
     if row["app_version"]:
         common["app_version"] = row["app_version"]
     if row["app_build"]:
@@ -483,6 +538,7 @@ async def list_stability_as_events(
     limit: int,
     offset: int,
     filters: list[EventFilter] | None,
+    app_package: str = "",
 ) -> tuple[list[EventRecord], int]:
     """按埋点名从 stability_events 读出，供会话报告 /events 列表使用。
 
@@ -495,7 +551,12 @@ async def list_stability_as_events(
     kind = kind_for_event(event_name)
 
     # 用子查询拼出 properties / common_properties，复用通用 filter 语法
-    base = """
+    args: list[Any] = [frm, to, kind]
+    scope = ""
+    if app_package:
+        args.append(app_package)
+        scope = f"AND {_STABILITY_PACKAGE} = $4"
+    base = f"""
         SELECT * FROM (
             SELECT
                 event_id,
@@ -516,10 +577,11 @@ async def list_stability_as_events(
                 anonymous_id,
                 session_id,
                 extras,
+                {_STABILITY_PACKAGE} AS app_package,
                 event_time,
                 received_at,
                 (
-                    COALESCE(extras, '{}'::jsonb)
+                    COALESCE(extras, '{{}}'::jsonb)
                     || jsonb_strip_nulls(jsonb_build_object(
                         'exception_type', NULLIF(exception_type, ''),
                         'message', NULLIF(message, ''),
@@ -533,18 +595,18 @@ async def list_stability_as_events(
                     ))
                 ) AS properties,
                 jsonb_strip_nulls(jsonb_build_object(
+                    'app_package', {_STABILITY_PACKAGE},
                     'app_version', NULLIF(app_version, ''),
                     'app_build', NULLIF(app_build, ''),
                     'device_model', NULLIF(device_model, ''),
                     'device_os_version', NULLIF(device_os_version, '')
                 )) AS common_properties
             FROM stability_events
-            WHERE event_time >= $1 AND event_time < $2 AND kind = $3
+            WHERE event_time >= $1 AND event_time < $2 AND kind = $3 {scope}
         ) AS events
         WHERE TRUE
     """
-    args: list[Any] = [frm, to, kind]
-    filter_sql, filter_args, next_idx = append_event_filters(filters, 4)
+    filter_sql, filter_args, next_idx = append_event_filters(filters, len(args) + 1)
     where = base + filter_sql
     args.extend(filter_args)
 

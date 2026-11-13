@@ -37,7 +37,7 @@ class ManualGestureRecorder {
   }
 
   void ensureStarted() {
-    if (_started || kReleaseMode) return;
+    if (_started) return;
     _started = true;
     GestureBinding.instance.pointerRouter.addGlobalRoute(_onPointer);
     debugPrint('[ManualGestureRecorder] silent track started');

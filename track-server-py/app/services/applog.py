@@ -145,6 +145,7 @@ async def list_user_logs(
     offset: int,
     order: str = "desc",
     level: str = "",
+    app_package: str = "",
 ) -> tuple[list[EventRecord], int] | None:
     from app.services import analytics
 
@@ -171,6 +172,9 @@ async def list_user_logs(
           AND (user_id = ANY($3) OR distinct_id = ANY($3) OR anonymous_id = ANY($3))
     """
     args: list[Any] = [frm, to, ids]
+    if app_package:
+        where += f" AND common_properties->>'app_package' = ${len(args) + 1}"
+        args.append(app_package)
     if level_filter:
         where += f" AND lower(level) = ${len(args) + 1}"
         args.append(level_filter)

@@ -2,6 +2,7 @@ build/
 .dart_tool/
 .flutter-plugins-dependencies
 pubspec_overrides.yaml
+pubspec_overrides.yaml.bak
 reports/
 *.iml
 .idea/

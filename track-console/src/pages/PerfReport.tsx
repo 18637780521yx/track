@@ -1,9 +1,10 @@
+import { useAppScope } from '../api/scope';
 import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import { Button, DatePicker, Empty, Popconfirm, Spin, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useEffect, useMemo, useState, type Key } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { api, DateRange, defaultRange, normalizeRange } from '../api/client';
+import { DateRange, defaultRange, normalizeRange } from '../api/client';
 import {
   SessionReport,
   TimelineEvent,
@@ -471,6 +472,7 @@ function SessionDetail({ session, onBack }: { session: SessionReport; onBack: ()
 }
 
 function useReportSessions(range: DateRange) {
+  const { api } = useAppScope();
   const [loading, setLoading] = useState(false);
   const [sessions, setSessions] = useState<SessionReport[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
@@ -548,6 +550,7 @@ function groupSessionsByUser(sessions: SessionReport[]): UserReportGroup[] {
 }
 
 export function PerfReportPage() {
+  const { api, appPackage } = useAppScope();
   const [range, setRange] = useState<DateRange>(defaultRange());
   const { loading, sessions, reload } = useReportSessions(range);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -623,6 +626,7 @@ export function PerfReportPage() {
       width: 88,
       render: (_: unknown, row) => (
         <Popconfirm
+          disabled={Boolean(appPackage)}
           title="删除该会话报告？"
           description="将删除该 session 下埋点 / 日志 / 稳定性事件"
           okText="删除"

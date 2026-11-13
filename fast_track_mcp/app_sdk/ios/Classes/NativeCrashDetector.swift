@@ -5,11 +5,10 @@ import MetricKit
 #endif
 
 /// ObjC/Swift uncaught + pending 文件；iOS 14+ 另订 MetricKit 系统 crash/hang 诊断。
+/// 未捕获异常的 C 函数指针在 FtmUncaughtException.m，Swift 只传 block。
 final class NativeCrashDetector {
-  private var previous: NSUncaughtExceptionHandler?
   private var running = false
   private let onCrash: ([String: Any]) -> Void
-  private static var shared: NativeCrashDetector?
   private var metricKit: AnyObject?
   private var sessionId: String?
 
@@ -21,11 +20,9 @@ final class NativeCrashDetector {
     sessionId = session
     if running { flushPending(); return }
     running = true
-    Self.shared = self
     flushPending()
-    previous = NSGetUncaughtExceptionHandler()
-    NSSetUncaughtExceptionHandler { exception in
-      NativeCrashDetector.shared?.handle(exception: exception)
+    FtmUncaughtExceptionInstall { [weak self] exception in
+      self?.handle(exception: exception)
     }
     if #available(iOS 14.0, *) {
       let sub = MetricKitCrashSubscriber { [weak self] payload in
@@ -39,15 +36,11 @@ final class NativeCrashDetector {
   func stop() {
     guard running else { return }
     running = false
-    NSSetUncaughtExceptionHandler(previous)
-    previous = nil
+    FtmUncaughtExceptionUninstall()
     if #available(iOS 14.0, *) {
       (metricKit as? MetricKitCrashSubscriber)?.stop()
     }
     metricKit = nil
-    if Self.shared === self {
-      Self.shared = nil
-    }
   }
 
   private func handle(exception: NSException) {
@@ -68,7 +61,6 @@ final class NativeCrashDetector {
       "tombstone_source": "uncaught_exception",
     ]
     enqueue(payload)
-    previous?(exception)
   }
 
   private static func recordsURL() -> URL? {

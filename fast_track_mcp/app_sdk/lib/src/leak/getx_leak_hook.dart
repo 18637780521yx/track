@@ -1,14 +1,11 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:get/get.dart';
 
-import 'leak_online.dart';
 import 'transition_leak_tracker.dart';
 import 'transition_ledger.dart';
 
 /// True when WeakRef track / TransitionObserver should run.
-bool get leakHooksActive =>
-    !kReleaseMode || LeakOnline.instance.active;
+bool get leakHooksActive => TransitionLeakTracker.instance.enabled;
 
 /// Binding-level DI helpers that auto-[TransitionLeakTracker.track] on create.
 ///

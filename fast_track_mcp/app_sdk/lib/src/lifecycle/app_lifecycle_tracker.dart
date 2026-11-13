@@ -117,10 +117,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       // Mobile transitions commonly deliver hidden then paused for one exit.
       if (_backgroundedAt != null) return;
       _backgroundedAt = now;
-      if (kReleaseMode) {
-        unawaited(FastTrackMcpDetectSink.flush());
-        return;
-      }
       _record(
         kind: 'background',
         label: 'App 进入后台',
@@ -135,7 +131,6 @@ class AppLifecycleTracker with WidgetsBindingObserver {
       final backgroundMs =
           bgAt == null ? null : now.difference(bgAt).inMilliseconds;
       _backgroundedAt = null;
-      if (kReleaseMode) return;
       _record(
         kind: 'foreground',
         label: 'App 进入前台',

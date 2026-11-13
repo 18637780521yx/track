@@ -1,9 +1,11 @@
+import { useAppScope } from '../api/scope';
 import { Button, Card, Input, Popconfirm, Spin, Table, Tag, message } from 'antd';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { api, UserRecord } from '../api/client';
+import { UserRecord } from '../api/client';
 
 export function UsersPage() {
+  const { api, appPackage } = useAppScope();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [users, setUsers] = useState<UserRecord[]>([]);
@@ -125,6 +127,7 @@ export function UsersPage() {
               render: (_, r) => (
                 <div onClick={(e) => e.stopPropagation()}>
                   <Popconfirm
+                    disabled={Boolean(appPackage)}
                     title="删除该用户？"
                     description="将一并清除其事件、日志等数据，不可恢复。"
                     okText="删除"

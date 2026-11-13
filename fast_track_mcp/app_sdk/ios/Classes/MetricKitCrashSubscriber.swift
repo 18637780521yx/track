@@ -62,9 +62,9 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
       diag.exceptionType?.stringValue
       ?? diag.signal?.stringValue
       ?? "MXCrashDiagnostic"
-    let message = diag.terminationReason
-      ?? diag.exceptionReason
-      ?? exceptionType
+    // Newer MetricKit SDKs type `exceptionReason` as
+    // MXCrashDiagnosticObjectiveCExceptionReason, not String.
+    let message = crashMessage(diag: diag, fallback: exceptionType)
     var payload: [String: Any] = [
       "crash_id": "metric-crash-\(Int64(timeStamp * 1000))-\(index)",
       "event_type": "native_crash",
@@ -104,6 +104,19 @@ final class MetricKitCrashSubscriber: NSObject, MXMetricManagerSubscriber {
       "exit_timestamp_ms": Int64(timeStamp * 1000),
     ]
     return onCrash(payload)
+  }
+
+  private func crashMessage(diag: MXCrashDiagnostic, fallback: String) -> String {
+    if let termination = diag.terminationReason, !termination.isEmpty {
+      return termination
+    }
+    // Pod deployment target is iOS 12. exceptionReason is iOS 17+.
+    guard #available(iOS 17.0, *) else { return fallback }
+    guard let reason = diag.exceptionReason else { return fallback }
+    // composedMessage is a non-optional String. exceptionName's nullability
+    // differs across Xcode SDKs, so do not conditionally bind it.
+    let composed = reason.composedMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+    return composed.isEmpty ? fallback : composed
   }
 
   private func stringifyCallStack(_ tree: MXCallStackTree) -> String {

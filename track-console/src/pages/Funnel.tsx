@@ -1,13 +1,15 @@
+import { useAppScope } from '../api/scope';
 import { Button, Card, Col, DatePicker, Input, InputNumber, Row, Select, Space, Spin, Statistic, message } from 'antd';
 import ReactECharts from 'echarts-for-react';
 import { useEffect, useState } from 'react';
-import { api, DateRange, defaultRange, FunnelStep, normalizeRange } from '../api/client';
+import { DateRange, defaultRange, FunnelStep, normalizeRange } from '../api/client';
 
 const { RangePicker } = DatePicker;
 
 const defaultSteps = ['app_first_open', 'page_view', 'btn_click', 'payment_success'];
 
 export function FunnelPage() {
+  const { api } = useAppScope();
   const [range, setRange] = useState<DateRange>(defaultRange());
   const [eventNames, setEventNames] = useState<string[]>([]);
   const [steps, setSteps] = useState<string[]>(defaultSteps);

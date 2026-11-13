@@ -1,3 +1,4 @@
+import { useAppScope } from '../api/scope';
 import {
   App,
   Card,
@@ -14,7 +15,6 @@ import {
 import ReactECharts from 'echarts-for-react';
 import { useEffect, useState } from 'react';
 import {
-  api,
   DateRange,
   defaultRange,
   normalizeRange,
@@ -34,6 +34,7 @@ const kindLabel: Record<string, string> = {
 };
 
 export function StabilityPage() {
+  const { api } = useAppScope();
   const { message } = App.useApp();
   const [range, setRange] = useState<DateRange>(defaultRange());
   const [kind, setKind] = useState<KindFilter>('');

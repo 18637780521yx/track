@@ -1,6 +1,21 @@
+## 0.10.6
+
+- Fix iOS archive: MetricKit `exceptionName` is a non-optional String on current Xcode SDKs. Use `composedMessage` only.
+
+## 0.10.5
+
+- Fix iOS archive on the iOS 12 deployment target: read MetricKit `exceptionReason` only on iOS 17+.
+- Keep `NSSetUncaughtExceptionHandler` in Objective-C. Swift no longer forms or restores that C function pointer.
+
+## 0.10.4
+
+- Fix iOS archive: stringify MetricKit `exceptionReason` across SDK type changes.
+- Fix iOS archive: use a C trampoline for `NSSetUncaughtExceptionHandler`.
+
 ## 0.10.3
 
 - Honor enableHttpCapture in release builds and retain bodies only for failed requests in release.
+- Bound hit-target tree walks and resolve taps on PointerUp to avoid Input ANR and stale labels.
 
 ## 0.10.2
 

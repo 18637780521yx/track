@@ -39,7 +39,7 @@ class VmMemoryMonitor {
   Future<void> sampleNow() => _poll();
 
   Future<void> start() async {
-    if (kReleaseMode || kIsWeb || _stopped) return;
+    if (kIsWeb || _stopped) return;
     try {
       final isolate = isolateForTest ??
           developer.Service.getIsolateId(isolates.Isolate.current);

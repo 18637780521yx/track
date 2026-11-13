@@ -107,26 +107,35 @@ function appendFilters(q: URLSearchParams, filters?: EventFilter[]) {
   }
 }
 
-export const api = {
+export function createApi(appPackage?: string) {
+  function scopedRequest<T>(path: string, init?: RequestInit): Promise<T> {
+    if (!appPackage || (init?.method === 'DELETE')) return request<T>(path, init);
+    const [pathname, search] = path.split('?');
+    const params = new URLSearchParams(search);
+    params.set('app_package', appPackage);
+    return request<T>(`${pathname}?${params}`, init);
+  }
+
+  return {
   apps() {
-    return request<TrackedApp[]>('/api/v1/apps');
+    return scopedRequest<TrackedApp[]>('/api/v1/apps');
   },
   overview(range: DateRange, appPackage?: string) {
     const q = new URLSearchParams(rangeParams(range));
     if (appPackage) q.set('app_package', appPackage);
-    return request<OverviewStats>(`/api/v1/overview?${q}`);
+    return scopedRequest<OverviewStats>(`/api/v1/overview?${q}`);
   },
   eventNames(search = '') {
     const q = new URLSearchParams();
     if (search) q.set('q', search);
     const suffix = q.toString() ? `?${q}` : '';
-    return request<{ items: { name: string; count: number }[] }>(`/api/v1/events/names${suffix}`);
+    return scopedRequest<{ items: { name: string; count: number }[] }>(`/api/v1/events/names${suffix}`);
   },
   eventTrend(range: DateRange, event?: string, unit = 'day', filters?: EventFilter[]) {
     const q = new URLSearchParams({ ...rangeParams(range), unit });
     if (event) q.set('event', event);
     appendFilters(q, filters);
-    return request<{ items: { bucket: string; count: number; users: number }[] }>(
+    return scopedRequest<{ items: { bucket: string; count: number; users: number }[] }>(
       `/api/v1/events/trend?${q}`,
     );
   },
@@ -138,15 +147,15 @@ export const api = {
     });
     if (event) q.set('event', event);
     appendFilters(q, filters);
-    return request<{ items: EventRecord[]; total: number }>(`/api/v1/events?${q}`);
+    return scopedRequest<{ items: EventRecord[]; total: number }>(`/api/v1/events?${q}`);
   },
   propertyValues(field: string, source: 'common' | 'properties' = 'common', event = '') {
     const q = new URLSearchParams({ field, source });
     if (event) q.set('event', event);
-    return request<{ items: string[] }>(`/api/v1/events/property-values?${q}`);
+    return scopedRequest<{ items: string[] }>(`/api/v1/events/property-values?${q}`);
   },
   funnel(range: DateRange, steps: string[], windowHours = 24) {
-    return request<{ steps: FunnelStep[] }>('/api/v1/funnel', {
+    return scopedRequest<{ steps: FunnelStep[] }>('/api/v1/funnel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -164,24 +173,24 @@ export const api = {
       return_event: returnEvent,
       days: String(days),
     });
-    return request<{ days: number[]; rows: RetentionRow[] }>(`/api/v1/retention?${q}`);
+    return scopedRequest<{ days: number[]; rows: RetentionRow[] }>(`/api/v1/retention?${q}`);
   },
   listUsers(search = '', limit = 50, offset = 0) {
     const q = new URLSearchParams({ limit: String(limit), offset: String(offset) });
     if (search) q.set('q', search);
-    return request<{ items: UserRecord[]; total: number }>(`/api/v1/users?${q}`);
+    return scopedRequest<{ items: UserRecord[]; total: number }>(`/api/v1/users?${q}`);
   },
   getUser(userId: string) {
-    return request<UserRecord>(`/api/v1/users/${encodeURIComponent(userId)}`);
+    return scopedRequest<UserRecord>(`/api/v1/users/${encodeURIComponent(userId)}`);
   },
   deleteUser(userId: string) {
-    return request<{ ok: boolean; deleted: Record<string, number> }>(
+    return scopedRequest<{ ok: boolean; deleted: Record<string, number> }>(
       `/api/v1/users/${encodeURIComponent(userId)}`,
       { method: 'DELETE' },
     );
   },
   deleteSession(sessionId: string) {
-    return request<{ ok: boolean; deleted: Record<string, number> }>(
+    return scopedRequest<{ ok: boolean; deleted: Record<string, number> }>(
       `/api/v1/sessions/${encodeURIComponent(sessionId)}`,
       { method: 'DELETE' },
     );
@@ -200,7 +209,7 @@ export const api = {
       order: opts?.order ?? 'desc',
     });
     if (opts?.name) q.set('name', opts.name);
-    return request<{ items: EventRecord[]; total: number }>(
+    return scopedRequest<{ items: EventRecord[]; total: number }>(
       `/api/v1/users/${encodeURIComponent(userId)}/events?${q}`,
     );
   },
@@ -218,19 +227,19 @@ export const api = {
       order: opts?.order ?? 'desc',
     });
     if (opts?.level) q.set('level', opts.level);
-    return request<{ items: EventRecord[]; total: number; ttl_hours?: number }>(
+    return scopedRequest<{ items: EventRecord[]; total: number; ttl_hours?: number }>(
       `/api/v1/users/${encodeURIComponent(userId)}/logs?${q}`,
     );
   },
   deleteUserLogs(userId: string) {
-    return request<{ ok: boolean; deleted: number }>(
+    return scopedRequest<{ ok: boolean; deleted: number }>(
       `/api/v1/users/${encodeURIComponent(userId)}/logs`,
       { method: 'DELETE' },
     );
   },
   stabilityOverview(range: DateRange) {
     const q = new URLSearchParams(rangeParams(range));
-    return request<StabilityOverview>(`/api/v1/stability/overview?${q}`);
+    return scopedRequest<StabilityOverview>(`/api/v1/stability/overview?${q}`);
   },
   stabilityIssues(range: DateRange, kind = '', limit = 50, offset = 0) {
     const q = new URLSearchParams({
@@ -239,7 +248,7 @@ export const api = {
       offset: String(offset),
     });
     if (kind) q.set('kind', kind);
-    return request<{ items: StabilityIssueSummary[]; total: number }>(
+    return scopedRequest<{ items: StabilityIssueSummary[]; total: number }>(
       `/api/v1/stability/issues?${q}`,
     );
   },
@@ -248,11 +257,14 @@ export const api = {
       limit: String(limit),
       offset: String(offset),
     });
-    return request<StabilityIssueDetail>(
+    return scopedRequest<StabilityIssueDetail>(
       `/api/v1/stability/issues/${encodeURIComponent(fingerprint)}?${q}`,
     );
   },
-};
+  };
+}
+
+export const api = createApi();
 
 export interface StabilityOverview {
   crash: number;

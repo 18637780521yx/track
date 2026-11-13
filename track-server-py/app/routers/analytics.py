@@ -43,9 +43,9 @@ async def overview(request: Request):
 
 
 @router.get("/events/names")
-async def event_names(q: str = ""):
+async def event_names(q: str = "", app_package: str = ""):
     try:
-        items = await analytics.event_names(get_pool(), q)
+        items = await analytics.event_names(get_pool(), q, app_package)
         return {"items": items}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -57,11 +57,12 @@ async def event_trend(
     event: str = "",
     unit: str = "day",
     filters: Optional[str] = None,
+    app_package: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
         items = await analytics.event_trend(
-            get_pool(), event, frm, to, unit, _filters_from_query(filters)
+            get_pool(), event, frm, to, unit, _filters_from_query(filters), app_package
         )
         return {"items": items}
     except Exception as exc:
@@ -74,9 +75,10 @@ async def property_values(
     source: str = "common",
     event: str = "",
     limit: int = 50,
+    app_package: str = "",
 ):
     try:
-        items = await analytics.property_values(get_pool(), source, field, event, limit)
+        items = await analytics.property_values(get_pool(), source, field, event, limit, app_package)
         return {"items": items}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -89,11 +91,12 @@ async def list_events(
     limit: int = 50,
     offset: int = 0,
     filters: Optional[str] = None,
+    app_package: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
         items, total = await analytics.list_events(
-            get_pool(), event, frm, to, limit, offset, _filters_from_query(filters)
+            get_pool(), event, frm, to, limit, offset, _filters_from_query(filters), app_package
         )
         return {"items": items, "total": total}
     except Exception as exc:
@@ -101,10 +104,10 @@ async def list_events(
 
 
 @router.post("/funnel")
-async def funnel(body: FunnelRequest):
+async def funnel(body: FunnelRequest, app_package: str = ""):
     frm, to = parse_range(body.from_, body.to)
     try:
-        result = await analytics.funnel(get_pool(), body.steps, frm, to, body.window_hours)
+        result = await analytics.funnel(get_pool(), body.steps, frm, to, body.window_hours, app_package)
         return result
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -116,13 +119,14 @@ async def retention(
     cohort_event: str = "app_start",
     return_event: str = "",
     days: int = 7,
+    app_package: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     if not return_event:
         return_event = cohort_event
     try:
         result = await analytics.retention(
-            get_pool(), cohort_event, return_event, frm, to, days
+            get_pool(), cohort_event, return_event, frm, to, days, app_package
         )
         return result
     except Exception as exc:
@@ -130,9 +134,9 @@ async def retention(
 
 
 @router.get("/users")
-async def list_users(q: str = "", limit: int = 50, offset: int = 0):
+async def list_users(q: str = "", limit: int = 50, offset: int = 0, app_package: str = ""):
     try:
-        items, total = await analytics.list_users(get_pool(), q, limit, offset)
+        items, total = await analytics.list_users(get_pool(), q, limit, offset, app_package)
         return {"items": items, "total": total}
     except Exception as exc:
         return JSONResponse({"error": str(exc)}, status_code=500)
@@ -146,11 +150,12 @@ async def list_user_events(
     offset: int = 0,
     order: str = "desc",
     name: str = "",
+    app_package: str = "",
 ):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
         result = await analytics.list_user_events(
-            get_pool(), user_id, frm, to, limit, offset, order=order, event_name=name
+            get_pool(), user_id, frm, to, limit, offset, order=order, event_name=name, app_package=app_package
         )
         if result is None:
             return JSONResponse({"error": "user not found"}, status_code=404)
@@ -168,6 +173,7 @@ async def list_user_logs(
     offset: int = 0,
     order: str = "desc",
     level: str = "",
+    app_package: str = "",
 ):
     """终端日志（app_log），与业务 events 分表；仅保留最近 2 小时。"""
     from app.services import applog
@@ -175,7 +181,7 @@ async def list_user_logs(
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
         result = await applog.list_user_logs(
-            get_pool(), user_id, frm, to, limit, offset, order=order, level=level
+            get_pool(), user_id, frm, to, limit, offset, order=order, level=level, app_package=app_package
         )
         if result is None:
             return JSONResponse({"error": "user not found"}, status_code=404)

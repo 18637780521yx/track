@@ -1,6 +1,7 @@
+import { useAppScope } from '../api/scope';
 import { Card, DatePicker, Input, InputNumber, Select, Space, Spin, Table, message } from 'antd';
 import { useEffect, useState } from 'react';
-import { api, DateRange, defaultRange, RetentionRow, normalizeRange } from '../api/client';
+import { DateRange, defaultRange, RetentionRow, normalizeRange } from '../api/client';
 
 const { RangePicker } = DatePicker;
 
@@ -13,6 +14,7 @@ function retentionColor(rate: number) {
 }
 
 export function RetentionPage() {
+  const { api } = useAppScope();
   const [range, setRange] = useState<DateRange>(defaultRange(14));
   const [eventNames, setEventNames] = useState<string[]>([]);
   const [cohortEvent, setCohortEvent] = useState('app_first_open');
