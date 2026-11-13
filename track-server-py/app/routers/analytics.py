@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.db import get_pool
 from app.models import EventFilter, FunnelRequest
-from app.services import analytics
+from app.services import analytics, apps as app_analytics
 from app.services.parse import parse_range
 
 router = APIRouter(prefix="/api/v1")
@@ -24,10 +24,18 @@ def _filters_from_query(raw: Optional[str]):
         return None
 
 
+@router.get("/apps")
+async def apps():
+    return await app_analytics.list_apps(get_pool())
+
+
 @router.get("/overview")
 async def overview(request: Request):
     frm, to = parse_range(request.query_params.get("from"), request.query_params.get("to"))
     try:
+        app_package = request.query_params.get("app_package")
+        if app_package:
+            return await app_analytics.overview(get_pool(), frm, to, app_package)
         stats = await analytics.overview(get_pool(), frm, to)
         return stats
     except Exception as exc:

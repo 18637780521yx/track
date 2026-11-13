@@ -4,6 +4,11 @@ const API_BASE = '';
 
 export type DateRange = [Dayjs, Dayjs];
 
+export interface TrackedApp {
+  package: string;
+  name: string | null;
+}
+
 export function defaultRange(days = 7): DateRange {
   const end = dayjs().endOf('day');
   const start = end.subtract(days - 1, 'day').startOf('day');
@@ -103,8 +108,12 @@ function appendFilters(q: URLSearchParams, filters?: EventFilter[]) {
 }
 
 export const api = {
-  overview(range: DateRange) {
+  apps() {
+    return request<TrackedApp[]>('/api/v1/apps');
+  },
+  overview(range: DateRange, appPackage?: string) {
     const q = new URLSearchParams(rangeParams(range));
+    if (appPackage) q.set('app_package', appPackage);
     return request<OverviewStats>(`/api/v1/overview?${q}`);
   },
   eventNames(search = '') {

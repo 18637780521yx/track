@@ -92,7 +92,6 @@ class FastTrackMcpNetwork {
   static bool _redactSensitiveHeaders = true;
 
   static bool get isInstalled =>
-      !kReleaseMode &&
       _overrides != null &&
       identical(HttpOverrides.current, _overrides);
 
@@ -130,7 +129,6 @@ class FastTrackMcpNetwork {
 
   /// Whether [url] passes exclude / scheme / host whitelist filters.
   static bool shouldCapture(Uri url) {
-    if (kReleaseMode) return false;
     final path = url.path.replaceFirst(RegExp(r'/+$'), '');
     if (const {'/track', '/api/v1/track', '/api/track', '/v1/events'}
         .contains(path)) {
@@ -215,7 +213,7 @@ class FastTrackMcpNetwork {
     bool? captureBodyOnFailureOnly,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
+    if (kReleaseMode && !allowInRelease) return;
     PerfNetworkStore.instance.maxBodyBytes = maxBodyBytes;
     PerfNetworkStore.instance.capacity = capacity;
     if (excludeUrlSubstrings != null) {
@@ -262,7 +260,6 @@ class FastTrackMcpNetwork {
     bool? captureBodyOnFailureOnly,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
     void go() => install(
           maxBodyBytes: maxBodyBytes,
           capacity: capacity,
@@ -293,7 +290,6 @@ class PerfHttpOverrides extends HttpOverrides {
   HttpClient createHttpClient(SecurityContext? context) {
     final inner =
         _previous?.createHttpClient(context) ?? super.createHttpClient(context);
-    if (kReleaseMode) return inner;
     return _CaptureHttpClient(
       inner,
       redactSensitiveHeaders: redactSensitiveHeaders,

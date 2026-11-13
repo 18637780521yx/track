@@ -49,6 +49,8 @@ class FastTrackMcp {
       getx_hook.instrumentGetPages(pages);
 
   /// 请在 [FastTrackMcpCrashHandler.run] 内先 [FastTracker.init]，再调本方法。
+  /// Set [enableHttpCapture] to true to install HTTP capture in any build mode.
+  /// Release builds capture request and response bodies only for failures.
   static Future<void> ensureInitialized({
     String host = '127.0.0.1',
     int port = 19288,
@@ -118,9 +120,11 @@ class FastTrackMcp {
     );
     TransitionLedger.instance.settleMs = transitionSettleMs;
 
-    // Opt-in capture is restricted to Debug/Profile, including direct installs.
-    if (enableHttpCapture && !kReleaseMode) {
-      FastTrackMcpNetwork.install(captureBodyOnFailureOnly: false);
+    if (enableHttpCapture) {
+      FastTrackMcpNetwork.install(
+        captureBodyOnFailureOnly: kReleaseMode,
+        allowInRelease: true,
+      );
     }
 
     // Background queue flushing is required in release as well.
@@ -170,7 +174,6 @@ class FastTrackMcp {
     bool captureBodyOnFailureOnly = false,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
     FastTrackMcpNetwork.install(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,
@@ -193,7 +196,6 @@ class FastTrackMcp {
     bool captureBodyOnFailureOnly = false,
     bool allowInRelease = false,
   }) {
-    if (kReleaseMode) return;
     FastTrackMcpNetwork.installDeferred(
       maxBodyBytes: maxBodyBytes,
       redactSensitiveHeaders: redactSensitiveHeaders,

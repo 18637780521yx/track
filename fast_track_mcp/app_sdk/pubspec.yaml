@@ -1,6 +1,6 @@
 name: fast_track_mcp
 description: Fast Track MCP App SDK — crash/ANR/jank/memory + session journal + Bridge.
-version: 0.10.2
+version: 0.10.3
 homepage: https://github.com/18637780521yx/track
 repository: https://github.com/18637780521yx/track
 issue_tracker: https://github.com/18637780521yx/track/issues

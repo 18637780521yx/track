@@ -1,5 +1,6 @@
 import { ConfigProvider, App as AntApp, theme } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import { useState } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { MainLayout } from './layouts/MainLayout';
 import { EventAnalysisPage } from './pages/EventAnalysis';
@@ -12,6 +13,7 @@ import { UserDetailPage } from './pages/UserDetail';
 import { UsersPage } from './pages/Users';
 
 export default function App() {
+  const [appPackage, setAppPackage] = useState<string>();
   return (
     <ConfigProvider
       locale={zhCN}
@@ -25,9 +27,9 @@ export default function App() {
     >
       <AntApp>
         <BrowserRouter>
-          <MainLayout>
+          <MainLayout appPackage={appPackage} onAppChange={setAppPackage}>
             <Routes>
-              <Route path="/" element={<OverviewPage />} />
+              <Route path="/" element={<OverviewPage appPackage={appPackage} />} />
               <Route path="/events" element={<EventAnalysisPage />} />
               <Route path="/stability" element={<StabilityPage />} />
               <Route path="/reports" element={<PerfReportPage />} />

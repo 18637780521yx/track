@@ -47,6 +47,15 @@ class ManualGestureRecorder {
     if (!_started) return;
     GestureBinding.instance.pointerRouter.removeGlobalRoute(_onPointer);
     _started = false;
+    _clearDown();
+    _busy = false;
+  }
+
+  void _clearDown() {
+    _downPos = null;
+    _downPointer = null;
+    _downAt = null;
+    _routeAtDown = null;
   }
 
   void _onPointer(PointerEvent event) {
@@ -60,15 +69,18 @@ class ManualGestureRecorder {
       return;
     }
 
+    if (event is PointerCancelEvent) {
+      if (_downPointer != null && event.pointer != _downPointer) return;
+      _clearDown();
+      return;
+    }
+
     if (event is PointerUpEvent) {
       if (_downPointer != null && event.pointer != _downPointer) return;
       final down = _downPos;
       final gestureAt = _downAt ?? DateTime.now();
       final routeAtDown = _routeAtDown;
-      _downPos = null;
-      _downPointer = null;
-      _downAt = null;
-      _routeAtDown = null;
+      _clearDown();
       if (down == null) return;
 
       final moved = (event.position - down).distance;
@@ -78,27 +90,35 @@ class ManualGestureRecorder {
             down,
             event.position,
             gestureAt: gestureAt,
+            upAt: DateTime.now(),
             routeAtDown: routeAtDown,
           ),
         );
         return;
       }
 
+      // Resolve on PointerUp while the tapped control still exists.
+      // Budgeted lookup — must not unbounded-walk IndexedStack trees (ANR).
+      final upAt = DateTime.now();
+      final target = HitTargetResolver.resolve(
+        event.position,
+        viewId: event.viewId,
+      );
       unawaited(
-        _recordTap(
-          event.position,
-          viewId: event.viewId,
+        _publishTap(
+          target,
           gestureAt: gestureAt,
+          upAt: upAt,
           routeAtDown: routeAtDown,
         ),
       );
     }
   }
 
-  Future<void> _recordTap(
-    Offset position, {
-    required int viewId,
+  Future<void> _publishTap(
+    HitTarget target, {
     required DateTime gestureAt,
+    required DateTime upAt,
     String? routeAtDown,
   }) async {
     if (_busy || suppressManual) return;
@@ -110,13 +130,9 @@ class ManualGestureRecorder {
     _busy = true;
     _lastAt = now;
     try {
-      // 优先按下时路由；Tab 切换会在 onTap 里先改 index，抬起后再读已是目标页。
       final routeAtStart = routeAtDown ?? FastTrackMcpNetwork.currentRoute();
-      // 立刻命中：若先 delay，弹窗/转场会抢在 hit-test 前打开，落到图标 Listener。
-      final target = HitTargetResolver.resolve(position, viewId: viewId);
-
+      // Let onTap / route transition proceed before network track.
       await SchedulerBinding.instance.endOfFrame;
-      await Future<void>.delayed(const Duration(milliseconds: 120));
       final routeAfter = FastTrackMcpNetwork.currentRoute();
 
       await FastTrackMcpDetectSink.track(
@@ -125,12 +141,12 @@ class ManualGestureRecorder {
           'source': 'manual',
           'kind': 'tap',
           'label': target.displayLabel,
-          'x': position.dx,
-          'y': position.dy,
+          'x': target.x,
+          'y': target.y,
           if (routeAtStart != null) 'route': routeAtStart,
           if (routeAfter != null && routeAfter != routeAtStart)
             'route_after': routeAfter,
-          'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
+          'duration_ms': upAt.difference(gestureAt).inMilliseconds,
           ...target.toJson(),
         },
       );
@@ -145,13 +161,15 @@ class ManualGestureRecorder {
     Offset from,
     Offset to, {
     required DateTime gestureAt,
+    required DateTime upAt,
     String? routeAtDown,
   }) async {
     if (_busy || suppressManual) return;
     _busy = true;
+    _lastAt = DateTime.now();
     try {
       final routeAtStart = routeAtDown ?? FastTrackMcpNetwork.currentRoute();
-      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await SchedulerBinding.instance.endOfFrame;
       final dx = to.dx - from.dx;
       final dy = to.dy - from.dy;
       final direction = dy.abs() >= dx.abs()
@@ -173,7 +191,7 @@ class ManualGestureRecorder {
           if (routeAtStart != null) 'route': routeAtStart,
           if (routeAfter != null && routeAfter != routeAtStart)
             'route_after': routeAfter,
-          'duration_ms': DateTime.now().difference(gestureAt).inMilliseconds,
+          'duration_ms': upAt.difference(gestureAt).inMilliseconds,
         },
       );
     } catch (e, st) {

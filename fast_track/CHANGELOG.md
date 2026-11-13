@@ -1,3 +1,7 @@
+## 0.2.2
+
+- Add build-mode defaults for the upload URL and a useReleaseUrl override.
+
 ## 0.2.1
 
 - Improve batched telemetry, durable crash persistence, and manual network reporting.

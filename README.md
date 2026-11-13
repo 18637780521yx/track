@@ -24,7 +24,9 @@ track/
 | 测试 | http://10.10.10.132:18765/ | `…:18765/track` |
 | 线上 | http://10.10.10.132:28643/ | `…:28643/track` |
 
-App 随业务 `Env`（云测试 / 正式）自动选地址；可用 `--dart-define=FAST_TRACK_URL=` 覆盖。
+Flutter SDK 的 `FastTracker.init()` 省略 `url` 时，Debug/Profile 默认上报测试栈，Release 默认上报线上栈。显式传入的 `url` 优先。
+
+联桥 App 随业务 `Env`（云测试 / 正式）自动选地址，可用 `--dart-define=FAST_TRACK_URL=<地址>` 覆盖。
 
 ## 快速启动（Python）
 

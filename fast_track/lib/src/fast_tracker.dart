@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:fast_tools/fast_tools.dart';
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter_fast_track/flutter_fast_track.dart';
 import 'package:flutter_fast_track/src/event/objectbox_storage.dart';
 import 'package:uuid/uuid.dart';
@@ -12,6 +13,9 @@ import 'utils/log.dart';
 import 'utils/storage.dart';
 
 class FastTracker {
+  static const debugUploadUrl = 'http://10.10.10.132:18765/track';
+  static const releaseUploadUrl = 'http://10.10.10.132:28643/track';
+
   static final FastTracker tracker = FastTracker._internal();
 
   FastTracker._internal();
@@ -42,8 +46,11 @@ class FastTracker {
 
   static final _uuid = Uuid();
 
+  /// [useReleaseUrl] selects the release or test default. It defaults to
+  /// the Flutter build mode. An explicit [url] takes precedence.
   static Future<void> init({
     String? url,
+    bool useReleaseUrl = kReleaseMode,
     Map<String, dynamic>? headers,
     DioBodyBuilder? bodyBuilder,
     EventUploader? uploader,
@@ -51,7 +58,7 @@ class FastTracker {
     Map<String, dynamic> initialCommonProperties = const {},
   }) async {
     await tracker._init(
-        url: url,
+        url: url ?? (useReleaseUrl ? releaseUploadUrl : debugUploadUrl),
         headers: headers,
         bodyBuilder: bodyBuilder,
         uploader: uploader,
@@ -83,10 +90,10 @@ class FastTracker {
 
   /// 初始化
   ///
-  /// [url] 上报地址（使用内置 Dio uploader 时必需）
+  /// [url] 已解析的上报地址。
   /// [uploader] 自定义上传函数，传入后忽略 [url]/[headers]/[bodyBuilder]，可对接非 HTTP 通道
   Future<void> _init({
-    String? url,
+    required String url,
     Map<String, dynamic>? headers,
     DioBodyBuilder? bodyBuilder,
     EventUploader? uploader,
@@ -116,9 +123,8 @@ class FastTracker {
       if (uploader != null) {
         _uploader = uploader;
       } else {
-        assert(url != null, 'url is required when uploader is not provided');
         _uploader = createDioEventUploader(
-          url: url!,
+          url: url,
           headers: headers,
           bodyBuilder: bodyBuilder,
           config: _config,

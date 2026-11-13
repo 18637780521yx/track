@@ -1,3 +1,7 @@
+## 0.10.3
+
+- Honor enableHttpCapture in release builds and retain bodies only for failed requests in release.
+
 ## 0.10.2
 
 - Fix request.done closing HTTP requests before the request body is sent.

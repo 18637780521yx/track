@@ -5,19 +5,22 @@ import { api, DateRange, defaultRange, normalizeRange } from '../api/client';
 
 const { RangePicker } = DatePicker;
 
-export function OverviewPage() {
+export function OverviewPage({ appPackage }: { appPackage?: string }) {
   const [range, setRange] = useState<DateRange>(defaultRange());
   const [loading, setLoading] = useState(false);
   const [data, setData] = useState<Awaited<ReturnType<typeof api.overview>> | null>(null);
 
   useEffect(() => {
+    let current = true;
     setLoading(true);
+    setData(null);
     api
-      .overview(range)
-      .then(setData)
-      .catch((e) => message.error(e.message))
-      .finally(() => setLoading(false));
-  }, [range]);
+      .overview(range, appPackage)
+      .then((result) => { if (current) setData(result); })
+      .catch((e) => { if (current) message.error(e.message); })
+      .finally(() => { if (current) setLoading(false); });
+    return () => { current = false; };
+  }, [range, appPackage]);
 
   const trendOption = {
     tooltip: { trigger: 'axis' },

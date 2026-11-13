@@ -37,12 +37,15 @@ class HitTarget {
     return 'tap@${x.toStringAsFixed(0)},${y.toStringAsFixed(0)}';
   }
 
+  /// True when we already have a stable automation / human label.
+  bool get hasStableLabel =>
+      _usable(key) || _usable(text) || _usable(label) || _usable(hint);
+
   static bool _usable(String? s) {
     if (s == null) return false;
     final t = s.trim();
     if (t.isEmpty) return false;
     if (_isNoiseLabel(t)) return false;
-    // Prefer labels that contain at least one non-control, non-PUA char.
     return t.runes.any((c) {
       if (c <= 0x1f || c == 0x7f) return false;
       if (c >= 0xe000 && c <= 0xf8ff) return false;
@@ -52,7 +55,6 @@ class HitTarget {
     });
   }
 
-  /// Image/network ErrorWidget 文案、异常栈等，不能当点击目标名。
   static bool _isNoiseLabel(String t) {
     final lower = t.toLowerCase();
     if (lower.contains('httpexception')) return true;
@@ -66,7 +68,6 @@ class HitTarget {
     if (lower.startsWith('exception:')) return true;
     if (lower.startsWith('error:')) return true;
     if (t.contains('uri = http')) return true;
-    // 整段就是 URL / 超长带 URL 的 dump
     if (t.startsWith('http://') || t.startsWith('https://')) return true;
     if (t.length > 64 &&
         (lower.contains('https://') || lower.contains('http://'))) {
@@ -90,15 +91,37 @@ class HitTarget {
 
 /// Hit-test [position] and extract key / text / hint like flutter_skill.
 class HitTargetResolver {
-  static HitTarget resolve(Offset position, {int viewId = 0}) {
+  /// Max elements visited while collecting nearby label text.
+  static const int _maxTextVisits = 64;
+
+  /// Max ancestor hops when looking for a row title outside the control.
+  static const int _maxAncestorHops = 8;
+
+  /// Hard cap for RenderObject→Element tree walk (profile / no DebugCreator).
+  /// Keeps PointerUp bounded so IndexedStack pages cannot Input-ANR.
+  static const int maxLookupVisits = 1800;
+
+  static HitTarget resolve(
+    Offset position, {
+    int viewId = 0,
+    int lookupVisitBudget = maxLookupVisits,
+  }) {
     final result = HitTestResult();
     WidgetsBinding.instance.hitTestInView(result, position, viewId);
 
-    final candidates = <Element>[];
+    final renderObjects = <RenderObject>[];
     for (final entry in result.path) {
       final target = entry.target;
-      if (target is! RenderObject) continue;
-      final el = _elementFor(target);
+      if (target is RenderObject) renderObjects.add(target);
+    }
+
+    final lookup = _RenderObjectElementLookup(
+      needed: renderObjects.toSet(),
+      maxVisits: lookupVisitBudget,
+    );
+    final candidates = <Element>[];
+    for (final ro in renderObjects) {
+      final el = lookup.elementFor(ro);
       if (el != null) candidates.add(el);
     }
 
@@ -106,11 +129,9 @@ class HitTargetResolver {
     if (best == null) {
       return HitTarget(x: position.dx, y: position.dy);
     }
-
     return _fromElement(best, position);
   }
 
-  /// Prefer real controls (ListTile / InkWell / buttons) over raw Listener/Text.
   static Element? _pickBest(List<Element> candidates) {
     if (candidates.isEmpty) return null;
 
@@ -138,30 +159,18 @@ class HitTargetResolver {
     if (w is InkWell || w is GestureDetector) return 80;
     if (w is TextField || w is TextFormField) return 75;
     if (w is Checkbox || w is Switch || w is Radio) return 70;
-    if (w.key is ValueKey<String>) return 40;
+    // Forui / custom controls often only expose a Key + child Text.
+    if (w.key is ValueKey<String> || w.key is ValueKey<int>) return 55;
+    final type = w.runtimeType.toString();
+    if (type.contains('Button') ||
+        type.contains('Tile') ||
+        type.contains('InkWell')) {
+      return 50;
+    }
     if (w is Text && HitTarget._usable(w.data)) return 30;
     if (w is RichText) return 20;
-    // Raw Listener / RenderPointerListener — last resort.
-    if (w.runtimeType.toString().contains('Listener')) return 5;
+    if (type.contains('Listener')) return 5;
     return 10;
-  }
-
-  static Element? _elementFor(RenderObject renderObject) {
-    Element? found;
-    void visit(Element el) {
-      if (found != null) return;
-      if (el.renderObject == renderObject) {
-        found = el;
-        return;
-      }
-      el.visitChildren(visit);
-    }
-
-    final binding = WidgetsBinding.instance;
-    // ignore: invalid_use_of_protected_member
-    final root = binding.rootElement;
-    if (root != null) visit(root);
-    return found;
   }
 
   static HitTarget _fromElement(Element element, Offset position) {
@@ -172,10 +181,12 @@ class HitTargetResolver {
     String? role;
     var widgetType = element.widget.runtimeType.toString();
 
-    void absorb(Element el) {
+    void absorb(Element el, {required bool extractSubtreeText}) {
       final w = el.widget;
       if (key == null && w.key is ValueKey<String>) {
         key = (w.key as ValueKey<String>).value;
+      } else if (key == null && w.key is ValueKey<int>) {
+        key = (w.key as ValueKey<int>).value.toString();
       }
 
       if (w is TextField) {
@@ -194,10 +205,10 @@ class HitTargetResolver {
           w is IconButton ||
           w is FloatingActionButton ||
           w is InkWell ||
-          w is GestureDetector) {
+          w is GestureDetector ||
+          _score(w) >= 50) {
         role ??= 'button';
-        // Prefer this control's type in the report.
-        if (_score(w) >= 80) {
+        if (_score(w) >= 50) {
           widgetType = w.runtimeType.toString();
         }
         if (w is IconButton) {
@@ -206,8 +217,10 @@ class HitTargetResolver {
         if (w is FloatingActionButton) {
           if (HitTarget._usable(w.tooltip)) text ??= w.tooltip;
         }
-        final t = _extractUsableText(el);
-        if (t != null) text ??= t;
+        if (extractSubtreeText) {
+          final t = _extractUsableText(el);
+          if (t != null) text ??= t;
+        }
       } else if (w is Semantics) {
         final s = w.properties.label ?? w.properties.tooltip;
         if (HitTarget._usable(s)) label ??= s;
@@ -216,24 +229,27 @@ class HitTargetResolver {
       }
     }
 
-    absorb(element);
+    absorb(element, extractSubtreeText: true);
 
-    // Climb ancestors: InkWell / ListTile often wrap the leaf Listener/Icon.
+    var hops = 0;
     element.visitAncestorElements((ancestor) {
-      absorb(ancestor);
-      // Keep walking until we have a usable label or leave the interactive row.
-      final done = HitTarget._usable(key) ||
-          HitTarget._usable(text) ||
-          HitTarget._usable(label) ||
-          HitTarget._usable(hint);
-      return !done;
+      hops += 1;
+      if (hops > _maxAncestorHops) return false;
+      final needText = !HitTarget._usable(key) &&
+          !HitTarget._usable(text) &&
+          !HitTarget._usable(label) &&
+          !HitTarget._usable(hint);
+      absorb(ancestor, extractSubtreeText: needText);
+      return needText;
     });
 
-    // Last pass: if still empty, search a wider ancestor subtree (row title).
     if (!HitTarget._usable(text) &&
         !HitTarget._usable(label) &&
         !HitTarget._usable(key)) {
+      hops = 0;
       element.visitAncestorElements((ancestor) {
+        hops += 1;
+        if (hops > _maxAncestorHops) return false;
         final t = _extractUsableText(ancestor);
         if (t != null) {
           text = t;
@@ -256,17 +272,15 @@ class HitTargetResolver {
     );
   }
 
-  /// First usable (non-icon-font) plain text under [element].
-  ///
-  /// Skips [ErrorWidget] subtrees (broken Image 会把 HttpException 渲成 Text）。
-  /// Prefers short labels (菜单名) over long dumps.
   static String? _extractUsableText(Element element) {
     final found = <String>[];
+    var visits = 0;
     void visit(Element e) {
+      if (visits >= _maxTextVisits || found.length >= 8) return;
+      visits += 1;
       final w = e.widget;
       if (w is ErrorWidget) return;
-      final type = w.runtimeType.toString();
-      if (type.contains('ErrorWidget')) return;
+      if (w.runtimeType.toString().contains('ErrorWidget')) return;
 
       if (w is Text && HitTarget._usable(w.data)) {
         found.add(w.data!.trim());
@@ -285,5 +299,49 @@ class HitTargetResolver {
       return a.compareTo(b);
     });
     return found.first;
+  }
+}
+
+/// Hit-path-only RenderObject → Element map with early exit + visit budget.
+class _RenderObjectElementLookup {
+  _RenderObjectElementLookup({
+    required Set<RenderObject> needed,
+    required this.maxVisits,
+  }) : _needed = {...needed};
+
+  final Set<RenderObject> _needed;
+  final int maxVisits;
+  Map<RenderObject, Element>? _map;
+
+  Element? elementFor(RenderObject renderObject) {
+    final creator = renderObject.debugCreator;
+    if (creator is DebugCreator) return creator.element;
+    _map ??= _buildMap();
+    return _map![renderObject];
+  }
+
+  Map<RenderObject, Element> _buildMap() {
+    final map = <RenderObject, Element>{};
+    if (_needed.isEmpty) return map;
+    // ignore: invalid_use_of_protected_member
+    final root = WidgetsBinding.instance.rootElement;
+    if (root == null) return map;
+
+    final pending = {..._needed};
+    var visits = 0;
+    void visit(Element el) {
+      if (pending.isEmpty || visits >= maxVisits) return;
+      visits += 1;
+      if (el is RenderObjectElement) {
+        final ro = el.renderObject;
+        if (pending.remove(ro)) {
+          map[ro] = el;
+        }
+      }
+      el.visitChildren(visit);
+    }
+
+    visit(root);
+    return map;
   }
 }

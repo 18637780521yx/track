@@ -8,9 +8,10 @@ import {
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Layout, Menu, Typography } from 'antd';
-import { ReactNode, useMemo } from 'react';
+import { Layout, Menu, Select, Typography, message } from 'antd';
+import { ReactNode, useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { api, type TrackedApp } from '../api/client';
 
 const { Header, Sider, Content } = Layout;
 
@@ -24,9 +25,22 @@ const menuItems = [
   { key: '/users', icon: <UserOutlined />, label: '用户列表' },
 ];
 
-export function MainLayout({ children }: { children: ReactNode }) {
+export function MainLayout({ children, appPackage, onAppChange }: {
+  children: ReactNode;
+  appPackage?: string;
+  onAppChange: (value?: string) => void;
+}) {
   const location = useLocation();
   const navigate = useNavigate();
+  const [apps, setApps] = useState<TrackedApp[]>([]);
+  const [loadingApps, setLoadingApps] = useState(true);
+
+  useEffect(() => {
+    api.apps()
+      .then(setApps)
+      .catch(() => message.error('无法加载应用列表'))
+      .finally(() => setLoadingApps(false));
+  }, []);
 
   const selectedKey = useMemo(() => {
     if (location.pathname.startsWith('/users')) return '/users';
@@ -47,6 +61,27 @@ export function MainLayout({ children }: { children: ReactNode }) {
             数据分析平台
           </Typography.Text>
         </div>
+        {selectedKey === '/' && (
+          <div style={{ padding: '12px 16px 0' }}>
+            <label htmlFor="overview-app">概览应用</label>
+            <Select
+              id="overview-app"
+              value={appPackage ?? ''}
+              onChange={(value) => onAppChange(value || undefined)}
+              loading={loadingApps}
+              style={{ width: '100%', marginTop: 4 }}
+              options={[
+                { value: '', label: '全部应用' },
+                ...apps.map((app) => ({
+                  value: app.package,
+                  label: app.name && apps.filter((item) => item.name === app.name).length === 1
+                    ? app.name
+                    : app.package,
+                })),
+              ]}
+            />
+          </div>
+        )}
         <Menu
           mode="inline"
           selectedKeys={[selectedKey]}
